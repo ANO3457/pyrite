@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from pyrite.cli import app
@@ -315,6 +316,27 @@ def test_search_without_include_body_omits_body_field(cli_env):
     assert data["count"] >= 1
     for r in data["results"]:
         assert "body" not in r, f"Default search must omit body; result has it: {list(r)}"
+
+
+@pytest.mark.cli
+@pytest.mark.parametrize(
+    ("command", "invalid_format"),
+    [
+        (["get", "any-entry"], "bogus"),
+        (["search", "anything"], "jsonl"),
+    ],
+    ids=["get", "search"],
+)
+def test_unknown_format_is_a_usage_error(command, invalid_format):
+    """Unknown --format values fail during argument parsing, not serialization."""
+    result = runner.invoke(app, [*command, "--format", invalid_format])
+    output = unstyle(result.output)
+
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in output
+    assert output.count("Invalid value for '--format'") == 1, result.output
+    assert invalid_format in output
+    assert "error_type" not in output
 
 
 @pytest.mark.cli

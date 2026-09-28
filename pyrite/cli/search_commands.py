@@ -15,6 +15,7 @@ from ..exceptions import QuerySyntaxError, QueryTooLongError
 from ..services.read_shaping import parse_fields_param, project_fields
 from ..storage.repository import KBRepository
 from .context import get_config_with_registered_kbs
+from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,10 @@ def register_search_command(app: typer.Typer):
             None, "--fields", help="Comma-separated fields to return (e.g. id,title,tags)"
         ),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """

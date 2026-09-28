@@ -18,6 +18,7 @@ from ..exceptions import EntryNotFoundError, KBNotFoundError, PyriteError, Valid
 from ..services.access_policy import UNSCOPED
 from ..services.read_shaping import parse_fields_param, project_fields
 from .context import cli_context
+from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -116,7 +117,10 @@ def register_entry_commands(app: typer.Typer) -> None:
         kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB to search in"),
         fields: str = typer.Option(None, "--fields", help="Comma-separated fields to return"),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """Get a specific entry by ID."""
