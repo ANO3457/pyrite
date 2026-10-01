@@ -68,6 +68,8 @@ types:
       severity:
         type: select
         options: [low, medium, high]
+      labels:
+        type: list
 """
 
 
@@ -238,6 +240,56 @@ class TestCLICreateSurface:
         fm = _parse_frontmatter((kb_config.path / "x.md").read_text(encoding="utf-8"))
         assert fm.get("severity") == "high", fm
         assert "metadata" not in fm, fm
+
+    def test_cli_create_dash_f_preserves_a_comma_in_an_undeclared_field(self, tmp_path):
+        from pyrite.cli import app
+
+        config, kb_config = _make_kb(tmp_path)
+        with patch("pyrite.cli.context.load_config", return_value=config):
+            result = self.runner.invoke(
+                app,
+                [
+                    "create",
+                    "-k",
+                    "t",
+                    "-t",
+                    "finding",
+                    "--title",
+                    "Comma",
+                    "-b",
+                    "body",
+                    "-f",
+                    "remark=one, two",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        fm = _parse_frontmatter((kb_config.path / "comma.md").read_text(encoding="utf-8"))
+        assert fm["remark"] == "one, two"
+
+    def test_cli_create_dash_f_splits_a_schema_declared_list_field(self, tmp_path):
+        from pyrite.cli import app
+
+        config, kb_config = _make_kb(tmp_path)
+        with patch("pyrite.cli.context.load_config", return_value=config):
+            result = self.runner.invoke(
+                app,
+                [
+                    "create",
+                    "-k",
+                    "t",
+                    "-t",
+                    "finding",
+                    "--title",
+                    "Labels",
+                    "-b",
+                    "body",
+                    "-f",
+                    "labels=one,two",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        fm = _parse_frontmatter((kb_config.path / "labels.md").read_text(encoding="utf-8"))
+        assert fm["labels"] == ["one", "two"]
 
     def test_cli_create_dash_f_refuses_off_enum(self, tmp_path):
         from pyrite.cli import app

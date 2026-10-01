@@ -100,7 +100,9 @@ _FIELD_CREATE_ENTRY_COLLISION: frozenset[str] = frozenset(
 _FIELD_CREATE_NEVER_TAKES_EFFECT: frozenset[str] = frozenset({"type", "created_at", "updated_at"})
 
 
-def _parse_task_create_fields(field: list[str] | None) -> dict[str, Any]:
+def _parse_task_create_fields(
+    field: list[str] | None, *, config: Any, kb_name: str
+) -> dict[str, Any]:
     """Parse `--field key=value` pairs for `task create`.
 
     Uses the same value parser as `create -f`/`update -f`
@@ -128,7 +130,7 @@ def _parse_task_create_fields(field: list[str] | None) -> dict[str, Any]:
     """
     from ..models.task import TaskEntry
     from ..services.kb_service import _MANAGED_FIELDS
-    from .entry_commands import _parse_field_value
+    from .entry_commands import _field_type_for, _parse_field_value
 
     fields: dict[str, Any] = {}
     for fv in field or []:
@@ -172,7 +174,7 @@ def _parse_task_create_fields(field: list[str] | None) -> dict[str, Any]:
                 f"nothing."
             )
             raise typer.Exit(1)
-        fields[k] = _parse_field_value(v)
+        fields[k] = _parse_field_value(v, _field_type_for(config, kb_name, "task", k))
     return fields
 
 
@@ -219,10 +221,9 @@ def task_create(
         )
         raise typer.Exit(1)
 
-    fields = _parse_task_create_fields(field)
-
     svc, db = _get_service()
     try:
+        fields = _parse_task_create_fields(field, config=svc.config, kb_name=kb_name)
         result = svc.create_task(
             kb_name=kb_name,
             title=title,

@@ -1,4 +1,4 @@
-"""`pyrite update -f` must parse values the way `create -f` does (#231).
+"""`pyrite update -f` must parse values according to their field types (#231).
 
 `-f tags=alpha,beta` used to store the raw string ``alpha,beta`` because the
 update path coerced ints only while the create path used the full value parser.
@@ -122,3 +122,40 @@ def test_update_field_still_parses_scalars_and_json(tmp_path):
 
     frontmatter = list(kb_path.rglob("*.md"))[0].read_text(encoding="utf-8").split("---", 2)[1]
     assert load_yaml(frontmatter)["aliases"] == ["x", "y"]
+
+
+def test_update_field_preserves_a_comma_in_an_undeclared_value(tmp_path):
+    config, kb_path = _make_env(tmp_path)
+    _create_note(config)
+    entry_id = _entry_id(kb_path)
+
+    result = _invoke(
+        config,
+        [
+            "update",
+            entry_id,
+            "-k",
+            "notes",
+            "-f",
+            "note=narrow the scope, then expand",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json_payload(_invoke(config, ["get", entry_id, "-k", "notes", "--format", "json"]))
+    assert payload["metadata"]["note"] == "narrow the scope, then expand"
+
+
+def test_update_field_reads_a_json_string_literal(tmp_path):
+    config, kb_path = _make_env(tmp_path)
+    _create_note(config)
+    entry_id = _entry_id(kb_path)
+
+    result = _invoke(
+        config,
+        ["update", entry_id, "-k", "notes", "-f", 'question="a, b"', "--format", "json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json_payload(_invoke(config, ["get", entry_id, "-k", "notes", "--format", "json"]))
+    assert payload["metadata"]["question"] == "a, b"

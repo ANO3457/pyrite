@@ -26,6 +26,9 @@ class TestParseFieldValue:
         assert result[0]["url"] == "https://example.com"
         assert result[0]["tier"] == 1
 
+    def test_json_string_literal_preserves_commas(self):
+        assert _parse_field_value('"a, b"') == "a, b"
+
     def test_invalid_json_falls_through(self):
         """Malformed JSON starting with [ should fall through to comma-split."""
         result = _parse_field_value("[not valid json")
@@ -61,15 +64,30 @@ class TestParseFieldValue:
 
     # --- Comma-separated lists ---
 
-    def test_comma_separated(self):
-        assert _parse_field_value("ICE,Adelanto") == ["ICE", "Adelanto"]
+    def test_comma_separated_for_list_field(self):
+        assert _parse_field_value("ICE,Adelanto", field_type="list") == ["ICE", "Adelanto"]
 
-    def test_comma_separated_with_spaces(self):
-        assert _parse_field_value("ICE, Adelanto, CBP") == ["ICE", "Adelanto", "CBP"]
+    def test_comma_separated_for_multi_select_field(self):
+        assert _parse_field_value("ICE, Adelanto, CBP", field_type="multi-select") == [
+            "ICE",
+            "Adelanto",
+            "CBP",
+        ]
 
-    def test_trailing_comma_ignored(self):
-        result = _parse_field_value("a,b,")
+    def test_trailing_comma_for_list_field_ignored(self):
+        result = _parse_field_value("a,b,", field_type="list")
         assert result == ["a", "b"]
+
+    def test_comma_in_untyped_value_stays_a_string(self):
+        assert (
+            _parse_field_value("narrow the scope, then expand") == "narrow the scope, then expand"
+        )
+
+    def test_comma_in_text_field_stays_a_string(self):
+        assert _parse_field_value("Portland, OR", field_type="text") == "Portland, OR"
+
+    def test_thousands_separator_stays_a_string(self):
+        assert _parse_field_value("1,600 words") == "1,600 words"
 
     # --- Plain strings ---
 
@@ -95,7 +113,7 @@ class TestParseFieldValueEndToEnd:
             title="Test Event",
             body="test",
             date="2026-03-30",
-            participants=_parse_field_value("ICE,Adelanto,CBP"),
+            participants=_parse_field_value("ICE,Adelanto,CBP", field_type="list"),
         )
         assert entry.participants == ["ICE", "Adelanto", "CBP"]
 

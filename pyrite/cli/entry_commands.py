@@ -62,21 +62,41 @@ def _refusal_exit(exc: ValidationError, output_format: str = "rich") -> None:
     )
 
 
-def _parse_field_value(value: str) -> Any:
-    """Parse a --field value, supporting JSON, integers, floats, and comma-separated lists.
+def _field_type_for(
+    config: Any, kb_name: str, entry_type: str | None, field_name: str
+) -> str | None:
+    """Return the declared type for a field, including core-type metadata."""
+    if not entry_type:
+        return None
+
+    kb_config = config.get_kb(kb_name)
+    if kb_config is not None:
+        type_schema = kb_config.kb_schema.types.get(entry_type)
+        if type_schema is not None:
+            field_schema = type_schema.fields.get(field_name)
+            if field_schema is not None:
+                return field_schema.field_type
+
+    from ..schema import CORE_TYPES
+
+    return CORE_TYPES.get(entry_type, {}).get("fields", {}).get(field_name)
+
+
+def _parse_field_value(value: str, field_type: str | None = None) -> Any:
+    """Parse a ``--field`` value using its declared type when available.
 
     Parsing order:
-      1. JSON (arrays/objects): ``[1,2]`` or ``{"k": "v"}``
+      1. JSON (strings, arrays, and objects): ``"a, b"``, ``[1,2]``, or ``{"k": "v"}``
       2. Integer: ``42``
       3. Float: ``3.14``
       4. Boolean: ``true``/``false``
-      5. Comma-separated list (if commas present): ``a,b,c`` → ``["a","b","c"]``
+      5. Comma-separated list for list-like fields: ``a,b,c`` → ``["a","b","c"]``
       6. Plain string (fallback)
     """
     stripped = value.strip()
 
-    # 1. JSON arrays or objects
-    if stripped.startswith(("[", "{")):
+    # 1. JSON strings, arrays, or objects
+    if stripped.startswith(('"', "[", "{")):
         try:
             return _json.loads(stripped)
         except _json.JSONDecodeError:
@@ -100,8 +120,11 @@ def _parse_field_value(value: str) -> Any:
     if stripped.lower() == "false":
         return False
 
-    # 5. Comma-separated list (must contain comma, items are stripped)
-    if "," in stripped:
+    # 5. Comma-separated list only when the schema declares a list-like field.
+    is_list_field = field_type in {"list", "multi-select", "tags"} or (
+        isinstance(field_type, str) and field_type.startswith("list[")
+    )
+    if is_list_field and "," in stripped:
         return [item.strip() for item in stripped.split(",") if item.strip()]
 
     # 6. Plain string
@@ -267,26 +290,27 @@ def register_entry_commands(app: typer.Typer) -> None:
         if tags:
             extra["tags"] = [t.strip() for t in tags.split(",")]
 
-        # Parse --field key=value pairs
-        if field:
-            for fv in field:
-                if "=" not in fv:
-                    _cli_error(
-                        f"--field must be key=value, got '{fv}'",
-                        "rich",
-                        "VALIDATION_FAILED",
-                    )
-                k, v = fv.split("=", 1)
-                extra[k] = _parse_field_value(v)
-
-        # Every create decision -- the ADR-0034 truncated-body refusal (the
-        # marker may arrive via --field or in the frontmatter of a
-        # --body-file/--stdin read), the undeclared-type refusal (core types
-        # not exempt, #197), schema validation, the exists check -- is made by
-        # the service's write pipeline, the same one REST and MCP use (#378).
-        spec = {**extra, "entry_type": entry_type, "title": title, "body": body}
-
         with cli_context() as (config, db, svc):
+            # Parse --field key=value pairs with the current KB schema.
+            if field:
+                for fv in field:
+                    if "=" not in fv:
+                        _cli_error(
+                            f"--field must be key=value, got '{fv}'",
+                            "rich",
+                            "VALIDATION_FAILED",
+                        )
+                    k, v = fv.split("=", 1)
+                    extra[k] = _parse_field_value(
+                        v, _field_type_for(config, kb_name, entry_type, k)
+                    )
+
+            # Every create decision -- the ADR-0034 truncated-body refusal (the
+            # marker may arrive via --field or in the frontmatter of a
+            # --body-file/--stdin read), the undeclared-type refusal (core types
+            # not exempt, #197), schema validation, the exists check -- is made by
+            # the service's write pipeline, the same one REST and MCP use (#378).
+            spec = {**extra, "entry_type": entry_type, "title": title, "body": body}
             try:
                 written = svc.create(kb_name, spec, allow_undeclared=allow_undeclared)
             except ValidationError as e:
@@ -415,26 +439,26 @@ def register_entry_commands(app: typer.Typer) -> None:
         if tags is not None:
             updates["tags"] = [t.strip() for t in tags.split(",")]
 
-        # Parse --field key=value pairs
-        if field:
-            for fv in field:
-                if "=" not in fv:
-                    _cli_error(
-                        f"--field must be key=value, got '{fv}'",
-                        output_format,
-                        "VALIDATION_FAILED",
-                    )
-                k, v = fv.split("=", 1)
-                # One parser for `-f` on both write commands: JSON arrays and
-                # objects, ints, floats, booleans and comma-separated lists.
-                # This path used to coerce ints only, so `-f tags=alpha,beta`
-                # stored the raw string and the reader then iterated its
-                # characters (#231).
-                updates[k] = _parse_field_value(v)
-
-        # ADR-0034 rule 2 and schema validation are the service's (#378):
-        # `updates` goes through as given, marker keys included.
         with cli_context() as (config, db, svc):
+            current = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=UNSCOPED)
+            entry_type = current.get("entry_type") if current is not None else None
+
+            # Parse --field key=value pairs with the existing entry's schema.
+            if field:
+                for fv in field:
+                    if "=" not in fv:
+                        _cli_error(
+                            f"--field must be key=value, got '{fv}'",
+                            output_format,
+                            "VALIDATION_FAILED",
+                        )
+                    k, v = fv.split("=", 1)
+                    updates[k] = _parse_field_value(
+                        v, _field_type_for(config, kb_name, entry_type, k)
+                    )
+
+            # ADR-0034 rule 2 and schema validation are the service's (#378):
+            # `updates` goes through as given, marker keys included.
             try:
                 entry = svc.update(entry_id, kb_name, updates).entry
             except ValidationError as e:
