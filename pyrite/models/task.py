@@ -1,10 +1,13 @@
 """Task entry type and workflow definitions."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from .core_types import NoteEntry
 from .protocols import Assignable, Parentable, Prioritizable, Statusable, Temporal
+
+logger = logging.getLogger(__name__)
 
 # Frontmatter keys TaskEntry knows how to round-trip explicitly (base Entry
 # fields + task-specific fields below). Anything else present in a task
@@ -57,6 +60,82 @@ TASK_STATUSES = (
     "cancelled",
 )
 TASK_PRIORITIES = tuple(range(1, 11))  # 1-10
+DEFAULT_TASK_PRIORITY = 5
+
+#: The words a task's `priority` is sometimes written in (the backlog's scale,
+#: or a KB schema that retyped the field, #554), on the task's 1-10 scale:
+#: higher is more urgent, `medium` is the default.
+TASK_PRIORITY_WORDS = {"low": 3, "medium": 5, "high": 7, "critical": 9}
+
+
+def _whole_number(value: Any) -> int | None:
+    """``value`` as an int when it is a whole number (`7`, `'7'`, `7.0`,
+    `'7.0'`), else None. A bool is not a number here."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return int(number) if number.is_integer() else None
+
+
+def coerce_task_priority(value: Any, entry_id: str = "") -> int:
+    """A task's ``priority`` as the integer the task model and services use.
+
+    The one reading of the field, for the file (``TaskEntry.from_frontmatter``)
+    and for an index row written before this reading existed
+    (``TaskService.list_tasks``). One task's bad value must never fail a
+    listing of all of them (#554): a priority word is read on the 1-10 scale,
+    anything else that is not an integer falls back to the default, and both
+    log a warning naming the task. An integer outside 1-10 is kept as it is;
+    ``qa validate`` reports it, and every other non-integer, naming the file.
+    """
+    if value is None or value == "":
+        return DEFAULT_TASK_PRIORITY
+    number = _whole_number(value)
+    if number is not None:
+        return number
+    word = TASK_PRIORITY_WORDS.get(str(value).strip().lower())
+    if word is not None:
+        logger.warning(
+            "task %r: priority %r is a word; read as %d (1-10, higher is more urgent)",
+            entry_id,
+            value,
+            word,
+        )
+        return word
+    logger.warning(
+        "task %r: priority %r is not an integer from 1 to 10; read as %d",
+        entry_id,
+        value,
+        DEFAULT_TASK_PRIORITY,
+    )
+    return DEFAULT_TASK_PRIORITY
+
+
+def task_priority_problem(value: Any) -> str | None:
+    """Why a task file's ``priority`` value is not an integer 1-10, or None.
+
+    ``None`` for a missing key (the default applies) and for a whole number
+    in range, however written (``7``, ``'7'``, ``7.0``).
+    """
+    if value is None:
+        return None
+    number = _whole_number(value)
+    if number is None:
+        return "is not an integer"
+    if number not in TASK_PRIORITIES:
+        return "is out of range"
+    return None
+
 
 # Terminal states that mean "resolved, no further work expected" — both for
 # parent rollup and dependency unblocking. `failed` is intentionally excluded:
@@ -480,7 +559,7 @@ class TaskEntry(Assignable, Temporal, Statusable, Prioritizable, Parentable, Not
             parent=parent,
             dependencies=meta.get("dependencies", []) or [],
             evidence=meta.get("evidence", []) or [],
-            priority=meta.get("priority", 5),
+            priority=coerce_task_priority(meta.get("priority"), kwargs["id"]),
             due_date=meta.get("due_date", ""),
             agent_context=meta.get("agent_context", {}) or {},
             status_change_log=meta.get("status_change_log", []) or [],

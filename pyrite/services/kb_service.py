@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -84,6 +85,11 @@ _INDEX_ONLY_KEYS = frozenset(
         "backlinks",
     }
 )
+
+#: Keys only a read result carries -- the index's own and the entry's
+#: identity. A request holding one is an echoed read result, whose other keys
+#: are Pyrite's reading unless the caller changed them (#561).
+_READ_RESULT_MARKERS = (_INDEX_ONLY_KEYS - {"type"}) | {"id", "file_path"}
 
 #: Two different spellings of "no relation was ever named" that must compare
 #: equal in a link's duplicate key. Every write surface (CLI `link`, MCP
@@ -1042,8 +1048,8 @@ class KBService:
 
     def split_echoed_update(
         self, entry_id: str, kb_name: str, fields: dict[str, Any]
-    ) -> tuple[dict[str, Any], list[str]]:
-        """``(updates, ignored)`` for a caller that may send a read result back.
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        """``(updates, ignored, unchanged)`` for a caller that may send a read result back.
 
         MCP ``kb_update`` takes the entry's fields as top-level arguments, and
         an agent commonly edits what ``kb_get`` returned and sends all of it.
@@ -1055,6 +1061,17 @@ class KBService:
         not declare the way CLI ``update -f`` and REST PATCH do (#407, #455):
         before this, MCP kept only the declared fields and dropped the rest
         with ``updated: true``.
+
+        In an echo (the request carries a key only a read result has, such as
+        ``id`` or ``indexed_at``), a key whose value is still Pyrite's reading
+        -- what the same read returns for it -- is not a change either: it is
+        set aside too, and named in ``unchanged`` rather than ``ignored`` so a
+        caller can tell "left as it is" from "never written by an update"
+        (#561). Assigning it would rewrite the file:
+        ``importance: high`` read as 5 became ``importance: 5``, and a task
+        grew the ``importance``/``priority`` defaults it never had. A request
+        naming fields on its own (``{importance: 5}``) is the caller's values,
+        each written as sent; the CLI's ``-f`` never passes through here.
         """
         updatable = self.updatable_fields(entry_id, kb_name)
         row = self.db.get_entry(entry_id, kb_name)
@@ -1065,14 +1082,18 @@ class KBService:
             else _MANAGED_FIELDS
         )
         not_written = managed | _TIMESTAMP_FIELDS | _INDEX_ONLY_KEYS
+        reading = row if row and not _READ_RESULT_MARKERS.isdisjoint(fields) else {}
         updates: dict[str, Any] = {}
         ignored: list[str] = []
+        unchanged: list[str] = []
         for key, value in fields.items():
             if key in not_written or (value is None and key not in updatable):
                 ignored.append(key)
+            elif key in reading and reading[key] == value:
+                unchanged.append(key)
             else:
                 updates[key] = value
-        return updates, sorted(ignored)
+        return updates, sorted(ignored), sorted(unchanged)
 
     def update(self, entry_id: str, kb_name: str, updates: dict[str, Any]) -> WriteResult:
         """Update an existing entry for a caller, returning it and its warnings.
@@ -1191,6 +1212,7 @@ class KBService:
                 else:
                     entry.metadata = {**(entry.metadata or {}), key: value}
                 continue
+            value = _as_field_type(entry, key, value)
             # Metadata is a bag of keys — merge shallowly so a partial update
             # (e.g. just review_comments) does not clobber other metadata.
             if key == "metadata" and isinstance(value, dict):
@@ -2503,3 +2525,26 @@ class KBService:
 # _CORE_HOOKS dict that used to live here is gone — runner.core_hooks(name) is
 # the inspection surface now.
 # =============================================================================
+
+
+def _as_field_type(entry: Entry, key: str, value: Any) -> Any:
+    """``value`` as the type an Enum-valued field holds, or refused.
+
+    Every surface sends a field's value as a string (`status: disputed`), and
+    an Enum field (`EventEntry.status`) assigned a str failed later, at
+    `to_frontmatter`'s `.value`, as `INTERNAL: 'str' object has no attribute
+    'value'` -- for a deliberate set and for an echoed read result alike
+    (#561). An unknown value is refused before anything is written.
+    """
+    current = getattr(entry, key, None)
+    if not isinstance(current, Enum) or isinstance(value, type(current)):
+        return value
+    enum_type = type(current)
+    try:
+        return enum_type(value)
+    except ValueError:
+        allowed = ", ".join(str(member.value) for member in enum_type)
+        raise ValidationError(
+            f"Cannot set {key}={value!r} on {entry.entry_type} '{entry.id}': "
+            f"expected one of {allowed}."
+        ) from None
