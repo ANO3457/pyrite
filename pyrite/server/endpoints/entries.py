@@ -2,6 +2,7 @@
 
 import io
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -825,17 +826,37 @@ def update_entry(
         except ValueError:
             pass  # KB not in a git repo — fall back to main
 
-    updates = {}
+    # `id` is not a field `UpdateEntryRequest` can carry (FastAPI drops an
+    # unknown key before this handler sees it, Pydantic's default
+    # extra="ignore"), so a client that reads an entry and PUTs it straight
+    # back cannot trip `split_echoed_update`'s own "this looks like an
+    # echoed read" heuristic (`id`/`file_path`/index-only keys) the way MCP
+    # `kb_update` does. A REST PUT to `/entries/{id}` is always that
+    # caller's current view of the resource, so `id` is added here to put
+    # every PUT through the same reading-comparison MCP gets for an echo:
+    # `importance`/`tags` sent back unchanged from a GET are left alone
+    # instead of rewriting `importance: high` as `5` or `tags: Foo` as
+    # `['Foo']` (#561, #569 item 1). `split_echoed_update` always puts `id`
+    # in `ignored` (it is a managed field update may never set), which is
+    # stripped back out below before the response is built: the client
+    # never sent `id`, so `ignored` must not claim it did.
+    fields: dict[str, Any] = {"id": entry_id}
     if req.title is not None:
-        updates["title"] = req.title
+        fields["title"] = req.title
     if req.body is not None:
-        updates["body"] = req.body
+        fields["body"] = req.body
     if req.importance is not None:
-        updates["importance"] = req.importance
+        fields["importance"] = req.importance
     if req.tags is not None:
-        updates["tags"] = req.tags
+        fields["tags"] = req.tags
     if req.metadata is not None:
-        updates["metadata"] = req.metadata
+        fields["metadata"] = req.metadata
+
+    updates, ignored, unchanged = svc.split_echoed_update(entry_id, req.kb, fields)
+    # `id` is never something the client sent (see the comment above) -- a
+    # detail of how this endpoint drives the echo comparison, not something
+    # `ignored` should report back to a caller who never named it.
+    ignored = [k for k in ignored if k != "id"]
 
     try:
         written = svc.update(entry_id, req.kb, updates)
@@ -853,7 +874,13 @@ def update_entry(
 
     broadcast_event("entry_updated", entry_id=entry_id, kb_name=req.kb)
 
-    return UpdateResponse(updated=True, id=entry_id, warnings=written.warnings)
+    return UpdateResponse(
+        updated=True,
+        id=entry_id,
+        warnings=written.warnings,
+        ignored=ignored,
+        unchanged=unchanged,
+    )
 
 
 @router.patch(
