@@ -13,6 +13,12 @@ asserts that `[Unreleased]` stays empty.
 
 ## [Unreleased]
 
+## [0.25.6] - 2026-10-01
+
+Fix release for frontmatter integrity. **Upgrade if you run `pyrite update`, `task update`, `link`, MCP `kb_update` or REST `PATCH`/`PUT` on entries with hand-written frontmatter:** 0.25.5 could delete or rewrite keys the request did not name.
+
+**Upgrade note:** enums declared in `kb.yaml` are now enforced. A KB whose data has drifted from its declared values refuses off-list writes after upgrading; the entry under Changed gives the migration (`validation.enforce_enums: false`, clean up, then remove the setting).
+
 ## [0.25.5] - 2026-09-26
 
 Security release, from the 0.26 multi-user security review. **Upgrade if you run Pyrite with auth enabled, serve `/site`, or connect MCP clients over HTTP.** An MCP session now acts only for the credential that opened it, and ends when that credential is revoked, logged out or expired. Cookie-authenticated writes must come from an allowed origin. Content from knowledge bases is sanitised in the web app, which now sends a content security policy. Changing a knowledge base's access takes effect everywhere at once. Reads of links, lookups, queries, the graph and QA stay within the knowledge bases the caller can read. Config saves no longer write environment-supplied secrets to disk. This release also carries ADR-0037's single authorization policy point and error contract, entry-identity fixes, crash-safe config saves, and four contributor changes (#462, #471, #502, #505).
