@@ -68,11 +68,13 @@ SOFTWARE_KB_PRESET = {
         "team_owned": True,
         "require_adr_number": True,
     },
+    # No rule enum on `status`: a rule applies to every type with the field,
+    # and each type here has its own statuses. `validators.py` checks them
+    # per type only for a KB with `kb_type: software`; a KB registered as
+    # generic gets no status check yet (#572).
     "validation": {
         "enforce": True,
-        "rules": [
-            {"field": "status", "enum": ["proposed", "accepted", "deprecated", "superseded"]},
-        ],
+        "rules": [],
     },
     "directories": [
         "adrs",
