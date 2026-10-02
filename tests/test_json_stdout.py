@@ -137,7 +137,7 @@ def test_check_urls_reports_database_failure(
         raise errors[error_kind]
 
     monkeypatch.setattr(cli_context_module, "load_config", lambda: pyrite_config)
-    monkeypatch.setattr(PyriteDB, "list_entries", fail_list_entries)
+    monkeypatch.setattr(PyriteDB, "get_distinct_types", fail_list_entries)
 
     result = runner.invoke(app, ["qa", "check-urls", "test-research", "--format", output_format])
 
@@ -196,3 +196,25 @@ def test_check_urls_finds_sources_on_document_entries(
     assert data["total_urls"] == 1
     assert data["broken_details"][0]["url"] == url
     assert data["broken_details"][0]["entry_ids"] == ["document-source"]
+
+
+@pytest.mark.control
+def test_url_collection_preserves_other_types_when_documents_fill_query_limit():
+    from unittest.mock import MagicMock
+
+    db = MagicMock()
+    documents = [{"id": f"document-{i}"} for i in range(10000)]
+    db.get_distinct_types.return_value = ["document", "note"]
+
+    def list_entries(*, kb_name, entry_type=None, limit):
+        # Documents are newer than the note, so an unfiltered query hides it.
+        entries = documents if entry_type in {None, "document"} else [{"id": "old-note"}]
+        return entries[:limit]
+
+    db.list_entries.side_effect = list_entries
+    url = "https://example.invalid/older-note"
+    db.get_entry.side_effect = lambda entry_id, kb_name: {
+        "sources": [url] if entry_id == "old-note" else []
+    }
+
+    assert URLChecker(db).collect_urls("test") == {url: ["old-note"]}
