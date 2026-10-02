@@ -751,13 +751,15 @@ def qa_check_urls(
 
     from ..services.url_checker import URLChecker
 
-    ctx = cli_context()
     cache_path = Path(cache_file) if cache_file else None
-    checker = URLChecker(ctx.db, cache_path=cache_path)
-
     if output_format != "json":
         console.print(f"Collecting URLs from '{kb_name}'...")
-    url_entries = checker.collect_urls(kb_name)
+    # cli_context() closes the database on exit, so collect_urls (the only
+    # step that reads it) must run inside the block. The HTTP checks below
+    # use no database and run after it.
+    with cli_context() as (_config, db, _svc):
+        checker = URLChecker(db, cache_path=cache_path)
+        url_entries = checker.collect_urls(kb_name)
 
     if not url_entries and output_format != "json":
         console.print("[green]No source URLs found.[/green]")

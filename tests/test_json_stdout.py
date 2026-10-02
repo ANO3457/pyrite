@@ -1,6 +1,7 @@
 """Machine-readable CLI output must survive pipes and terminal styling."""
 
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,12 @@ from pyrite.cli import qa_commands
 from pyrite.services.url_checker import URLChecker, URLCheckResult
 
 runner = CliRunner()
+
+
+@contextmanager
+def _fake_cli_context():
+    """Same shape as cli_context(): a context manager yielding (config, db, svc)."""
+    yield None, None, None
 
 
 @pytest.fixture(params=[False, True])
@@ -41,7 +48,7 @@ def test_check_urls_json_is_one_document(monkeypatch, json_console, has_urls):
     url = "https://example.invalid/" + "long-path/" * 20
     entries = {url: ["source"]} if has_urls else {}
     monkeypatch.setattr(qa_commands, "console", json_console)
-    monkeypatch.setattr(qa_commands, "cli_context", lambda: SimpleNamespace(db=None))
+    monkeypatch.setattr(qa_commands, "cli_context", _fake_cli_context)
     monkeypatch.setattr(URLChecker, "collect_urls", lambda self, kb: entries)
     monkeypatch.setattr(
         URLChecker,
