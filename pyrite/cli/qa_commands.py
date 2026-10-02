@@ -747,12 +747,9 @@ def qa_check_urls(
     Validates that source URLs in KB entries are reachable. Results are cached
     to avoid rechecking on subsequent runs.
     """
-    import sqlite3
     from pathlib import Path
 
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from ..exceptions import PyriteError, StorageError
+    from ..exceptions import PyriteError
     from ..services.url_checker import URLChecker
     from ..utils.errors import cli_error_from
 
@@ -768,8 +765,6 @@ def qa_check_urls(
             url_entries = checker.collect_urls(kb_name)
     except PyriteError as exc:
         cli_error_from(exc, output_format)
-    except (SQLAlchemyError, sqlite3.Error) as exc:
-        cli_error_from(StorageError(str(exc)), output_format)
 
     if not url_entries and output_format != "json":
         console.print("[green]No source URLs found.[/green]")
