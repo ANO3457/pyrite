@@ -6,11 +6,16 @@ to avoid rechecking unchanged URLs.
 
 import json
 import logging
+import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
+
+from ..exceptions import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -74,33 +79,38 @@ class URLChecker:
         every stored entry type. Each type retains the existing 10,000-entry limit.
         Database failures propagate rather than claiming there are no URLs.
         """
-        types_to_scan = (
-            entry_types if entry_types is not None else self.db.get_distinct_types(kb_name=kb_name)
-        )
+        try:
+            types_to_scan = (
+                entry_types
+                if entry_types is not None
+                else self.db.get_distinct_types(kb_name=kb_name)
+            )
 
-        url_entries: dict[str, list[str]] = defaultdict(list)
+            url_entries: dict[str, list[str]] = defaultdict(list)
 
-        for etype in types_to_scan:
-            results = self.db.list_entries(kb_name=kb_name, entry_type=etype, limit=10000)
+            for etype in types_to_scan:
+                results = self.db.list_entries(kb_name=kb_name, entry_type=etype, limit=10000)
 
-            for r in results:
-                entry_id = r.get("id", "")
-                # list_entries doesn't include sources; fetch full entry
-                full = self.db.get_entry(entry_id, kb_name)
-                if not full:
-                    continue
-                sources = full.get("sources") or []
+                for r in results:
+                    entry_id = r.get("id", "")
+                    # list_entries doesn't include sources; fetch full entry
+                    full = self.db.get_entry(entry_id, kb_name)
+                    if not full:
+                        continue
+                    sources = full.get("sources") or []
 
-                for src in sources:
-                    url = ""
-                    if isinstance(src, dict):
-                        url = src.get("url", "")
-                    elif isinstance(src, str):
-                        url = src
-                    if url and url.startswith("http"):
-                        url_entries[url].append(entry_id)
+                    for src in sources:
+                        url = ""
+                        if isinstance(src, dict):
+                            url = src.get("url", "")
+                        elif isinstance(src, str):
+                            url = src
+                        if url and url.startswith("http"):
+                            url_entries[url].append(entry_id)
 
-        return dict(url_entries)
+            return dict(url_entries)
+        except (SQLAlchemyError, sqlite3.Error) as exc:
+            raise StorageError(str(exc)) from exc
 
     def check_url(self, url: str) -> URLCheckResult:
         """Check a single URL for liveness."""
