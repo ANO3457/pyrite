@@ -450,7 +450,7 @@ def test_the_dispatcher_refuses_an_unreadable_kb_under_every_checked_name(server
             client_id="test",
             readable_kbs={"gate-kb"},
         )
-        assert result.get("error_code") == "NOT_FOUND", (
+        assert result.get("error_code") == "KB_NOT_FOUND", (
             f"naming an unreadable KB under `{param}` was not refused: {result}"
         )
         assert result["error"] == "KB 'unreadable-kb' not found", (
@@ -458,6 +458,9 @@ def test_the_dispatcher_refuses_an_unreadable_kb_under_every_checked_name(server
         )
 
 
+@pytest.mark.control(
+    reason="not-over-blocking check; #66 only widened its refusal codes to the new KB_NOT_FOUND"
+)
 def test_an_unscoped_caller_is_unaffected(servers):
     """`readable_kbs=None` is the unscoped case -- a global admin, an
     operator API key, auth disabled, and local stdio. The chokepoint must
@@ -466,4 +469,4 @@ def test_an_unscoped_caller_is_unaffected(servers):
     result = server._dispatch_tool(
         "kb_search", {"query": "x", "kb_name": "gate-kb"}, client_id="test"
     )
-    assert result.get("error_code") != "NOT_FOUND"
+    assert result.get("error_code") not in ("NOT_FOUND", "KB_NOT_FOUND")
