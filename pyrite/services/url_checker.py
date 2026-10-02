@@ -70,24 +70,16 @@ class URLChecker:
     ) -> dict[str, list[str]]:
         """Collect all source URLs from KB entries.
 
-        Returns {url: [entry_id, ...]} mapping.
+        Returns {url: [entry_id, ...]} mapping. With no type filter, scans
+        every entry type. Each query retains the existing 10,000-entry limit.
+        Database failures propagate rather than claiming there are no URLs.
         """
-        if entry_types is None:
-            entry_types = [
-                "timeline_event",
-                "solidarity_event",
-                "scene",
-                "investigation_event",
-                "note",
-            ]
+        types_to_scan: list[str | None] = list(entry_types) if entry_types is not None else [None]
 
         url_entries: dict[str, list[str]] = defaultdict(list)
 
-        for etype in entry_types:
-            try:
-                results = self.db.list_entries(kb_name=kb_name, entry_type=etype, limit=10000)
-            except Exception:
-                continue
+        for etype in types_to_scan:
+            results = self.db.list_entries(kb_name=kb_name, entry_type=etype, limit=10000)
 
             for r in results:
                 entry_id = r.get("id", "")
