@@ -1087,3 +1087,120 @@ def test_plugin_validator_receives_documented_context_for_create_and_update(env,
         assert existing is not None
         assert existing.title == "Validator Context"
         assert existing.role == "author"
+
+
+def test_update_validators_see_the_existing_entry_on_both_passes(env, mcp, monkeypatch):
+    """#601: the validation after before_save hooks is still an update.
+
+    Validators run twice per write. The second pass once dropped
+    `existing_entry`, so a validator that compared against the stored entry
+    saw an update as a create on that pass.
+    """
+    from pyrite.plugins import get_registry
+    from pyrite.plugins.capabilities import Capability
+
+    calls = []
+
+    def record(entry_type, fields, context):
+        calls.append((fields.get("role"), context["existing_entry"]))
+        return []
+
+    class RecordingPlugin:
+        name = "issue_601_validator_passes"
+        capabilities = {Capability.STORAGE}
+
+        def get_kb_types(self):
+            return ["generic"]
+
+        def get_validators(self):
+            return [record]
+
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_discovered", True)
+    monkeypatch.setattr(registry, "_plugins", dict(registry._plugins))
+    monkeypatch.setattr(registry, "_conformance_cache", {})
+    registry.register(RecordingPlugin())
+
+    created = mcp._dispatch_tool(
+        "kb_create",
+        {
+            "kb_name": KB,
+            "entry_type": "person",
+            "title": "Two Passes",
+            "body": "b",
+            "role": "author",
+        },
+    )
+    assert created.get("created"), created
+    calls.clear()
+
+    updated = mcp._dispatch_tool(
+        "kb_update", {"kb_name": KB, "entry_id": created["entry_id"], "role": "editor"}
+    )
+    assert updated.get("updated"), updated
+
+    update_calls = [existing for role, existing in calls if role == "editor"]
+    assert len(update_calls) == 2, "validators run before and after before_save hooks"
+    assert all(existing is not None for existing in update_calls)
+
+
+def _register_invalid_person_role_hook(plugin_name):
+    from pyrite.plugins.registry import Capability, get_registry
+
+    def set_invalid_role(entry, _ctx):
+        entry.role = "reviewer"
+        return entry
+
+    class InvalidRoleHook:
+        name = plugin_name
+        capabilities = {Capability.STORAGE}
+
+        def get_hooks(self):
+            return {"before_save": [set_invalid_role]}
+
+    registry = get_registry()
+    registry.register(InvalidRoleHook())
+    return registry
+
+
+def test_before_save_hook_output_is_validated_on_create(env):
+    from pyrite.exceptions import SchemaViolationError
+    from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
+
+    plugin_name = "issue_601_invalid_create_role"
+    registry = _register_invalid_person_role_hook(plugin_name)
+    db = PyriteDB(env["db_path"])
+    try:
+        svc = KBService(env["config"], db)
+        with pytest.raises(SchemaViolationError, match="reviewer"):
+            svc.create_entry(KB, "hook-create", "Hook Create", "person", "body", role="author")
+        assert _file(env, "hook-create") is None
+    finally:
+        del registry._plugins[plugin_name]
+        db.close()
+
+
+def test_before_save_hook_output_is_validated_on_update_and_preserves_file(env):
+    from pyrite.exceptions import SchemaViolationError
+    from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
+
+    plugin_name = "issue_601_invalid_update_role"
+    db = PyriteDB(env["db_path"])
+    registry = None
+    try:
+        svc = KBService(env["config"], db)
+        svc.create_entry(KB, "hook-update", "Hook Update", "person", "before", role="author")
+        target = _file(env, "hook-update")
+        assert target is not None
+        original = target.read_bytes()
+
+        registry = _register_invalid_person_role_hook(plugin_name)
+        with pytest.raises(SchemaViolationError, match="reviewer"):
+            svc.update_entry("hook-update", KB, body="after")
+        assert target.read_bytes() == original
+    finally:
+        if registry is not None:
+            del registry._plugins[plugin_name]
+        db.close()
