@@ -708,6 +708,43 @@ class TestIndexManager:
         )
         assert health["content_changed"][0]["kb"] == "test-kb"
 
+    def test_check_health_does_not_call_malformed_file_missing(self, setup):
+        setup["index_mgr"].index_kb("test-kb")
+        target = next(setup["kb_path"].rglob("*.md"))
+        target.write_text('---\ntitle: "unterminated\n---\n', encoding="utf-8")
+
+        health = setup["index_mgr"].check_health()
+
+        assert health["missing_files"] == []
+        assert [item["path"] for item in health["malformed_frontmatter"]] == [str(target)]
+
+    def test_check_health_reports_only_deleted_file_as_missing(self, setup):
+        setup["index_mgr"].index_kb("test-kb")
+        malformed, deleted = list(setup["kb_path"].rglob("*.md"))[:2]
+        malformed.write_text('---\ntitle: "unterminated\n---\n', encoding="utf-8")
+        deleted.unlink()
+
+        health = setup["index_mgr"].check_health()
+
+        assert [item["path"] for item in health["missing_files"]] == [str(deleted)]
+        assert [item["path"] for item in health["malformed_frontmatter"]] == [str(malformed)]
+
+    def test_check_health_does_not_call_unreadable_file_missing(self, setup, monkeypatch):
+        setup["index_mgr"].index_kb("test-kb")
+        target = next(setup["kb_path"].rglob("*.md"))
+        load_entry = KBRepository._load_entry
+
+        def fail_to_load(self, file_path):
+            if file_path == target:
+                raise OSError("test read failure")
+            return load_entry(self, file_path)
+
+        monkeypatch.setattr(KBRepository, "_load_entry", fail_to_load)
+
+        health = setup["index_mgr"].check_health()
+
+        assert health["missing_files"] == []
+
     def test_incremental_sync(self, setup):
         """Test incremental sync."""
         # Initial index

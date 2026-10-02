@@ -798,11 +798,9 @@ class IndexManager:
             indexed = self._load_indexed_state(kb.name)
 
             # Check each file
-            seen_ids = set()
             for file_path in repo.list_files():
                 try:
                     entry = repo._load_entry(file_path)
-                    seen_ids.add(entry.id)
                     source = entry._source_frontmatter or {}
                     file_values[(kb.name, entry.id)] = {
                         k: source[k] for k in PROTOCOL_COLUMN_KEYS if source.get(k) is not None
@@ -852,7 +850,7 @@ class IndexManager:
 
             # Check for missing files
             for entry_id, info in indexed.items():
-                if entry_id not in seen_ids:
+                if not Path(info["file_path"]).exists():
                     health["missing_files"].append(
                         {"kb": kb.name, "id": entry_id, "path": info["file_path"]}
                     )
