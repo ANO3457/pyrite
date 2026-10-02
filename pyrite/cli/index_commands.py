@@ -47,6 +47,26 @@ def _settle_embed_queue(db) -> int:
     return settle_embed_queue(db)
 
 
+def _embed_counts(stats: dict, from_queue: int, force: bool) -> tuple[int, int, int]:
+    """The (embedded, skipped, overshoot) a person should read after `index embed`.
+
+    The queue drain runs first and embeds what writes left owed; `embed_all`
+    then finds those vectors and counts them as *skipped*, which printed
+    "Embedded: 0, Skipped: 4" for a run that added four vectors (#584). Credit
+    the drain to Embedded and take it back out of Skipped. With ``force``
+    `embed_all` re-embeds everything itself, so nothing is double counted.
+
+    ``overshoot`` is how far the drain's count exceeds the sweep's skipped count.
+    It should be 0 (every drained entry has a vector, so the sweep skips it); a
+    positive value means the two disagree, and the caller says so rather than
+    letting the clamp at 0 hide it.
+    """
+    if force or not from_queue:
+        return stats["embedded"], stats["skipped"], 0
+    skipped = stats["skipped"] - from_queue
+    return stats["embedded"] + from_queue, max(0, skipped), max(0, -skipped)
+
+
 @index_app.command("build")
 def index_build(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB to index (all if omitted)"),
@@ -274,7 +294,11 @@ def index_embed(
     force: bool = typer.Option(False, "--force", "-f", help="Re-embed all entries"),
 ):
     """Generate vector embeddings for semantic search."""
-    from ..services.embedding_service import EmbeddingService, is_available
+    from ..services.embedding_service import (
+        EmbeddingService,
+        is_available,
+        semantic_unavailable,
+    )
 
     if not is_available():
         cli_error(
@@ -285,11 +309,14 @@ def index_embed(
 
     config, db = get_config_and_db()
 
-    if not db.vec_available:
+    if unavailable := semantic_unavailable(db.vec_available):
+        # The same cause and remedy `search` gives (one function), not an
+        # install hint for an extension that is installed but would not load.
+        _, cause, remedy = unavailable
         cli_error(
-            "sqlite-vec is not installed or failed to load.",
+            cause[0].upper() + cause[1:] + ".",
             error_code="DEPENDENCY_MISSING",
-            suggestion="install with: pip install pyrite[semantic]",
+            suggestion=remedy,
         )
 
     # Check index has entries
@@ -307,7 +334,13 @@ def index_embed(
     # Before embed_all, not after: a queued row marks an entry whose body
     # changed, and only the drain re-embeds it. embed_all(force=False) skips
     # anything that already has a vector, stale or not.
-    _settle_embed_queue(db)
+    from ..services.embedding_worker import settle_embed_queue_by_kb
+
+    by_kb = settle_embed_queue_by_kb(db)
+    from_queue = sum(by_kb.values()) if kb_name is None else by_kb.get(kb_name, 0)
+    # The drain settles every KB's queue, whatever --kb says; entries in other
+    # KBs are embedded too, and are not in this run's counts below.
+    other_kbs = sum(by_kb.values()) - from_queue
 
     svc = EmbeddingService(db, model_name=config.settings.embedding_model)
 
@@ -329,9 +362,22 @@ def index_embed(
             progress_callback=update_progress,
         )
 
+    embedded, skipped, overshoot = _embed_counts(stats, from_queue, force)
     console.print("\n[green]Embedding complete.[/green]")
-    console.print(f"  Embedded: {stats['embedded']}")
-    console.print(f"  Skipped: {stats['skipped']}")
+    console.print(f"  Embedded: {embedded}")
+    console.print(f"  Skipped: {skipped}")
+    if from_queue and not force:
+        console.print(f"  [dim]Of the embedded, {from_queue} came from the embed queue[/dim]")
+    if overshoot:
+        console.print(
+            f"  [yellow]The queue drain embedded {overshoot} more than the sweep "
+            f"skipped; the two counts overlap or disagree.[/yellow]"
+        )
+    if other_kbs:
+        console.print(
+            f"  [dim]{other_kbs} entries in other KBs were also embedded from the "
+            f"embed queue (not counted above)[/dim]"
+        )
     if stats.get("truncated"):
         # Surface silent body-truncation count so operators know
         # how many entries had only a prefix embedded (Tier A r2100).
