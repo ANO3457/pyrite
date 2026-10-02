@@ -110,7 +110,21 @@ unverified — it names a **spike** instead: dispatch `pyrite-spike` (one
 tick, its own throwaway worktree, no PR) and its only deliverable is the
 ticket changed: acceptance criteria that did not exist, an ADR draft marked
 `proposed`, or "not feasible, because". A spike that returns prose and no
-changed ticket is redispatched with the question sharpened, once. The conductor supplies the ordering itself from the
+changed ticket is redispatched with the question sharpened, once.
+
+A spike is also the answer to **risk**, when criteria can be written but the
+scope or the approach is uncertain: the change writes state Pyrite does not
+own, changes a storage or index format, has two plausible designs, depends on
+a tool nobody has verified, or has a footprint the architect cannot state
+with confidence. The spike builds each candidate quick and dirty against real
+inputs and the ticket gains what it learned: which candidate survived and
+why, the measured footprint, the surprises, the places the invariant must
+hold. The code is discarded; a worker starts from the ticket, not from the
+spike's branch. A PR sent back to the architect for its footprint can get the
+same answer. (#612, 2026-10-02: criteria existed, so it went straight to a
+worker; the risk surfaced in two cold reads at seven times the groomed size.)
+
+The conductor supplies the ordering itself from the
 roadmap's definition of done (what unblocks what, what the release owes) and
 turns the result into specs ([dispatch.md](dispatch.md)). Add a separate PM
 read only when a tick demonstrably chose the wrong thing; until then it is
@@ -504,6 +518,18 @@ change back to reviewed behaviour is still allowed, since it adds no new code.
 
 When a delta cold read finds a limit that fails safe, the theme may land with
 the limit documented on the PR and a follow-up issue instead of another round.
+
+**A fix round states the property, not the instances.** A redispatch opens
+with the invariant the cold read showed does not hold, in one sentence, and
+asks the worker to enumerate where it must hold and classify each place
+(guarded by a test, safe by reading and why, fixed here). The reviewer's
+findings follow as evidence that the property fails, not as the list to fix.
+Where the property spans a list the code already has (API prefixes, registered
+tools, relation types), ask for a test parametrised from that list, so a new
+member cannot be added without it. Maintainer decision, 2026-10-02: on #612
+the first redispatch listed instances ("replaces a user's own `pyrite`
+server"); the worker fixed the instance by changing the ownership test from
+name to shape, and the next cold read found the same defect one step over.
 
 **A push command must say when it did not push.** A guard such as
 `[ "$(git rev-parse A)" = "$(git rev-parse B)" ] && git push ...` exits

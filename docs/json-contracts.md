@@ -307,6 +307,34 @@ A single entry (`kb_get`, `pyrite get`) returns the entry dict directly
 — not wrapped in an `{"entry": ...}` key. `outlinks` and `backlinks` are
 included when resolvable.
 
+### Backlink rows
+
+Each row in `backlinks` (and in `pyrite backlinks`, MCP `kb_backlinks`) reads
+from the entry's side, with three relation fields:
+
+| Field | Reads as | No inverse declared (`informs`) | Declared after the row was indexed |
+|---|---|---|---|
+| `forward_relation` | what the source's file says, source → this entry, as written | the relation itself (`informs`) | the relation itself |
+| `relation` | this entry's relation to the source (the inverse stored in the index when the link was indexed) | `related_to` | stays `related_to` until the source is reindexed |
+| `inverse_relation` | the declared inverse of `forward_relation`, looked up when the query runs | `null` | the declared inverse (`informed_by`) |
+
+`inverse_relation: null` means no inverse is declared for that relation. That
+is true of a custom relation, and also of some relations Pyrite writes itself:
+`transclusion` and `references` (written by the indexer for `![[...]]` and
+object-reference fields) and the legacy default `related` are not declared
+relationship types today, so their rows read `relation: related_to`,
+`inverse_relation: null`.
+
+A stale row is the last column: a plugin declares `informs` after the link was
+indexed. `relation` is a stored column and keeps `related_to`;
+`inverse_relation` is computed per query and already gives the declared
+inverse. When the two disagree, `inverse_relation` is the current one.
+
+The table output (`pyrite-read backlinks`, `pyrite backlinks --format rich`)
+shows `relation` as "Relation" and `forward_relation` as "Written as".
+
+`outlinks` rows carry one field, `relation`, which is the forward relation.
+
 ## Body truncation
 
 Entries with large bodies may come back chunked. When truncated, the

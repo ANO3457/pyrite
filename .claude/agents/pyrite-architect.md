@@ -43,6 +43,12 @@ Write these sections, in this order, into the ticket.
    schemas and templates) with evidence. Scope is the invariant across
    surfaces. Before naming anything out of scope, grep for what the change
    breaks: callers, declarations the new rule will judge, shipped files.
+   When the change writes state Pyrite does not own (another program's
+   config, git hooks, a user's `kb.yaml`, a registry), say whose it is, who
+   else writes it, and what a user who set it up by hand, from our own docs,
+   has on disk; that user is a regime. The four properties are in the
+   standard `pyrite-is-a-guest-in-state-it-does-not-own`. An item being out
+   of scope to edit does not make it out of scope to read.
 4. **Options.** Two or three, with trade-offs against the contracts, and a
    recommendation.
 5. **Open questions.** They invite the worker to explore, and to overturn your
@@ -51,7 +57,11 @@ Write these sections, in this order, into the ticket.
    docs, tests to model on.
 7. **Checked versus assumed.** What you ran and what you inferred; one line
    "this groom is wrong if ..."; a predicted footprint (files and rough size),
-   scored after merge.
+   scored after merge. If you cannot state the footprint with confidence, or
+   the change writes state Pyrite does not own, changes a storage or index
+   format, or rests on a tool's unverified behaviour, name a spike even
+   though you can write criteria: say which candidates it should build and
+   on what real inputs.
 
 Then one block per theme. A theme is one coherent change, complete on its own.
 
