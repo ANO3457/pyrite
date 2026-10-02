@@ -651,7 +651,7 @@ def qa_stale(
 
     formatted = _format_output(data, output_format)
     if formatted:
-        console.print(formatted)
+        typer.echo(formatted)
         return
 
     if not results:
@@ -703,7 +703,7 @@ def qa_compact(
 
     formatted = _format_output(data, output_format)
     if formatted:
-        console.print(formatted)
+        typer.echo(formatted)
         return
 
     if not results:
@@ -747,9 +747,14 @@ def qa_check_urls(
     Validates that source URLs in KB entries are reachable. Results are cached
     to avoid rechecking on subsequent runs.
     """
+    import sqlite3
     from pathlib import Path
 
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from ..exceptions import PyriteError, StorageError
     from ..services.url_checker import URLChecker
+    from ..utils.errors import cli_error_from
 
     cache_path = Path(cache_file) if cache_file else None
     if output_format != "json":
@@ -757,9 +762,14 @@ def qa_check_urls(
     # cli_context() closes the database on exit, so collect_urls (the only
     # step that reads it) must run inside the block. The HTTP checks below
     # use no database and run after it.
-    with cli_context() as (_config, db, _svc):
-        checker = URLChecker(db, cache_path=cache_path)
-        url_entries = checker.collect_urls(kb_name)
+    try:
+        with cli_context() as (_config, db, _svc):
+            checker = URLChecker(db, cache_path=cache_path)
+            url_entries = checker.collect_urls(kb_name)
+    except PyriteError as exc:
+        cli_error_from(exc, output_format)
+    except (SQLAlchemyError, sqlite3.Error) as exc:
+        cli_error_from(StorageError(str(exc)), output_format)
 
     if not url_entries and output_format != "json":
         console.print("[green]No source URLs found.[/green]")
