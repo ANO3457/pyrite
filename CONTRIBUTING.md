@@ -187,6 +187,7 @@ Tests carry no size marker yet.
 cd web && npm ci && npm run check && npm run test:unit && npm run build   # frontend
 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/e2e -m e2e -n 4 --dist loadfile   # large: real server and MCP processes
 PATH="$PWD/.venv/bin:$PATH" bash scripts/run_tutorial.sh                  # large: docs/getting-started.md as a test
+PATH="$PWD/.venv/bin:$PATH" bash scripts/run_tutorial.sh docs/tutorials/pyrite-in-20-minutes.md   # large: the 20-minute tutorial as a test (clones the demo KBs)
 cd web && npx playwright install chromium && npm run test:e2e             # large: browser; manual-only in CI while non-deterministic
 ```
 
@@ -218,6 +219,44 @@ set; and it switches to the full suite when you touch `conftest.py`,
 `pkg.x` runs `pkg/__init__.py`, which it does not follow, so a change to
 `pyrite/services/kb_service.py` selects 167 of the 281 test files that
 execute it on import. CI catches the rest.
+
+**Experimental tests** (#657). A red required check means the core broke.
+Tests of the surfaces `kb/designs/alpha-supported-surface.md` calls
+experimental (the extensions, tasks, REST and the web UI, `/site`, `/ws`, the
+AI endpoints, MCP prompts and resources and the non-core tools, Postgres, the
+overlay backend and worktrees, the `repo`/`auth`/`extension`/`export`/
+`collections` CLI groups) carry the `experimental` marker. Nobody writes it
+by hand: `tests/experimental_surface.py` maps paths and node ids to surfaces,
+and the root `conftest.py` applies it. Security properties (authorization,
+read scoping, containment of paths, credential handling, the characterization
+oracle, escaping) are never experimental, whatever surface they go through;
+the same file lists them, and a test checks the mapping against a real
+collection. The gate decides, not a test's name: an experimental test whose
+body touches that vocabulary (paths leaving a root, private or readable sets,
+read-only, redaction, credentials, escaping, tiers) fails
+`tests/test_experimental_surface.py` until it is listed as security
+(`NEVER_EXPERIMENTAL`) or reviewed with a reason (`REVIEWED_EXPERIMENTAL`).
+
+```bash
+.venv/bin/pytest tests/ extensions/ -n 4 -m "not slow and not e2e and not experimental"   # the core, as CI's gating job runs it
+.venv/bin/pytest tests/ extensions/ -n 4 -m "experimental and not slow and not e2e"       # the experimental set
+scripts/test-affected --run --experimental      # the pre-push selection, experimental tests included
+```
+
+A plain `pytest` runs both. `scripts/test-affected --run`, and so the
+pre-push hook, runs the core only (`PYRITE_PUSH_EXPERIMENTAL=1` or
+`--experimental` includes the rest). In CI the `test` job, which `gate`
+needs, runs the core; the `experimental` job runs the rest on every PR and on
+`dev`, does not block a merge, and is red only for news: a failure in neither
+`tests/experimental_known_failures.txt` nor an open `experimental-broken`
+issue, a PR that adds to that list (it can only shrink), or a run that did
+not complete. On `dev` each of those opens or updates an `experimental-broken`
+issue. A file that fails to import stops the core run only if it holds a core
+or security case; one whose tests are all experimental is a warning there and
+a failure in the experimental job. `test-affected --run` says how many
+experimental tests it left out. A new test of an experimental surface needs
+no marker if its path is mapped; a new file for one needs a line in
+`tests/experimental_surface.py`.
 
 **Each tree is tested once.** A `--run` that passes on a clean tree (nothing
 uncommitted in tracked files, no untracked `.py` file, and no untracked or
