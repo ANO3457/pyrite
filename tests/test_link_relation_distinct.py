@@ -17,13 +17,14 @@ This file also pins the reporting and rendering bugs the groom named:
 """
 
 import json
-import re
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
+
+from tests.cli_help import plain
 
 from pyrite.cli import app
 from pyrite.config import KBConfig, KBType, PyriteConfig, Settings
@@ -34,10 +35,6 @@ from pyrite.storage.index import IndexManager
 from pyrite.storage.repository import KBRepository
 
 runner = CliRunner()
-
-
-def _strip_ansi(text: str) -> str:
-    return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 
 
 @pytest.fixture
@@ -181,7 +178,7 @@ def test_cli_link_no_relation_flag_is_a_noop_on_legacy_data(link_env):
     with _patch_config(link_env):
         result = runner.invoke(app, ["link", "link-a", "link-b", "-k", "lk"])
         assert result.exit_code == 0, result.output
-    clean = _strip_ansi(result.output)
+    clean = plain(result.output)
     assert "Already linked:" in clean, clean
 
 
@@ -208,7 +205,7 @@ def test_cli_link_already_linked_names_the_relation_actually_on_disk(link_env):
         # must say what is actually stored, not the caller's default.
         result = runner.invoke(app, ["link", "link-a", "link-b", "-k", "lk"])
         assert result.exit_code == 0, result.output
-    clean = _strip_ansi(result.output)
+    clean = plain(result.output)
     assert "Already linked:" in clean, clean
     assert "[related]" in clean, clean
     assert "[related_to]" not in clean, clean
@@ -240,7 +237,7 @@ def test_cli_link_bidi_already_linked_names_the_relation_actually_on_disk(link_e
         # self-inverse) must likewise match link-b's on-disk "related".
         result = runner.invoke(app, ["link", "link-a", "link-b", "-k", "lk", "--bidi"])
         assert result.exit_code == 0, result.output
-    clean = _strip_ansi(result.output)
+    clean = plain(result.output)
     assert clean.count("Already linked:") == 2, clean
     assert clean.count("[related]") == 2, clean
     assert "[related_to]" not in clean, clean
@@ -288,11 +285,11 @@ def test_cli_link_duplicate_prints_already_linked(link_env):
     with _patch_config(link_env):
         r1 = runner.invoke(app, ["link", "link-a", "link-b", "-k", "lk", "-r", "implements"])
         assert r1.exit_code == 0, r1.output
-        assert "Linked:" in _strip_ansi(r1.output)
+        assert "Linked:" in plain(r1.output)
 
         r2 = runner.invoke(app, ["link", "link-a", "link-b", "-k", "lk", "-r", "implements"])
         assert r2.exit_code == 0, r2.output
-        clean = _strip_ansi(r2.output)
+        clean = plain(r2.output)
         assert "Already linked:" in clean
         assert "Linked:" not in clean.replace("Already linked:", "")
 
@@ -301,7 +298,7 @@ def test_cli_link_confirmation_shows_the_relation(link_env):
     with _patch_config(link_env):
         result = runner.invoke(app, ["link", "link-a", "link-b", "-k", "lk", "-r", "implements"])
         assert result.exit_code == 0, result.output
-    clean = _strip_ansi(result.output)
+    clean = plain(result.output)
     assert "implements" in clean, clean
 
 
@@ -311,7 +308,7 @@ def test_cli_link_bidi_confirmation_shows_the_inverse_relation(link_env):
             app, ["link", "link-a", "link-b", "-k", "lk", "-r", "implements", "--bidi"]
         )
         assert result.exit_code == 0, result.output
-    clean = _strip_ansi(result.output)
+    clean = plain(result.output)
     # Two confirmation lines: forward relation and its inverse.
     assert "implements" in clean, clean
     from pyrite.schema import get_inverse_relation
@@ -366,10 +363,10 @@ def test_cli_link_bidirectional_unknown_relation_never_writes_the_reversed_claim
     assert target_links == {("link-a", "related_to")}, target_links
     # The notice is a diagnostic, not the result: it goes to stderr, so stdout
     # holds only the two result lines (#590).
-    notice = _strip_ansi(result.stderr)
+    notice = plain(result.stderr)
     assert "No inverse is known for 'informs'" in notice, notice
     assert "related_to" in notice, notice
-    stdout = _strip_ansi(result.stdout)
+    stdout = plain(result.stdout)
     assert "No inverse is known" not in stdout, stdout
     assert [ln for ln in stdout.splitlines() if ln.strip()] == [
         "Linked: link-a --[informs]--> link-b (in lk)",
@@ -384,7 +381,7 @@ def test_cli_link_bidirectional_notice_keeps_a_bracketed_relation(link_env):
             app, ["link", "link-a", "link-b", "-k", "lk", "-r", "[dim]", "--bidi"]
         )
     assert result.exit_code == 0, result.output
-    assert "No inverse is known for '[dim]'" in _strip_ansi(result.stderr), result.stderr
+    assert "No inverse is known for '[dim]'" in plain(result.stderr), result.stderr
 
 
 def _link_then_backlinks_table(link_env, cli, relations):
@@ -402,7 +399,7 @@ def _link_then_backlinks_table(link_env, cli, relations):
     ):
         result = runner.invoke(cli_app, ["backlinks", "link-b", "-k", "lk", *table_args])
     assert result.exit_code == 0, result.output
-    return _strip_ansi(result.stdout)
+    return plain(result.stdout)
 
 
 def _table_clis():

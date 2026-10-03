@@ -1968,7 +1968,9 @@ def test_text_report_reads_well_with_one_client_changed_and_one_stopped(env, mon
     code = next(i for i, line in enumerate(lines) if "Claude Code" in line)
     desk = next(i for i, line in enumerate(lines) if "Claude Desktop" in line)
     assert "created" in lines[code] and "stopped" in lines[desk]
-    assert "ENTRY_NOT_MCP" in result.output and "--force" in result.output
+    from tests.cli_help import plain
+
+    assert "ENTRY_NOT_MCP" in result.output and "--force" in plain(result.output)
 
 
 def test_text_report_gives_old_and_new_as_a_person_would_type_them(env, monkeypatch):
