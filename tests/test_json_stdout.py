@@ -114,7 +114,9 @@ def test_qa_reports_json_preserves_stale_entry_title(
 
 
 @pytest.mark.parametrize("output_format", ["json", "rich"])
-@pytest.mark.parametrize("error_kind", ["sqlite", "sqlalchemy", "storage"])
+@pytest.mark.parametrize(
+    "error_kind", ["sqlite", "sqlalchemy", "storage", "locked", "wrapped_locked"]
+)
 def test_check_urls_reports_database_failure(
     monkeypatch, pyrite_config, pyrite_db, output_format, error_kind
 ):
@@ -124,13 +126,17 @@ def test_check_urls_reports_database_failure(
 
     from pyrite.cli import app
     from pyrite.cli import context as cli_context_module
-    from pyrite.exceptions import StorageError
+    from pyrite.exceptions import StorageBusyError, StorageError
     from pyrite.storage.database import PyriteDB
 
     errors = {
         "sqlite": sqlite3.OperationalError("private database detail"),
         "sqlalchemy": OperationalError("SELECT", {}, Exception("private database detail")),
         "storage": StorageError("private database detail"),
+        "locked": sqlite3.OperationalError("database is locked"),
+        "wrapped_locked": OperationalError(
+            "SELECT", {}, sqlite3.OperationalError("database is locked")
+        ),
     }
 
     def fail_list_entries(self, **kwargs):
@@ -146,9 +152,12 @@ def test_check_urls_reports_database_failure(
     assert "private database detail" not in result.stdout
     if output_format == "json":
         data = json.loads(result.stdout)
+        busy = error_kind in {"locked", "wrapped_locked"}
         assert data["error_code"] == "STORAGE_ERROR"
-        assert data["error"] == StorageError.public_message
-        assert data["retryable"] is False
+        assert data["error"] == (
+            StorageBusyError.public_message if busy else StorageError.public_message
+        )
+        assert data["retryable"] is busy
     else:
         assert "STORAGE_ERROR" in result.stdout
 
