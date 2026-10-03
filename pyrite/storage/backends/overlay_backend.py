@@ -262,7 +262,10 @@ class OverlaySearchBackend:
     ) -> list[dict[str, Any]]:
         main = self._main.get_backlinks(entry_id, kb_name, limit=10000, readable_kbs=readable_kbs)
         diff = self._diff.get_backlinks(entry_id, kb_name, limit=10000, readable_kbs=readable_kbs)
-        merged = self._merge_entry_lists(main, diff)
+        # The inverse relation may be shared by distinct custom relations.
+        merged = self._merge_entry_lists(
+            main, diff, key_fields=("id", "kb_name", "forward_relation")
+        )
         if limit:
             return merged[offset : offset + limit]
         return merged
@@ -272,7 +275,7 @@ class OverlaySearchBackend:
     ) -> list[dict[str, Any]]:
         main = self._main.get_outlinks(entry_id, kb_name, readable_kbs=readable_kbs)
         diff = self._diff.get_outlinks(entry_id, kb_name, readable_kbs=readable_kbs)
-        return self._merge_entry_lists(main, diff)
+        return self._merge_entry_lists(main, diff, key_fields=("id", "kb_name", "relation"))
 
     def get_graph_data(
         self,
@@ -448,24 +451,28 @@ class OverlaySearchBackend:
         diff: list[dict[str, Any]],
         sort_by: str | None = None,
         sort_order: str = "desc",
+        *,
+        key_fields: tuple[str, ...] = ("id", "kb_name"),
     ) -> list[dict[str, Any]]:
-        """Merge two entry lists with diff-wins-on-ID-collision.
+        """Merge rows with diff winning on identity collisions.
 
         Preserves order from main, replacing entries where diff has a
         newer version, and appending new-in-diff entries at the end.
+        Entry/search callers use entry identity; link callers include the
+        stored relation. A missing diff link does not hide a main link.
         """
         if not diff:
             return main
 
-        diff_by_id: dict[tuple[str, str], dict[str, Any]] = {}
+        diff_by_id: dict[tuple[str, ...], dict[str, Any]] = {}
         for e in diff:
-            diff_by_id[(e.get("id", ""), e.get("kb_name", ""))] = e
+            diff_by_id[tuple(e.get(field, "") for field in key_fields)] = e
 
         # Replace main entries where diff has an override
         merged = []
-        seen_ids: set[tuple[str, str]] = set()
+        seen_ids: set[tuple[str, ...]] = set()
         for e in main:
-            key = (e.get("id", ""), e.get("kb_name", ""))
+            key = tuple(e.get(field, "") for field in key_fields)
             seen_ids.add(key)
             if key in diff_by_id:
                 merged.append(diff_by_id[key])
