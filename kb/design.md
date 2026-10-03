@@ -83,6 +83,13 @@ contracts are alpha.
 - Not a site generator. Publishing is an export. The built-in `/site`
   ([[adr-0023]]) is experimental.
 - Not a formatter. It does not normalise or repair files unless asked to.
+- Not a database with instant indexes. Search, lists and links come from the
+  index, which catches up with the files after a write or a hand edit; a
+  single-entry read reads the file. A result may lag a change made a moment
+  ago: the index may lag the files.
+- Not a replacement for git. Changes are shared as commits, branches, patches
+  and pull requests; Pyrite's own conflict handling covers only local edits
+  between commits.
 - Not the owner of your repository, your config, or another program's files.
 - Not yet a service for many users who do not trust each other.
 
@@ -91,13 +98,13 @@ contracts are alpha.
 | Topic | Governing ADRs |
 |---|---|
 | Files, index, what is derived | [[adr-0001]], [[adr-0029]] |
-| The principle | ADR-0041 (proposed) |
-| Writes, reads, identity, hooks | ADR-0042 (proposed), [[adr-0038]] (proposed) |
-| Registry, config, state | ADR-0039 (proposed), [[adr-0029]] |
-| Who may do what | [[adr-0037]], ADR-0043 (proposed) |
-| Types, protocols, plugins | [[adr-0014]], [[adr-0017]], [[adr-0040]], ADR-0045 (proposed) |
+| The principle | ADR-0041 (accepted) |
+| Writes, reads, identity, hooks | ADR-0042 (accepted), [[adr-0038]] (accepted) |
+| Registry, config, state | ADR-0039 (accepted), [[adr-0029]] |
+| Who may do what | [[adr-0037]], ADR-0043 (accepted) |
+| Types, protocols, plugins | [[adr-0014]], [[adr-0017]], [[adr-0040]], ADR-0045 (accepted) |
 | Review of changes | ADR-0044 (proposed) |
-| What the alpha supports | `alpha-supported-surface` (proposed) |
+| What the alpha supports | `alpha-supported-surface` (approved 2026-10-02) |
 | Releases | [[roadmap]], "The release line" |
 
 ### Topic maps
@@ -133,11 +140,19 @@ The design above is ahead of the code in these places. Do not assume the
 code follows it; check, and treat a mismatch as the work to do.
 
 - An update re-serialises the whole file from the model (principle 3).
+  [How Pyrite edits your files](../docs/how-pyrite-edits-your-files.md) holds
+  the examples a fix must pass; `tests/test_doc_write_as_patch.py` runs them
+  and lists each one the code fails today, and how.
 - Save hooks write links and parent status into files (principle 4).
-- An entry with no `id:` takes its identity from its title (principle 5).
-- A single-entry read comes from the index, not the file (principle 5).
+- An entry with no `id:` takes its identity from its title, and no command
+  lists or pins the files missing one (principle 5).
+- A single-entry read comes from the index, not the file, and returns the
+  type's defaults and normalised values among the file's own fields, so a
+  client that sends a read back writes them into the file (principles 3 to 5).
 - Entry classes and protocol mixins serialise themselves (principle 6).
 - KBs can exist only as database rows; grants and secrets are not in a
   reviewable config file (principle 7).
 - Several rules are enforced per call site (principle 8).
-- No supported-surface list is published (principle 9).
+- The supported-surface list is approved but not yet reflected in the
+  README, `--help` and tool descriptions, and experimental tests are not yet
+  marked (principle 9).
