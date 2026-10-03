@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from tests.cli_help import plain
+
 from pyrite.cli import app
 from pyrite.config import KBConfig, KBType, PyriteConfig, Settings
 from pyrite.models import EventEntry
@@ -310,7 +312,7 @@ def test_entry_write_commands_emit_specific_not_found_codes(cli_env, args, expec
     if "--format" in args:
         assert json.loads(result.output)["error_code"] == expected_code
     else:
-        assert f"[{expected_code}]" in result.output
+        assert f"[{expected_code}]" in plain(result.output)
 
 
 @pytest.mark.cli
@@ -438,7 +440,7 @@ class TestCreateImprovements:
         with _patch_config(cli_env):
             result = runner.invoke(app, ["create", "--template", "--type", "note"])
             assert result.exit_code == 0
-            assert "---" in result.output
+            assert "---" in plain(result.output)
             assert "type: note" in result.output
             assert "Your Title Here" in result.output
 
