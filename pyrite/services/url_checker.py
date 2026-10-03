@@ -15,7 +15,7 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from ..exceptions import StorageError
+from .search_service import storage_error_from
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class URLChecker:
 
             return dict(url_entries)
         except (SQLAlchemyError, sqlite3.Error) as exc:
-            raise StorageError(str(exc)) from exc
+            raise storage_error_from(getattr(exc, "orig", exc), "URL collection failed") from exc
 
     def check_url(self, url: str) -> URLCheckResult:
         """Check a single URL for liveness."""
