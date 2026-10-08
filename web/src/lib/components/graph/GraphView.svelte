@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import type { GraphNode, GraphEdge } from '$lib/api/types';
 	import { typeColor } from '$lib/constants';
@@ -20,7 +20,8 @@
 
 	let container: HTMLDivElement;
 	let tooltipEl: HTMLDivElement;
-	let cy: cytoscape.Core | undefined;
+	// Cytoscape must stay unproxied, but async readiness is a reactive value.
+	let cy = $state.raw<cytoscape.Core>();
 
 	function buildElements() {
 		const nodeElements = nodes.map((n) => {
@@ -219,9 +220,6 @@
 	}
 
 	onMount(() => {
-		if (nodes.length > 0) {
-			initCytoscape();
-		}
 		return () => cy?.destroy();
 	});
 
@@ -229,19 +227,20 @@
 		if (cy && nodes.length > 0) {
 			cy.json({ elements: buildElements() });
 			cy.layout(getLayoutConfig(layoutName)).run();
+			// New elements need the existing query without relaying out on typing.
+			untrack(applySearchHighlight);
 		} else if (!cy && nodes.length > 0 && container) {
 			initCytoscape();
 		}
 	});
 
-	// Search highlight effect
-	$effect(() => {
+	function applySearchHighlight() {
 		if (!cy) return;
 		const q = searchQuery.toLowerCase().trim();
 		if (!q) {
-			// Reset all nodes to full opacity
-			cy.nodes().style({ opacity: 1 });
-			cy.edges().style({ opacity: 0.6 });
+			// Reveal stylesheet defaults (including center borders/centrality).
+			cy.nodes().removeStyle('opacity border-width border-color');
+			cy.edges().removeStyle('opacity');
 			return;
 		}
 		cy.nodes().forEach((node: cytoscape.NodeSingular) => {
@@ -253,7 +252,9 @@
 			}
 		});
 		cy.edges().style({ opacity: 0.1 });
-	});
+	}
+
+	$effect(applySearchHighlight);
 
 	export function resetLayout() {
 		cy?.layout({
