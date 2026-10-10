@@ -69,6 +69,3 @@ it('leaves no live instance when unmounted during initialization', async () => {
     await settle();
     expect(graph.instances.every(cy => cy.destroyed())).toBe(true);
 });
-
-
-
