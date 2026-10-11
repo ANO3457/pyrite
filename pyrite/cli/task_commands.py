@@ -42,7 +42,7 @@ def _task_error(exc: Exception, fmt: str = "rich") -> None:
         code = "KB_NOT_FOUND"
     elif isinstance(exc, ValidationError):
         code = "VALIDATION_FAILED"
-    cli_error(str(exc), fmt, error_code=code)
+    cli_error(str(exc), fmt, error_code=code, suggestion=getattr(exc, "suggestion", None))
 
 
 def _get_service() -> tuple[TaskService, PyriteDB]:
