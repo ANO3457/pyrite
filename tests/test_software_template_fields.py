@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 from pyrite.cli import app
+from pyrite.cli.init_command import BUILTIN_TEMPLATES
 from pyrite.config import PyriteConfig, Settings
 from pyrite.exceptions import SchemaViolationError
 from pyrite.services.kb_service import KBService
@@ -20,11 +21,20 @@ CASES = [
     ("component", "kind"),
     ("runbook", "runbook_kind"),
     ("standard", "category"),
+    ("milestone", "status"),
+    ("programmatic_validation", "category"),
+    ("development_convention", "category"),
 ]
 
 
 @pytest.fixture(params=["builtin", "preset"])
 def software(request, tmp_path):
+    if request.param == "builtin" and request.node.callspec.params.get("entry_type") in {
+        "milestone",
+        "programmatic_validation",
+        "development_convention",
+    }:
+        pytest.skip("type is only shipped in the plugin preset")
     config = PyriteConfig(
         knowledge_bases=[], settings=Settings(index_path=tmp_path / "index.db", auto_embed=False)
     )
@@ -66,9 +76,7 @@ def test_orient_exposes_typed_options(software, entry_type, field):
 @pytest.mark.control(reason="a type with no status vocabulary remains writable")
 def test_component_without_status_is_writable(software):
     svc, kb = software
-    entry = svc.create(
-        "software", {"entry_type": "component", "title": "Valid component", "kind": "module"}
-    ).entry
+    entry = svc.create("software", {"entry_type": "component", "title": "Valid component"}).entry
     assert entry.file_path.exists()
 
 
@@ -98,3 +106,10 @@ def test_enforcement_disabled_preserves_warning(software, entry_type, field):
     result = svc.create("software", {"entry_type": entry_type, "title": "Warning value", **values})
     assert result.entry.file_path.exists()
     assert any(w["field"] == field for w in result.warnings)
+
+
+@pytest.mark.control(reason="builtin and plugin vocabularies agree on shared types")
+@pytest.mark.parametrize("entry_type", sorted(BUILTIN_TEMPLATES["software"]["types"]))
+def test_builtin_software_fields_match_plugin_preset(entry_type):
+    builtin = BUILTIN_TEMPLATES["software"]["types"][entry_type]
+    assert builtin.get("fields", {}) == SOFTWARE_KB_PRESET["types"][entry_type].get("fields", {})
