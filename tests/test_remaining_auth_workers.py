@@ -20,7 +20,11 @@ CASES = [
 
 @pytest.mark.parametrize(("method", "path", "body"), CASES)
 def test_auth_write_wait_keeps_concurrent_request_responsive(
-    oauth_env, monkeypatch, method, path, body  # noqa: F811
+    oauth_env,
+    monkeypatch,
+    method,
+    path,
+    body,  # noqa: F811
 ):
     client, db_path, db = oauth_env
     login = client.post("/auth/login", json={"username": "alice", "password": "password123"})
