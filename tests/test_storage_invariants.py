@@ -569,7 +569,6 @@ def _history_after_rename(git_kb, spec: dict, new_id: str) -> list[str]:
     return [v["message"] for v in db.get_entry_versions(new_id, KB)]
 
 
-@_violates("I10", "#489", "rename of an id-named file loses history")
 def test_i10_history_survives_rename_of_an_id_named_file(git_kb):
     msgs = _history_after_rename(git_kb, {"entry_type": "note", "title": "Alpha"}, "omega")
     assert sorted(msgs) == ["create", "edit", "rename"], f"I10: history of 'omega' is {msgs}"
