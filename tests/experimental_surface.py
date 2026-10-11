@@ -250,6 +250,8 @@ AUTHZ, SCOPE, CONTAIN, CRED, ORACLE, ESCAPE = SECURITY_PROPERTIES
 # Every test of a security property, found by reading the files. Whole files
 # first, then the security cases inside files that are otherwise experimental.
 NEVER_EXPERIMENTAL: dict[str, str] = {
+    "extensions/cascade/tests/test_capture_lane_buckets.py::test_empty_read_scope_exposes_no_schema_or_values": "read scoping",
+    "extensions/cascade/tests/test_capture_lane_buckets.py::test_registered_only_schema_is_used_and_private_schema_is_excluded": "read scoping",
     # -- the characterization oracle (ADR-0037 theme 0) --
     "tests/characterization/*": ORACLE,
     # -- authorization --
