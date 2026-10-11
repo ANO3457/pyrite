@@ -169,7 +169,7 @@ BUILTIN_TEMPLATES = {
         # field, and each type here has its own statuses. The software-kb
         # validator checks them per type only for a KB with
         # `kb_type: software`; `pyrite init` registers this one as generic,
-        # so its per-type fields below enforce the vocabulary.
+        # so its per-type fields above enforce the vocabulary.
         "validation": {
             "enforce": True,
             "rules": [],
