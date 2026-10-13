@@ -196,8 +196,10 @@ do this safely:
   duplicate key, is read-only or hard-linked, or changed while the command ran;
 - the `pyrite` entry's arguments do not begin with `mcp`, or the entry is not
   a server entry at all (`--force` discards it and writes the default entry);
-- the entry's own arguments, with this install's path, would not start
-  (it runs them with `--help` first; an old `-t X` is rewritten to `--tier X`);
+- the entry's own arguments, with this install's path, would not start a
+  server: an option `pyrite mcp` does not have, a stray argument, a tier that
+  does not exist (it has this install's `pyrite mcp` read them first; an old
+  `-t X` is rewritten to `--tier X`);
 - in Claude Code's user scope, the entry has `env` or other keys and its path
   must change. Claude Code can only remove and re-add an entry, which would
   drop them, so the report gives the commands to run yourself;
@@ -205,6 +207,68 @@ do this safely:
 
 `--force` means one thing: discard the existing `pyrite` entry and write the
 default one. The report names what was discarded.
+
+**Reading the report.** Each client has a `status`:
+
+| `status` | What it means |
+|---|---|
+| `created`, `changed` | The entry is there. For Claude Code, the command read `~/.claude.json` again after `claude mcp` ran and saw it; an exit code alone is not taken as success. For a file Pyrite writes itself (Claude Desktop, `--project`, `--config`) it replaced the file in one step and did not read it back. |
+| `unchanged` | The entry already pointed here. Nothing was written. |
+| `stopped` | Nothing in that client was changed. `error_code`, `error` and `suggestion` say why. |
+| `failed` | Claude Code only: `claude mcp` was run, and the file as last read does not hold the entry as it was or as you asked (or, for `INTERNAL_ERROR`, a bug followed a call and the file was not read again). |
+
+A `stopped` or `failed` client may carry `by_hand`: commands to run yourself,
+all of them, in order. `suggestion` says what they do. They are built from
+what the file held when it was last read, so each one works on the state the
+report describes. `removed` is the entry a `failed` run took out of an
+existing entry's place (a `failed` client with `INTERNAL_ERROR` has none).
+`entry` is the entry as the file holds it: on `created`, `changed` and
+`unchanged` the entry that is there, on a `stopped` client that needs a hand
+edit the entry that is there, and on a `failed` client the other entry in the
+way, when it is neither the old one nor the new one. A `failed` client looks
+like this:
+
+<!-- mcp-setup: a failed client -->
+```json
+{
+  "client": "claude-code",
+  "scope": "user",
+  "label": "Claude Code (user scope, via `claude mcp`)",
+  "location": "/home/you/.claude.json",
+  "notes": [],
+  "status": "failed",
+  "error_code": "CLIENT_COMMAND_FAILED",
+  "error": "`claude mcp add` failed: <what claude printed>; restoring the previous entry also failed: <what claude printed>. The previous 'pyrite' entry is not back; `removed` is what it held",
+  "suggestion": "to put the previous entry back, run the command in by_hand; or re-run `pyrite mcp-setup` to add this install's entry (the write tier and no extra arguments, not what the previous entry held)",
+  "removed": {
+    "command": "/old/venv/bin/pyrite",
+    "args": ["mcp", "--tier", "admin"]
+  },
+  "by_hand": [
+    "claude mcp add -s user pyrite -- /old/venv/bin/pyrite mcp --tier admin"
+  ]
+}
+```
+
+Here the old entry was removed, `claude mcp add` then failed, and adding the
+old entry back failed too. The command in `by_hand` puts it back; running
+`pyrite mcp-setup` again adds this install's entry instead. Env values are
+never printed: where an entry has `env`, a command shows `KEY=<its value>` and
+the suggestion says to fill it in.
+
+`claude` is never run on a `~/.claude.json` it cannot read, and the report
+then gives no `claude` command either: Claude Code replaces an empty or
+unparseable `~/.claude.json` with fresh state on any `claude mcp` call. The
+report says to restore the file and re-run.
+
+**Other Claude Code scopes.** `mcp-setup` writes the user scope (or
+`./.mcp.json` with `--project`). If Claude Code has another `pyrite` entry
+that differs from the user-scope one, the report lists it under
+`other_scopes` and in a note, and does not change it. That is a local-scope
+entry, which `claude mcp add` without `-s user` writes for one project, or an
+entry in the current directory's `./.mcp.json`. A local-scope entry takes
+precedence in its directory, so sessions started there keep using it;
+`claude mcp get pyrite`, run there, shows which entry is in use.
 
 A config file that a client wrote comes back byte for byte outside the
 `pyrite` entry. A file you formatted by hand keeps every value and its indent,

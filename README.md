@@ -55,15 +55,18 @@ pyrite mcp-setup                  # write tier; --tier read|admin, --client, --p
 ```
 
 `pyrite mcp-setup` points a `pyrite` server entry at this install where each
-client reads it: `claude mcp add` for Claude Code (or `./.mcp.json` with
-`--project`), and Claude Desktop's own `claude_desktop_config.json`. Run it
+client reads it: `claude mcp add -s user` for Claude Code (or `./.mcp.json`
+with `--project`), and Claude Desktop's own `claude_desktop_config.json`. Run it
 again any time. An entry that already points here is not rewritten; one that
 points elsewhere gets its command path changed (and its tier, if you pass
 `--tier`), and keeps its `env`, extra arguments and other keys. Other servers
 are never touched. Each client is all or nothing: one it cannot change safely
 is left as it was with the reason, while another may still be changed, and
 the exit code is 1 unless every client ended up pointing here. The JSON report
-names each client and what changed.
+names each client and what changed, says what the file holds when a change
+could not be finished, and names a `pyrite` entry in another Claude Code scope
+(one project's, from `claude mcp add` without `-s user`) that would be used
+instead of this one.
 [Getting started](docs/getting-started.md#connect-an-ai-via-mcp) lists the
 cases.
 
