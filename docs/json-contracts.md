@@ -692,6 +692,64 @@ on the exit code, not on JSON, until its module takes the shared option.
 the contract may not (the prompt rule is still open). On `create`, `update` and `links
 bulk-create` the short `-f` is `--field`/`--file`, never `--format`.
 
+### Explicit fields and output formats
+
+Who accepts `fields`, and what each does per format
+(`tests/test_fields_acceptors.py` lists them and fails on one that is not
+classified):
+
+| Acceptor | CSV, Markdown, Rich | JSON, YAML |
+|---|---|---|
+| CLI `search`, `recent`, `list-entries`, `batch-read`, `get` (`--fields`) | projected | projected |
+| REST `GET /api/search?fields=`, `GET /api/entries/{id}?fields=` (Accept `text/csv`, `text/markdown`, `text/yaml`; YAML is in the JSON column) | projected | projected |
+| REST `POST /api/entries/batch`, body key `fields` (a JSON list, cleaned like `?fields=`: spaces and duplicates dropped; `[]` is no projection; a list that cleans to nothing, such as `[""]`, keeps `id` and `kb_name` only; `["a,b"]` is one field named `a,b`, unlike the query-string form, which splits on commas) | projected | projected |
+| CLI `search --files`, and the file-search fallback in Rich mode | not projected: it prints its own Rich table (KB, Type, Title, ID) whatever `--format` and `--fields` say, and says so on stderr | same |
+| REST `GET /api/entries` | takes no `fields` (the CLI `list-entries` does); the legacy columns, whatever the parameter | same |
+| MCP tools | JSON only | projected |
+
+The identity fields `id`, then `kb_name`, are always retained, followed by
+requested fields in the supplied order, with duplicates removed. JSON and
+YAML omit requested keys absent from a record rather than inventing values.
+
+CSV, Markdown, and Rich retain every requested column, even when all records
+lack that field; absent and null values are empty cells. A single entry
+(`get`, `GET /api/entries/{id}`) is one row. CSV encodes list and
+dictionary cells as JSON; ordinary strings, including snippets with quotes,
+newlines, or `<mark>` tags, are preserved through standard CSV quoting.
+Markdown uses an ordered table (header rule `| --- |`), escaping pipes and
+displaying cell line breaks as `<br>`.
+
+Two Markdown shapes change under `--fields`. A single entry
+(`get X --fields title,body --format markdown`, or `GET /api/entries/{id}?fields=...`
+with `Accept: text/markdown`) used to be a frontmatter block plus the body; it is now a
+one-row table with the body flattened onto one line. And an empty result used to be the
+line `# Search: q (0 results)`; under a projection it is an empty string. Without
+`--fields`, each format keeps its existing rendering.
+
+Rich renders field names and values literally, without interpreting markup. It
+is for people: its width is the console's. Rich takes it from the terminal even
+when stdout is piped (stdin or stderr being a terminal is enough), uses 80 when no
+standard stream is a terminal, and lets `COLUMNS` override both. Scripts should
+use `json`, `yaml` or `csv`. At that width
+it prints a table when the `id` column at its widest id, every header, and the
+widest character of each column fit whole (measured in terminal cells, so a
+wide character counts 2); long values fold onto further lines. When they do not
+fit, it prints each record as `field: value` lines, records separated by a blank
+line, so a value that itself contains a blank line can look like a record
+boundary. Nothing is cut with an ellipsis, and from a console width of 2 no
+value is cut; at width 1 a stacked value made of wide characters is dropped,
+since a wide character needs 2 cells. A projection never changes the
+underlying records or the fields returned when no projection is requested.
+
+Empty projected CSV responses retain their column header and contain no data
+records. Rich retains each command's existing no-results message. JSON and
+YAML retain their existing empty envelope.
+
+For example, `pyrite search needle --fields status,title --format csv`
+returns the columns `id,kb_name,status,title`, including an empty `status`
+cell if a hit has no status. A requested field does not make search acquire
+data its result records do not otherwise carry.
+
 ## Operational contracts
 
 Not JSON shapes, but part of the same "don't relearn this the hard way"

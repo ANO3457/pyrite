@@ -159,6 +159,7 @@ def register_search_command(app: typer.Typer):
             )
 
         if use_files:
+            _warn_fields_not_applied(parse_fields_param(fields))
             _search_files(config, query, kb_name, entry_type, limit)
             return
 
@@ -228,6 +229,7 @@ def register_search_command(app: typer.Typer):
                     f"relaxed={search_trace.get('relaxed')}"
                 )
 
+            fields_list = parse_fields_param(fields)
             if not results:
                 if output_format != "rich":
                     # Machine formats get a valid empty-result payload, not a
@@ -235,7 +237,9 @@ def register_search_command(app: typer.Typer):
                     from ..formats import format_response
 
                     content, _ = format_response(
-                        {"query": query, "count": 0, "results": []}, output_format
+                        {"query": query, "count": 0, "results": []},
+                        output_format,
+                        fields=fields_list,
                     )
                     typer.echo(content)
                 else:
@@ -243,7 +247,6 @@ def register_search_command(app: typer.Typer):
                 return
 
             # Apply field projection. One rule for every read surface (#193).
-            fields_list = parse_fields_param(fields)
             if fields_list:
                 results = [project_fields(record, fields_list) for record in results]
             elif not include_body:
@@ -254,8 +257,14 @@ def register_search_command(app: typer.Typer):
                 from ..formats import format_response
 
                 resp_data = {"query": query, "count": len(results), "results": results}
-                content, _ = format_response(resp_data, output_format)
+                content, _ = format_response(resp_data, output_format, fields=fields_list)
                 typer.echo(content)
+                return
+
+            if fields_list:
+                from ..formats.tabular import projected_rich_table
+
+                console.print(projected_rich_table(results, fields_list, "Search Results"))
                 return
 
             table = Table(title=f"Search Results ({len(results)})")
@@ -321,10 +330,17 @@ def register_search_command(app: typer.Typer):
                 raise typer.Exit(1)
             console.print(f"[red]Search error ({type(e).__name__}):[/red] {e}")
             console.print("[dim]Falling back to file search...[/dim]")
+            _warn_fields_not_applied(parse_fields_param(fields))
             _search_files(config, query, kb_name, entry_type, limit)
         finally:
             if db is not None:
                 db.close()
+
+
+def _warn_fields_not_applied(fields_list):
+    """File search prints its own table (KB, Type, Title, ID) whatever `--fields` says."""
+    if fields_list:
+        typer.echo("--fields is not applied by file search; showing its own table.", err=True)
 
 
 def _search_files(config, query, kb_name, entry_type, limit):
