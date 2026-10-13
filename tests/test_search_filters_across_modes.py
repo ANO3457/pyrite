@@ -239,6 +239,171 @@ def test_no_filter_returns_everything(svc, mode):
     assert _ids(results) == {"mech-bypass", "theme-capture", "task-ticket"}
 
 
+@pytest.mark.parametrize("mode", ["semantic", "hybrid"])
+def test_kb_name_filter_is_applied_before_knn_cap(svc_db, mode, monkeypatch):
+    """Other KBs cannot consume the KNN budget before a KB-scoped search."""
+    import pyrite.services.embedding_service as es
+    from pyrite.storage.backends import sqlite_backend
+
+    monkeypatch.setattr(sqlite_backend, "_SQLITE_VEC_MAX_K", 8)
+    svc_db.register_kb("other-kb", KBType.RESEARCH, "/tmp/other-kb")
+    embedder = es.EmbeddingService(svc_db)
+    # Exact-query vectors from another KB rank ahead of the test-kb entries.
+    # Without filtering inside KNN, these unrelated rows consume the cap and
+    # the outer KB check returns no result.
+    for index in range(20):
+        entry_id = f"other-kb-entry-{index}"
+        svc_db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "other-kb",
+                "entry_type": "mechanism",
+                "title": "detention",
+                "summary": "unrelated knowledge base candidate",
+                "body": "detention accountability",
+                "tags": [],
+                "sources": [],
+                "links": [],
+            }
+        )
+        svc_db.backend.upsert_embedding(entry_id, "other-kb", embedder.embed_text("detention"))
+
+    # A test-kb entry the keyword leg cannot find ("detention" is nowhere in it)
+    # and the vector leg ranks after all 20 other-kb rows: only the semantic
+    # leg can return it, so hybrid mode cannot pass on keyword hits alone.
+    svc_db.upsert_entry(
+        {
+            "id": "remote-target",
+            "kb_name": "test-kb",
+            "entry_type": "mechanism",
+            "title": "Remote evidence",
+            "summary": "semantic-only",
+            "body": "unrelated wording",
+            "tags": [],
+            "sources": [],
+            "links": [],
+        }
+    )
+    far = embedder.embed_text("detention")
+    far[0] += 0.3
+    svc_db.backend.upsert_embedding("remote-target", "test-kb", far)
+
+    results = SearchService(svc_db).search("detention", kb_name="test-kb", mode=mode, limit=10)
+    assert "remote-target" in {r["id"] for r in results}, (
+        f"mode={mode} let another KB exhaust the KNN budget"
+    )
+    assert all(row["kb_name"] == "test-kb" for row in results), f"mode={mode} leaked another KB"
+
+
+def _fill_cap_with_other_kb(svc_db, count=20):
+    """``count`` rows of another KB on the query's exact vector (distance 0)."""
+    import pyrite.services.embedding_service as es
+
+    embedder = es.EmbeddingService(svc_db)
+    svc_db.register_kb("other-kb", KBType.RESEARCH, "/tmp/other-kb")
+    for index in range(count):
+        entry_id = f"other-kb-entry-{index}"
+        svc_db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "other-kb",
+                "entry_type": "mechanism",
+                "title": "detention",
+                "summary": "unreadable knowledge base candidate",
+                "body": "detention accountability",
+                "tags": [],
+                "sources": [],
+                "links": [],
+            }
+        )
+        svc_db.backend.upsert_embedding(entry_id, "other-kb", embedder.embed_text("detention"))
+    return embedder
+
+
+def _add_far_targets(svc_db, embedder, count=4):
+    """``count`` test-kb needles at increasing distance, no keyword overlap with the query."""
+    for index in range(count):
+        entry_id = f"far-target-{index}"
+        svc_db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "test-kb",
+                "entry_type": "needle",
+                "title": f"Remote evidence {index}",
+                "summary": "semantic-only",
+                "body": "unrelated wording",
+                "tags": [],
+                "sources": [],
+                "links": [],
+            }
+        )
+        vec = embedder.embed_text("detention")
+        vec[index] += 0.1 * (index + 1)
+        svc_db.backend.upsert_embedding(entry_id, "test-kb", vec)
+
+
+def test_scoped_caller_never_sees_unreadable_rows_and_they_do_not_fill_the_cap(svc_db, monkeypatch):
+    """A caller scoped to ``test-kb``: other-kb rows never appear, and (with the KB
+    named) they are out of the KNN, so they cannot use up its budget.
+
+    Limit, stated rather than fixed: a scoped caller who names *no* ``kb_name``
+    still has the readable-KB check applied after the KNN (``_restrict``), so
+    unreadable rows can fill the cap and the search comes back short (#194
+    follow-up). The never-appear half holds either way.
+    """
+    from pyrite.storage.backends import sqlite_backend
+
+    monkeypatch.setattr(sqlite_backend, "_SQLITE_VEC_MAX_K", 8)
+    embedder = _fill_cap_with_other_kb(svc_db)
+    _add_far_targets(svc_db, embedder)
+
+    for mode in ("semantic", "hybrid"):
+        results = SearchService(svc_db).search(
+            "detention",
+            kb_name="test-kb",
+            kb_names={"test-kb"},
+            entry_type="needle",
+            mode=mode,
+            limit=4,
+        )
+        assert _ids(results) == {f"far-target-{i}" for i in range(4)}, f"mode={mode}"
+        assert {r["kb_name"] for r in results} == {"test-kb"}, f"mode={mode} leaked a KB"
+
+    unnamed = SearchService(svc_db).search(
+        "detention", kb_names={"test-kb"}, mode="semantic", limit=10
+    )
+    assert all(r["kb_name"] == "test-kb" for r in unnamed), "an unreadable KB's row appeared"
+
+
+@pytest.mark.parametrize("mode", ["semantic", "hybrid"])
+def test_offset_and_limit_page_through_filtered_rows_beyond_the_cap(svc_db, monkeypatch, mode):
+    """Pages of a filtered search are disjoint, ordered, and complete past the cap."""
+    from pyrite.storage.backends import sqlite_backend
+
+    monkeypatch.setattr(sqlite_backend, "_SQLITE_VEC_MAX_K", 8)
+    embedder = _fill_cap_with_other_kb(svc_db)
+    _add_far_targets(svc_db, embedder)
+    svc = SearchService(svc_db)
+
+    def page(offset):
+        return [
+            r["id"]
+            for r in svc.search(
+                "detention",
+                kb_name="test-kb",
+                entry_type="needle",
+                mode=mode,
+                limit=2,
+                offset=offset,
+            )
+        ]
+
+    first, second, beyond = page(0), page(2), page(4)
+    assert first == ["far-target-0", "far-target-1"]
+    assert second == ["far-target-2", "far-target-3"]
+    assert beyond == []
+
+
 def test_semantic_leg_alone_honours_filters(svc_db):
     """The vector leg itself filters — not just the service that fuses it.
 
@@ -255,6 +420,64 @@ def test_semantic_leg_alone_honours_filters(svc_db):
         embedding, kb_name="test-kb", limit=10, entry_type="zzz-not-a-real-type"
     )
     assert rows == []
+
+
+def test_hybrid_filtered_semantic_leg_fills_limit_past_knn_cap(svc_db, monkeypatch):
+    """The filtered vector leg finds matches past nearer keyword distractors."""
+    from pyrite.storage.backends import sqlite_backend
+
+    monkeypatch.setattr(sqlite_backend, "_SQLITE_VEC_MAX_K", 8)
+    embedder = _StubEmbedder()
+
+    # These rows match the keyword query but not the filter, and occupy the
+    # entire initial KNN budget on the unfixed implementation.
+    for i in range(20):
+        entry_id = f"hybrid-distractor-{i}"
+        svc_db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "test-kb",
+                "entry_type": "note",
+                "title": f"Detention distractor {i}",
+                "summary": "detention keyword result",
+                "body": "detention unrelated result",
+                "tags": [],
+                "sources": [],
+                "links": [],
+                "metadata": {},
+            }
+        )
+        # Exactly the query's vector: distance 0, ahead of every target. (The
+        # stub's per-text nudges would tie with the targets and let them in.)
+        svc_db.backend.upsert_embedding(entry_id, "test-kb", embedder.embed_text("detention"))
+
+    # These satisfy the filter and semantic leg, but deliberately do not
+    # match the keyword, so only the hybrid semantic leg can return them.
+    for i in range(3):
+        entry_id = f"hybrid-target-{i}"
+        svc_db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "test-kb",
+                "entry_type": "needle",
+                "title": f"Remote evidence item {i}",
+                "summary": "semantic-only target",
+                "body": "semantic target body",
+                "tags": [],
+                "sources": [],
+                "links": [],
+                "metadata": {},
+            }
+        )
+        far = embedder.embed_text("detention")
+        far[i] += 0.3
+        svc_db.backend.upsert_embedding(entry_id, "test-kb", far)
+
+    results = SearchService(svc_db).search(
+        "detention", kb_name="test-kb", mode="hybrid", entry_type="needle", limit=2
+    )
+    assert len(results) == 2
+    assert all(row["id"].startswith("hybrid-target-") for row in results)
 
 
 def _undeclare_filtered_semantic(backend, monkeypatch):
@@ -620,6 +843,76 @@ def test_semantic_leg_alone_excludes_archived(archived_svc):
 
     rows = backend.search_semantic(embedding, kb_name="test-kb", limit=10, include_archived=True)
     assert {r["id"] for r in rows} == {"live-one", "gone-one"}
+
+
+def test_archived_entries_do_not_consume_the_knn_cap(archived_svc, monkeypatch):
+    """The default archive exclusion is applied before the vector candidate cap."""
+    import pyrite.services.embedding_service as es
+    from pyrite.storage.backends import sqlite_backend
+
+    monkeypatch.setattr(sqlite_backend, "_SQLITE_VEC_MAX_K", 8)
+    embedder = es.EmbeddingService(archived_svc.db)
+    for index in range(20):
+        entry_id = f"archived-distractor-{index}"
+        archived_svc.db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "test-kb",
+                "entry_type": "note",
+                "title": "detention",
+                "summary": "archived semantic distractor",
+                "body": "detention accountability note",
+                "tags": [],
+                "sources": [],
+                "links": [],
+                "lifecycle": "archived",
+            }
+        )
+        archived_svc.db.backend.upsert_embedding(
+            entry_id, "test-kb", embedder.embed_text("detention")
+        )
+
+    results = archived_svc.search("detention", kb_name="test-kb", mode="semantic", limit=1)
+    assert _ids(results) == {"live-one"}
+
+
+@pytest.mark.control(
+    reason="include_archived=True adds no predicate, so with kb_name alone the KNN was already "
+    "unfiltered on dev; this pins that opting in still fills the page after the fix"
+)
+@pytest.mark.parametrize("mode", ["semantic", "hybrid"])
+def test_include_archived_entries_fill_the_knn_cap(archived_svc, monkeypatch, mode):
+    """Explicitly included archived entries remain eligible at a small KNN cap."""
+    import pyrite.services.embedding_service as es
+    from pyrite.storage.backends import sqlite_backend
+
+    monkeypatch.setattr(sqlite_backend, "_SQLITE_VEC_MAX_K", 8)
+    embedder = es.EmbeddingService(archived_svc.db)
+    for index in range(20):
+        entry_id = f"archived-included-{index}"
+        archived_svc.db.upsert_entry(
+            {
+                "id": entry_id,
+                "kb_name": "test-kb",
+                "entry_type": "note",
+                "title": "detention",
+                "summary": "archived semantic candidate",
+                "body": "detention accountability note",
+                "tags": [],
+                "sources": [],
+                "links": [],
+                "lifecycle": "archived",
+            }
+        )
+        archived_svc.db.backend.upsert_embedding(
+            entry_id, "test-kb", embedder.embed_text("detention")
+        )
+
+    results = archived_svc.search(
+        "detention", kb_name="test-kb", mode=mode, limit=8, include_archived=True
+    )
+    assert len(results) == 8, f"mode={mode} dropped explicitly included archived matches"
+    assert any(row["id"] != "live-one" for row in results), f"mode={mode} omitted archived matches"
 
 
 # =========================================================================

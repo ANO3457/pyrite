@@ -21,9 +21,9 @@ from .capabilities import BackendCapability
 #: sqlite-vec's hard ceiling on ``k`` in a KNN query. Asking for more is not a
 #: slow query but an error — sqlite-vec 0.1.9 raises
 #: ``OperationalError: k value in knn query too large, provided N and the limit
-#: is 4096``. Every ``k`` the semantic leg builds is clamped against this, so a
-#: filtered search over an index larger than the cap under-returns rather than
-#: raising (#56).
+#: is 4096``. Every ``k`` the semantic leg builds is clamped against this; a
+#: query can still under-return when more matching candidates exist than the
+#: cap, or when distance culling removes candidates (#56, #194).
 _SQLITE_VEC_MAX_K = 4096
 
 
@@ -413,20 +413,34 @@ class SQLiteBackend(BaseBackend):
         """KNN over ``vec_entry``, filtered by the same predicates as ``search``.
 
         sqlite-vec's ``MATCH`` needs a literal ``k`` (the number of nearest
-        neighbours to consider) and applies it *before* any join predicate, so
-        a filter cannot be pushed into the KNN itself. Filtering the k rows
-        afterwards would silently under-return whenever the k nearest happen
-        not to match the filter. Instead we over-fetch and escalate ``k`` until
-        ``limit`` rows survive the filter, ``k`` covers every embedded row, or
-        ``k`` reaches :data:`_SQLITE_VEC_MAX_K`.
+        neighbours to consider). For a caller-supplied filter, the matching
+        rowids are passed into the KNN query so unrelated neighbours do not
+        consume that budget. The outer predicates remain as a consistency
+        check. The query over-fetches and escalates ``k`` for distance culling,
+        until ``limit`` rows survive, the filtered candidate set is exhausted,
+        or ``k`` reaches :data:`_SQLITE_VEC_MAX_K`.
 
-        **Recall is best-effort at the cap.** sqlite-vec refuses ``k`` above
-        4096 outright, so on an index larger than that a filter selective
-        enough to exclude the 4096 nearest neighbours returns fewer rows than
-        ``limit`` — possibly none. That is a deliberate under-return, never an
-        exception and never a row the filter excluded. The keyword leg, which
-        has no such ceiling, is unaffected; in hybrid mode it carries the
-        result.
+        sqlite-vec refuses ``k`` above 4096 outright. Filtering candidates
+        before KNN avoids losing recall because unrelated rows occupied those
+        4096 slots. A request for more than the cap, or a restrictive
+        ``max_distance``, can still return fewer than ``limit`` results. The
+        keyword leg, which has no KNN ceiling, is unaffected; in hybrid mode it
+        carries its own result.
+
+        The default archived-entry exclusion is not a caller filter. When the
+        caller passes a filter it rides inside the KNN with the others; when
+        the caller passes none it stays out on the first pass. If such a
+        search reaches the cap short of ``limit`` *because archived rows filled
+        the k-set* (the KNN was not exhausted, no live row was culled by
+        ``max_distance``, and the k-set held archived rows), it runs once more
+        with the exclusion inside the KNN. A search with no archived shortfall
+        issues the statements it always did. The retry also fires, and cannot
+        help, when every live row is already in the k-set (3 live nearest, 10
+        archived farther, ``limit=6`` at cap 8), when ``limit`` exceeds the cap
+        with archived rows in the k-set and no live rows beyond, and when every
+        live row is beyond ``max_distance``: the result is correct, at the price
+        of one extra query. An empty k-set at the cap also costs the size
+        probe (``limit >= 2048`` at the real cap).
 
         The escalation costs one extra query per round, and only when the
         previous budget did not fill ``limit``: an unfiltered search whose
@@ -456,11 +470,19 @@ class SQLiteBackend(BaseBackend):
         # would be wasted. That is the exhaustion signal — an unconditional
         # ``COUNT(*) FROM vec_entry`` would instead scan the whole vector table
         # on every semantic search, filtered or not.
-        sql = f"""
+        # Apply caller filters inside the KNN query so unrelated rows cannot exhaust the
+        # hard k cap; keep the unfiltered hot path free of this extra query.
+        knn_candidates = f" AND rowid IN (SELECT e.rowid FROM entry e WHERE 1=1{where})"
+        knn_filter = knn_candidates if selective else ""
+        # The only predicate in play is the default archived exclusion: no
+        # caller filter, and the caller did not opt in to archived rows.
+        archived_exclusion_only = not selective and not include_archived
+        candidate_params = params if selective else []
+        sql_template = """
             WITH knn AS (
                 SELECT rowid, distance
                 FROM vec_entry
-                WHERE embedding MATCH ? AND k = ?
+                WHERE embedding MATCH ? AND k = ?{knn_filter}
             ), knn_size AS (
                 SELECT COUNT(*) AS n FROM knn
             )
@@ -471,20 +493,23 @@ class SQLiteBackend(BaseBackend):
             WHERE 1=1{where}
             ORDER BY knn.distance
         """
-        size_sql = """
+        size_template = """
             WITH knn AS (
-                SELECT rowid FROM vec_entry WHERE embedding MATCH ? AND k = ?
+                SELECT rowid FROM vec_entry WHERE embedding MATCH ? AND k = ?{knn_filter}
             )
             SELECT COUNT(*) FROM knn
         """
-        # Over-fetch more when a caller-supplied filter may cull the k nearest.
-        # The archived exclusion is not counted: it applies to every search, so
-        # treating it as a filter would triple the budget of every query.
-        k = min(limit * 3 if selective else limit * 2, _SQLITE_VEC_MAX_K)
+        sql = sql_template.format(knn_filter=knn_filter, where=where)
+        size_sql = size_template.format(knn_filter=knn_filter)
+        # Over-fetch for ``max_distance`` culling only. A caller filter no
+        # longer needs a larger first budget: it is applied inside the KNN, so
+        # every candidate it returns already satisfies it (it used to triple
+        # the budget to survive a post-KNN filter).
+        k = min(limit * 2, _SQLITE_VEC_MAX_K)
         results: list[dict[str, Any]] = []
         while True:
             with self._raw_cursor() as cur:
-                rows = cur.execute(sql, [blob, k, *params]).fetchall()
+                rows = cur.execute(sql, [blob, k, *candidate_params, *params]).fetchall()
             results = []
             for row in rows:
                 entry = dict(row)
@@ -495,6 +520,25 @@ class SQLiteBackend(BaseBackend):
                 if len(results) >= limit:
                     break
             if len(results) >= limit or k >= _SQLITE_VEC_MAX_K:
+                if len(results) < limit and archived_exclusion_only and not knn_filter:
+                    # Short at the ceiling. Of the reasons a first pass can be
+                    # short, only one is helped by asking again with the
+                    # archived exclusion inside the KNN: archived rows filled
+                    # the k-set. Not an exhausted KNN (fewer neighbours than
+                    # ``k``: every row was seen), and not ``max_distance``
+                    # (a live row was already culled, so farther ones fail
+                    # too). The readable-KB check is not visible here at all.
+                    knn_size = (
+                        rows[0]["_knn_size"]
+                        if rows
+                        else self._raw_scalar(size_sql, (blob, k, *candidate_params))
+                    )
+                    culled = len(rows) > len(results)
+                    if knn_size >= k and knn_size > len(rows) and not culled:
+                        knn_filter, candidate_params = knn_candidates, params
+                        sql = sql_template.format(knn_filter=knn_filter, where=where)
+                        size_sql = size_template.format(knn_filter=knn_filter)
+                        continue
                 # Filled, or at sqlite-vec's hard ceiling — recall is
                 # best-effort from here.
                 break
@@ -505,12 +549,16 @@ class SQLiteBackend(BaseBackend):
                 knn_size = rows[0]["_knn_size"]
             else:
                 with self._raw_cursor() as cur:
-                    knn_size = cur.execute(size_sql, (blob, k)).fetchone()[0]
+                    knn_size = cur.execute(size_sql, (blob, k, *candidate_params)).fetchone()[0]
             if knn_size < k:
                 # The table is exhausted: a larger k cannot find more.
                 break
             k = min(k * 4, _SQLITE_VEC_MAX_K)
         return results
+
+    def _raw_scalar(self, sql: str, params: tuple[Any, ...]) -> Any:
+        with self._raw_cursor() as cur:
+            return cur.execute(sql, params).fetchone()[0]
 
     def _semantic_filter_sql(
         self,
@@ -532,9 +580,10 @@ class SQLiteBackend(BaseBackend):
 
         Returns ``(sql, params, selective)``. ``selective`` says whether any
         *caller-supplied* filter is present; the archived exclusion does not
-        count, because it is the default on both legs and sizing every KNN
-        budget as if it were a filter would triple the work of an ordinary
-        search.
+        count, because it is the default on both legs and putting its subquery
+        inside the KNN of every ordinary search would be a cost they do not
+        need; :meth:`search_semantic` pushes it in only when a search reaches
+        the cap short.
         """
         sql = ""
         params: list[Any] = []
