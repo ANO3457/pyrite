@@ -3,9 +3,7 @@
 import csv
 import io
 import json
-from contextlib import contextmanager
-from copy import deepcopy
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -14,6 +12,7 @@ from typer.testing import CliRunner
 from pyrite.cli import app
 from pyrite.formats import format_response
 from pyrite.services.read_shaping import project_fields
+from tests.search_verdict_seed import cli_world, make_cli_world, seed_entry_world
 
 FIELDS = ["status", "title", "missing"]
 COLUMNS = ["id", "kb_name", *FIELDS]
@@ -30,7 +29,7 @@ ROW = {
 }
 
 
-def assert_projected(text, fmt):
+def assert_projected(text, fmt, title=ROW["title"]):
     if fmt in ("json", "yaml"):
         data = json.loads(text) if fmt == "json" else yaml.safe_load(text)
         rows = data.get("results", data.get("entries"))
@@ -40,13 +39,13 @@ def assert_projected(text, fmt):
     elif fmt == "csv":
         rows = list(csv.reader(io.StringIO(text)))
         assert rows[0] == COLUMNS
-        assert rows[1] == ["entry-1", "kb", "waiting", ROW["title"], ""]
+        assert rows[1] == ["entry-1", "kb", "waiting", title, ""]
     else:
         # Headers are literal field names, preserving the requested order.
         positions = [text.index(name) for name in COLUMNS]
         assert positions == sorted(positions)
         assert "waiting" in text
-        assert ROW["title"] in text
+        assert title in text
     assert "excluded secret" not in text
 
 
@@ -122,6 +121,22 @@ def test_default_markdown_list_is_unchanged():
     assert ROW["snippet"] in content
 
 
+def _projection_case(command, fmt, console_width, tmp_path, title):
+    """Run one read command over a real seeded KB and check the projection."""
+    config = make_cli_world(tmp_path, title=title)
+    args = [command]
+    if command == "search":
+        args.append("excluded")
+    elif command == "batch-read":
+        args.append("kb:entry-1")
+    args += ["--fields", ",".join(FIELDS), "--format", fmt]
+    console_width(180)
+    with cli_world(config):
+        result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.exception or result.output
+    assert_projected(result.stdout, fmt, title)
+
+
 @pytest.mark.parametrize("command", ["search", "recent", "list-entries", "batch-read"])
 @pytest.mark.parametrize(
     "fmt",
@@ -137,66 +152,25 @@ def test_default_markdown_list_is_unchanged():
         "rich",
     ],
 )
-def test_cli_projection_in_every_format(command, fmt, console_width):
-    svc = MagicMock()
-    svc.list_entries.return_value = [deepcopy(ROW)]
-    svc.get_entries.return_value = [deepcopy(ROW)]
-    svc.count_entries.return_value = 1
-    config = MagicMock()
-    config.settings.search_mode = "keyword"
-
-    @contextmanager
-    def context():
-        yield config, MagicMock(), svc
-
-    args = [command]
-    if command == "search":
-        args.append("query")
-    elif command == "batch-read":
-        args.append("kb:entry-1")
-    args += ["--fields", ",".join(FIELDS), "--format", fmt]
-    with (
-        patch("pyrite.cli.browse_commands.cli_context", context),
-        patch("pyrite.cli.search_commands.load_config", return_value=config),
-        patch("pyrite.cli.context.open_index_db"),
-        patch("pyrite.storage.IndexManager") as mgr,
-        patch("pyrite.cli.search_commands._warn_if_stale"),
-        patch("pyrite.services.search_service.SearchService") as search,
-    ):
-        mgr.return_value.is_empty.return_value = False
-        # The CLI returns the service's assembled response (#668), not `search()`'s rows.
-        search.return_value.search_response.return_value = {
-            "results": [deepcopy(ROW)],
-            "match": "strong",
-            "match_basis": "keyword: every term matched",
-            "legs_run": ["keyword"],
-            "keyword_match": "all_terms",
-        }
-        console_width(180)
-        result = CliRunner().invoke(app, args)
-    assert result.exit_code == 0, result.exception or result.output
-    assert_projected(result.stdout, fmt)
+def test_cli_projection_in_every_format(command, fmt, console_width, tmp_path):
+    _projection_case(command, fmt, console_width, tmp_path, ROW["title"])
 
 
 def test_rest_csv_uses_requested_projection(make_client):
-    client, _, _ = make_client(kb_name="kb")
-    with (
-        patch("pyrite.services.search_service.SearchService.search", return_value=[ROW]),
-        patch("pyrite.services.kb_service.KBService.count_entries", return_value=1),
-    ):
-        response = client.get(
-            "/api/search",
-            params={"q": "query", "fields": ",".join(FIELDS)},
-            headers={"Accept": "text/csv"},
-        )
+    client, config, db = make_client(kb_name="kb")
+    seed_entry_world(config, db, title=ROW["title"])
+    response = client.get(
+        "/api/search",
+        params={"q": "excluded", "fields": ",".join(FIELDS)},
+        headers={"Accept": "text/csv"},
+    )
     assert response.status_code == 200, response.text
     assert_projected(response.text, "csv")
 
 
 @pytest.mark.parametrize("command", ["search", "recent", "list-entries", "batch-read"])
-def test_projected_rich_cells_are_literal(monkeypatch, command, console_width):
-    monkeypatch.setitem(ROW, "title", "[bold]Requested title[/bold]")
-    test_cli_projection_in_every_format(command, "rich", console_width)
+def test_projected_rich_cells_are_literal(command, console_width, tmp_path):
+    _projection_case(command, "rich", console_width, tmp_path, "[bold]Requested title[/bold]")
 
 
 @pytest.fixture

@@ -6,8 +6,6 @@ must never be cut: at the default 80 columns ``id`` was ``entry-one-lo…``.
 """
 
 import io
-from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -15,6 +13,7 @@ from typer.testing import CliRunner
 
 from pyrite.cli import app
 from pyrite.formats.tabular import projected_rich_table
+from tests.search_verdict_seed import cli_world, make_cli_world
 
 ENTRY_ID = "entry-one-long-identifier"
 ROWS = [
@@ -60,34 +59,14 @@ def test_nothing_is_cut_with_an_ellipsis_when_narrower(width):
 
 
 @pytest.mark.parametrize("columns", [80, 30])
-def test_search_prints_whole_id_at_the_console_width(columns, console_width):
-    row = dict(ROWS[0], entry_type="note")
-    svc = MagicMock()
-    config = MagicMock()
-    config.settings.search_mode = "keyword"
-
-    @contextmanager
-    def context():
-        yield config, MagicMock(), svc
-
-    args = ["search", "q", "--fields", ",".join(FIELDS), "--format", "rich"]
+def test_search_prints_whole_id_at_the_console_width(columns, console_width, tmp_path):
+    row = ROWS[0]
+    config = make_cli_world(
+        tmp_path, entry_id=ENTRY_ID, title=row["title"], body=row["body"], status=row["status"]
+    )
+    args = ["search", "wrapped", "--fields", ",".join(FIELDS), "--format", "rich"]
     console_width(columns)
-    with (
-        patch("pyrite.cli.search_commands.load_config", return_value=config),
-        patch("pyrite.cli.context.open_index_db"),
-        patch("pyrite.storage.IndexManager") as mgr,
-        patch("pyrite.cli.search_commands._warn_if_stale"),
-        patch("pyrite.services.search_service.SearchService") as search,
-    ):
-        mgr.return_value.is_empty.return_value = False
-        # The CLI returns the service's assembled response (#668), not `search()`'s rows.
-        search.return_value.search_response.return_value = {
-            "results": [row],
-            "match": "strong",
-            "match_basis": "keyword: every term matched",
-            "legs_run": ["keyword"],
-            "keyword_match": "all_terms",
-        }
+    with cli_world(config):
         result = CliRunner().invoke(app, args)
     assert result.exit_code == 0, result.exception or result.output
     assert ENTRY_ID in result.stdout

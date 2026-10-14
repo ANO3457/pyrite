@@ -116,14 +116,38 @@ def _populate(db):
     assert db.backend.has_embeddings(), "fixture must have embeddings for the vector leg"
 
 
-@pytest.fixture
-def stub_embeddings(monkeypatch):
-    """Swap sentence-transformers for the deterministic stub."""
+class _Vec(list):
+    def tolist(self):
+        return list(self)
+
+
+class _StubModel:
+    """What `_load_model` returns: the real `EmbeddingService` runs on top of it."""
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+
+    def encode(self, text, **kwargs):
+        if isinstance(text, list):  # the warm-up pass at load
+            return [_Vec(_StubEmbedder().embed_text(t)) for t in text]
+        if self.error:
+            raise self.error
+        return _Vec(_StubEmbedder().embed_text(text))
+
+
+def install_model(monkeypatch, model: _StubModel):
+    """Put `model` at the process edge: the model load. The service code is real."""
     import pyrite.services.embedding_service as es
 
     monkeypatch.setattr(es, "is_available", lambda: True)
-    monkeypatch.setattr(es.EmbeddingService, "_get_model", lambda self: _StubEmbedder())
-    monkeypatch.setattr(es.EmbeddingService, "embed_text", _StubEmbedder().embed_text)
+    monkeypatch.setattr(es, "_load_model", lambda name: model)
+    monkeypatch.setattr(es, "_MODEL_CACHE", {})
+
+
+@pytest.fixture
+def stub_embeddings(monkeypatch):
+    """Swap sentence-transformers for the deterministic stub."""
+    install_model(monkeypatch, _StubModel())
 
 
 @pytest.fixture
@@ -480,7 +504,22 @@ def test_hybrid_filtered_semantic_leg_fills_limit_past_knn_cap(svc_db, monkeypat
     assert all(row["id"].startswith("hybrid-target-") for row in results)
 
 
-def _undeclare_filtered_semantic(backend, monkeypatch):
+def _with_backend(db, **overrides):
+    """Give ``db`` a backend that is its own, with ``overrides`` as class members.
+
+    A different backend is what these tests model, so they hand the database
+    one (a subclass instance sharing the live connection) instead of patching
+    the shipped class. Nothing in `pyrite.storage` is patched.
+    """
+    backend = db.backend
+    variant = type(type(backend).__name__ + "Variant", (type(backend),), overrides)
+    other = variant.__new__(variant)
+    other.__dict__.update(backend.__dict__)
+    db._backend = other
+    return other
+
+
+def _undeclare_filtered_semantic(db):
     """Model a backend whose vector leg cannot honour filters.
 
     The service asks the backend's declared capability set, so that is what a
@@ -490,9 +529,8 @@ def _undeclare_filtered_semantic(backend, monkeypatch):
     """
     from pyrite.storage.backends.capabilities import BackendCapability
 
-    cls = type(backend)
-    reduced = set(cls.capabilities) - {BackendCapability.FILTERED_SEMANTIC}
-    monkeypatch.setattr(cls, "capabilities", reduced)
+    reduced = frozenset(set(type(db.backend).capabilities) - {BackendCapability.FILTERED_SEMANTIC})
+    return _with_backend(db, capabilities=reduced)
 
 
 # =========================================================================
@@ -516,7 +554,7 @@ def test_warning_when_a_leg_cannot_honour_a_filter(svc, monkeypatch):
     declare ``FILTERED_SEMANTIC``: the semantic leg is dropped from the fused
     set and the caller is told which filters caused it.
     """
-    _undeclare_filtered_semantic(svc.db.backend, monkeypatch)
+    _undeclare_filtered_semantic(svc.db)
 
     warnings: list[str] = []
     results = svc.search(
@@ -534,7 +572,7 @@ def test_unfilterable_backend_never_leaks_in_semantic_mode(svc, monkeypatch):
     There is no keyword leg to fall back on, so the honest answer is zero
     results plus a warning — never the unfiltered set that caused #56.
     """
-    _undeclare_filtered_semantic(svc.db.backend, monkeypatch)
+    _undeclare_filtered_semantic(svc.db)
 
     warnings: list[str] = []
     results = svc.search(
@@ -559,7 +597,7 @@ def test_a_backend_type_error_always_propagates(svc, monkeypatch, filters):
     def _broken(self, embedding, kb_name=None, limit=20, min_similarity=0.155, **kwargs):
         raise TypeError("a real bug in the backend")
 
-    monkeypatch.setattr(type(svc.db.backend), "search_semantic", _broken)
+    _with_backend(svc.db, search_semantic=_broken)
 
     with pytest.raises(TypeError, match="a real bug"):
         svc.search("detention", kb_name="test-kb", mode="semantic", **filters)
@@ -572,14 +610,11 @@ def test_warnings_reach_the_mcp_response(svc_db, monkeypatch):
 
     server = PyriteMCPServer.__new__(PyriteMCPServer)
     server._search_svc_cache = SearchService(svc_db)
-    monkeypatch.setattr(
-        type(server), "search_svc", property(lambda self: self._search_svc_cache), raising=False
-    )
 
     clean = server._kb_search({"query": "detention", "kb_name": "test-kb", "mode": "hybrid"})
     assert "warnings" not in clean, clean
 
-    _undeclare_filtered_semantic(svc_db.backend, monkeypatch)
+    _undeclare_filtered_semantic(svc_db)
     noisy = server._kb_search(
         {
             "query": "detention",
@@ -657,7 +692,7 @@ def test_rest_search_omits_warnings_on_the_happy_path(rest_client):
 def test_rest_search_reports_a_dropped_leg_in_warnings(rest_client, svc_db, monkeypatch):
     """A filter a leg cannot honour reaches the REST caller as ``warnings``."""
 
-    _undeclare_filtered_semantic(svc_db.backend, monkeypatch)
+    _undeclare_filtered_semantic(svc_db)
 
     resp = rest_client.get(
         "/api/search",
@@ -729,17 +764,12 @@ def test_a_bug_inside_the_vector_leg_propagates_even_with_a_filter(svc, monkeypa
     query, the backend call, *and* snippet generation — in ``except TypeError``.
     With a filter active, any genuine ``TypeError`` from any of those turned
     into "this backend cannot filter" and a silently empty semantic leg. Here
-    the backend filters perfectly and the bug is in snippet generation: it must
+    the backend filters perfectly and the bug is in embedding the query: it must
     reach the caller, not be relabelled.
     """
-    import pyrite.services.embedding_service as es
+    install_model(monkeypatch, _StubModel(error=TypeError("a real bug in the vector leg")))
 
-    def _boom(*args, **kwargs):
-        raise TypeError("a real bug in snippet generation")
-
-    monkeypatch.setattr(es, "_generate_snippet", _boom)
-
-    with pytest.raises(TypeError, match="a real bug in snippet generation"):
+    with pytest.raises(TypeError, match="a real bug in the vector leg"):
         svc.search("detention", kb_name="test-kb", mode="semantic", entry_type="mechanism")
 
 
@@ -750,11 +780,7 @@ def test_backend_without_the_capability_drops_the_leg_with_a_warning(svc, monkey
     vector leg cannot honour the filter, so the leg is dropped before it runs
     and the caller is told which filters cost it.
     """
-    from pyrite.storage.backends.capabilities import BackendCapability
-
-    backend_cls = type(svc.db.backend)
-    reduced = set(backend_cls.capabilities) - {BackendCapability.FILTERED_SEMANTIC}
-    monkeypatch.setattr(backend_cls, "capabilities", reduced)
+    _undeclare_filtered_semantic(svc.db)
 
     warnings: list[str] = []
     results = svc.search(

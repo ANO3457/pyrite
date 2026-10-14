@@ -23,30 +23,19 @@ import ast
 import csv
 import io
 import json
-from contextlib import contextmanager
-from copy import deepcopy
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 from typer.testing import CliRunner
 
 from pyrite.cli import app
+from pyrite.config import KBConfig, PyriteConfig, Settings
+from tests.search_verdict_seed import cli_world, make_cli_world, seed_entry_world
 
 ROOT = Path(__file__).resolve().parent.parent
 FIELDS = ["status", "missing"]
 COLUMNS = ["id", "kb_name", "status", "missing"]
-ROW = {
-    "id": "entry-1",
-    "kb_name": "kb",
-    "title": "T",
-    "status": "waiting",
-    "tags": ["a"],
-    "entry_type": "note",
-    "body": "excluded secret",
-}
-
 #: (file, function) -> (kind, case). `case` keys CLI_ACCEPTORS / REST_ACCEPTORS below.
 ACCEPTORS = {
     ("pyrite/cli/search_commands.py", "search"): ("cli", "search"),
@@ -143,43 +132,14 @@ def test_mcp_returns_json_only():
 # ---------------------------------------------------------------- CLI acceptors
 
 
-@contextmanager
-def _cli_patched():
-    svc = MagicMock()
-    svc.list_entries.return_value = [deepcopy(ROW)]
-    svc.get_entries.return_value = [deepcopy(ROW)]
-    svc.get_entry.return_value = deepcopy(ROW)
-    svc.count_entries.return_value = 1
-    config = MagicMock()
-    config.settings.search_mode = "keyword"
-
-    @contextmanager
-    def context():
-        yield config, MagicMock(), svc
-
-    with (
-        patch("pyrite.cli.browse_commands.cli_context", context),
-        patch("pyrite.cli.entry_commands.cli_context", context),
-        patch("pyrite.cli.search_commands.load_config", return_value=config),
-        patch("pyrite.cli.context.open_index_db"),
-        patch("pyrite.storage.IndexManager") as mgr,
-        patch("pyrite.cli.search_commands._warn_if_stale"),
-        patch("pyrite.services.search_service.SearchService") as search,
-    ):
-        mgr.return_value.is_empty.return_value = False
-        # The CLI returns the service's assembled response (#668), not `search()`'s rows.
-        search.return_value.search_response.return_value = {
-            "results": [deepcopy(ROW)],
-            "match": "strong",
-            "match_basis": "keyword: every term matched",
-            "legs_run": ["keyword"],
-            "keyword_match": "all_terms",
-        }
-        yield config
+@pytest.fixture
+def cli_config(tmp_path):
+    """A real KB and index holding `entry-1`; the CLI is pointed at it, nothing is mocked."""
+    return make_cli_world(tmp_path)
 
 
 CLI_ACCEPTORS = {
-    "search": ["search", "q"],
+    "search": ["search", "excluded"],
     "recent": ["recent"],
     "list-entries": ["list-entries"],
     "batch-read": ["batch-read", "kb:entry-1"],
@@ -198,10 +158,10 @@ CLI_ACCEPTORS = {
         pytest.param("json", marks=pytest.mark.control(reason="JSON already projected")),
     ],
 )
-def test_cli_acceptor_projects_in_every_format(command, fmt, console_width):
+def test_cli_acceptor_projects_in_every_format(command, fmt, console_width, cli_config):
     args = [*CLI_ACCEPTORS[command], "--fields", ",".join(FIELDS), "--format", fmt]
     console_width(200)
-    with _cli_patched():
+    with cli_world(cli_config):
         result = CliRunner().invoke(app, args)
     assert result.exit_code == 0, result.exception or result.output
     out = result.stdout
@@ -227,23 +187,12 @@ def test_search_files_is_not_projected_and_says_so(tmp_path, console_width):
     kb_path = tmp_path / "kb"
     kb_path.mkdir()
     (kb_path / "a.md").write_text("---\nid: a\ntitle: Needle\ntype: note\n---\nneedle body\n")
-    from pyrite.models.core_types import ENTRY_TYPE_REGISTRY  # noqa: F401
-
-    config = MagicMock()
-    kb = MagicMock()
-    kb.name = "kb"
-    kb.path = kb_path
-    config.knowledge_bases = [kb]
-    config.get_kb.return_value = kb
-    entry = MagicMock(entry_type="note", title="Needle", id="a")
-    repo = MagicMock()
-    repo.list_files.return_value = [kb_path / "a.md"]
-    repo._load_entry.return_value = entry
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name="kb", path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db"),
+    )
     console_width(100)
-    with (
-        patch("pyrite.cli.search_commands.load_config", return_value=config),
-        patch("pyrite.cli.search_commands.KBRepository", return_value=repo),
-    ):
+    with cli_world(config):
         result = CliRunner().invoke(
             app, ["search", "needle", "--files", "--fields", "status", "--format", "csv"]
         )
@@ -254,42 +203,46 @@ def test_search_files_is_not_projected_and_says_so(tmp_path, console_width):
     assert "(--files)" not in result.stderr
 
 
-def test_the_rich_fallback_to_file_search_says_so_without_naming_files():
+def test_the_rich_fallback_to_file_search_says_so_without_naming_files(tmp_path):
     """When the index search fails in Rich mode the command falls back to file search; a user
-    who never passed `--files` must not be told about `--files`."""
-    config = MagicMock()
-    config.settings.search_mode = "keyword"
-    with (
-        patch("pyrite.cli.search_commands.load_config", return_value=config),
-        patch("pyrite.cli.context.open_index_db"),
-        patch("pyrite.storage.IndexManager") as mgr,
-        patch("pyrite.cli.search_commands._warn_if_stale"),
-        patch("pyrite.services.search_service.SearchService") as search,
-        patch("pyrite.cli.search_commands._search_files") as files,
-    ):
-        mgr.return_value.is_empty.return_value = False
-        search.return_value.search_response.side_effect = RuntimeError("index unreadable")
-        result = CliRunner().invoke(app, ["search", "q", "--fields", "status", "--format", "rich"])
-    files.assert_called_once()
+    who never passed `--files` must not be told about `--files`.
+
+    The index here is not a database, so the failure is the real one; the KB's files are
+    on disk, so the fallback really searches them."""
+    config = make_cli_world(tmp_path)
+    assert (tmp_path / "kb" / "notes" / "entry-1.md").exists()  # the fallback has a file to find
+    (tmp_path / "index.db").write_bytes(b"not a database" * 100)
+    with cli_world(config):
+        result = CliRunner().invoke(
+            app, ["search", "excluded", "--fields", "status", "--format", "rich"]
+        )
+    assert result.exit_code == 0, result.exception or result.output
     assert "--fields is not applied by file search" in result.stderr
     assert "--files" not in result.stderr
+    assert "entry-1" in result.stdout  # the file search found the entry
 
 
 # --------------------------------------------------------------- REST acceptors
 
 
+@pytest.fixture
+def rest_client(make_client):
+    """A real app over a real KB and index holding `entry-1`."""
+    client, config, db = make_client(kb_name="kb")
+    seed_entry_world(config, db)
+    return client
+
+
 def _rest(client, method, url, **kwargs):
-    with (
-        patch("pyrite.services.search_service.SearchService.search", return_value=[deepcopy(ROW)]),
-        patch("pyrite.services.kb_service.KBService.count_entries", return_value=1),
-        patch("pyrite.services.kb_service.KBService.get_entry", return_value=deepcopy(ROW)),
-        patch("pyrite.services.kb_service.KBService.get_entries", return_value=[deepcopy(ROW)]),
-    ):
-        return getattr(client, method)(url, **kwargs)
+    return getattr(client, method)(url, **kwargs)
 
 
 REST_ACCEPTORS = {
-    "GET /api/search": ("get", "/api/search", {"params": {"q": "q", "fields": "status,missing"}}),
+    "GET /api/search": (
+        "get",
+        "/api/search",
+        {"params": {"q": "excluded", "fields": "status,missing"}},
+    ),
     "GET /api/entries/{id}": (
         "get",
         "/api/entries/entry-1",
@@ -317,8 +270,8 @@ REST_ACCEPTORS = {
         pytest.param("text/yaml", marks=pytest.mark.control(reason="YAML already projected")),
     ],
 )
-def test_rest_acceptor_projects_in_every_negotiated_format(make_client, acceptor, accept):
-    client, _, _ = make_client(kb_name="kb")
+def test_rest_acceptor_projects_in_every_negotiated_format(rest_client, acceptor, accept):
+    client = rest_client
     method, url, kwargs = REST_ACCEPTORS[acceptor]
     response = _rest(client, method, url, headers={"Accept": accept}, **kwargs)
     assert response.status_code == 200, response.text
@@ -333,10 +286,10 @@ def test_rest_acceptor_projects_in_every_negotiated_format(make_client, acceptor
         assert "missing" not in text  # YAML omits absent keys, like JSON
 
 
-def test_batch_fields_are_cleaned_like_the_query_string_form(make_client):
+def test_batch_fields_are_cleaned_like_the_query_string_form(rest_client):
     """The JSON list goes through the same parse as `?fields=`: stripped, deduplicated,
     empties dropped. Before, " status " was a key that matched nothing."""
-    client, _, _ = make_client(kb_name="kb")
+    client = rest_client
     body = {
         "entries": [{"entry_id": "entry-1", "kb_name": "kb"}],
         "fields": [" status ", "", "status", "missing"],
@@ -350,8 +303,8 @@ def test_batch_fields_are_cleaned_like_the_query_string_form(make_client):
 
 
 @pytest.mark.control(reason="the 400 already existed; this keeps the new parse from loosening it")
-def test_batch_fields_still_refuses_a_malformed_list(make_client):
-    client, _, _ = make_client(kb_name="kb")
+def test_batch_fields_still_refuses_a_malformed_list(rest_client):
+    client = rest_client
     response = _rest(
         client,
         "post",
@@ -363,20 +316,16 @@ def test_batch_fields_still_refuses_a_malformed_list(make_client):
 
 @pytest.mark.control(reason="documents what GET /api/entries already does with `fields`")
 @pytest.mark.parametrize("accept", ["text/csv", "application/json"])
-def test_get_entries_list_takes_no_fields(make_client, accept):
+def test_get_entries_list_takes_no_fields(rest_client, accept):
     """`GET /api/entries` has no `fields` parameter (CLI `list-entries` does); documented, pinned:
     the parameter changes nothing."""
-    client, _, _ = make_client(kb_name="kb")
-    with (
-        patch("pyrite.services.kb_service.KBService.list_entries", return_value=[deepcopy(ROW)]),
-        patch("pyrite.services.kb_service.KBService.count_entries", return_value=1),
-    ):
-        plain = client.get("/api/entries", params={"kb": "kb"}, headers={"Accept": accept})
-        with_fields = client.get(
-            "/api/entries",
-            params={"kb": "kb", "fields": "status,missing"},
-            headers={"Accept": accept},
-        )
+    client = rest_client
+    plain = client.get("/api/entries", params={"kb": "kb"}, headers={"Accept": accept})
+    with_fields = client.get(
+        "/api/entries",
+        params={"kb": "kb", "fields": "status,missing"},
+        headers={"Accept": accept},
+    )
     assert plain.status_code == 200
     assert with_fields.text == plain.text
 
@@ -388,10 +337,10 @@ def _batch(client, fields, accept=None):
 
 
 @pytest.mark.parametrize("fields", [[""], [" "], ["", " "]])
-def test_batch_fields_that_clean_to_nothing_keep_the_identity_pair_only(make_client, fields):
+def test_batch_fields_that_clean_to_nothing_keep_the_identity_pair_only(rest_client, fields):
     """A non-empty list that cleans to nothing is still a projection (it was, before the list went
     through parse_fields_param): `id` and `kb_name`, not the whole record."""
-    client, _, _ = make_client(kb_name="kb")
+    client = rest_client
     assert list(_batch(client, fields).json()["entries"][0]) == ["id", "kb_name"]
     csv_text = _batch(client, fields, "text/csv").text
     assert list(csv.reader(io.StringIO(csv_text)))[0] == ["id", "kb_name"]
@@ -400,19 +349,25 @@ def test_batch_fields_that_clean_to_nothing_keep_the_identity_pair_only(make_cli
 @pytest.mark.control(
     reason="an empty list was already no projection; pins it beside the case above"
 )
-def test_batch_empty_fields_list_is_no_projection(make_client):
-    client, _, _ = make_client(kb_name="kb")
+def test_batch_empty_fields_list_is_no_projection(rest_client):
+    client = rest_client
     assert "body" in _batch(client, []).json()["entries"][0]
 
 
 @pytest.mark.control(
     reason="the body list was never split on commas; this pins the documented difference from ?fields="
 )
-def test_batch_fields_are_not_split_on_commas_in_the_json_body(make_client):
-    """Unlike `?fields=a,b`, the body's list names fields one by one: `["a,b"]` is one field."""
-    client, _, _ = make_client(kb_name="kb")
-    row = dict(ROW, **{"a,b": "joined", "a": "no"})
-    with patch("pyrite.services.kb_service.KBService.get_entries", return_value=[row]):
-        body = {"entries": [{"entry_id": "entry-1", "kb_name": "kb"}], "fields": ["a,b"]}
-        record = client.post("/api/entries/batch", json=body).json()["entries"][0]
-    assert record == {"id": "entry-1", "kb_name": "kb", "a,b": "joined"}
+def test_batch_fields_are_not_split_on_commas_in_the_json_body(rest_client):
+    """Unlike `?fields=a,b`, the body's list names fields one by one: `["status,title"]` is one
+    field, which no record has. Split on the comma it would project `status` and `title`, both of
+    which this entry has (the control call below shows the projection reads them)."""
+    client = rest_client
+    entries = [{"entry_id": "entry-1", "kb_name": "kb"}]
+    one_by_one = client.post(
+        "/api/entries/batch", json={"entries": entries, "fields": ["status", "title"]}
+    ).json()["entries"][0]
+    assert one_by_one == {"id": "entry-1", "kb_name": "kb", "status": "waiting", "title": "T"}
+    joined = client.post(
+        "/api/entries/batch", json={"entries": entries, "fields": ["status,title"]}
+    ).json()["entries"][0]
+    assert joined == {"id": "entry-1", "kb_name": "kb"}

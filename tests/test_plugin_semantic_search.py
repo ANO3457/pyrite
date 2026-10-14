@@ -15,7 +15,7 @@ import pytest
 import pyrite.services.embedding_service as es
 from pyrite.config import KBType, PyriteConfig, Settings
 from pyrite.plugins.context import PluginContext
-from tests.search_verdict_seed import add_entry, install_fake_model, make_db
+from tests.search_verdict_seed import FailingModel, add_entry, install_fake_model, make_db
 
 OTHER_MODEL = "BAAI/bge-base-en-v1.5"
 
@@ -86,13 +86,9 @@ class TestTheKeywordFallback:
 
         assert [r["id"] for r in make_ctx(db).search_semantic("meaning")] == ["note"]
 
-    def test_when_the_vector_search_raises(self, db, loaded_models, monkeypatch):
+    def test_when_the_vector_search_raises(self, db, monkeypatch):
         add_entry(db, "note", "kb", cosine=0.62, axis=1, body="deep meaning")
-
-        def _boom(self, *args, **kwargs):
-            raise RuntimeError("model went away")
-
-        monkeypatch.setattr(es.EmbeddingService, "search_similar", _boom)
+        install_fake_model(monkeypatch, model=FailingModel())  # the real service meets it
 
         assert [r["id"] for r in make_ctx(db).search_semantic("meaning")] == ["note"]
 
@@ -108,13 +104,9 @@ class TestTheKeywordFallback:
         assert {r["kb_name"] for r in rows} == {"kb"}
 
     def test_everything_failing_is_an_empty_list(self, db, monkeypatch):
-        from pyrite.services.search_service import SearchService
-
         monkeypatch.setattr(es, "is_available", lambda: False)
-
-        def _boom(self, *args, **kwargs):
-            raise RuntimeError("DB error")
-
-        monkeypatch.setattr(SearchService, "search", _boom)
+        add_entry(db, "note", "kb", body="deep meaning")
+        assert [r["id"] for r in make_ctx(db).search_semantic("meaning")] == ["note"]  # it works
+        db.close()  # a real database error on both legs, not a patched service
 
         assert make_ctx(db).search_semantic("meaning") == []
