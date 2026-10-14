@@ -235,20 +235,25 @@ npm run test:unit
 ### Frontend E2E (Playwright)
 
 ```bash
-cd web
-
-# All E2E
-npm run test:e2e
+# All E2E (npm run test:e2e in web/ is the same script)
+scripts/e2e.sh
 
 # Single spec
-npx playwright test e2e/file.spec.ts
+scripts/e2e.sh e2e/file.spec.ts
 
 # Headed (see the browser)
-npx playwright test --headed
+scripts/e2e.sh --headed
 
 # Debug mode (step through)
-npx playwright test --debug
+scripts/e2e.sh --debug
 ```
+
+`scripts/e2e.sh` runs `npx playwright test` in `web/` with your arguments,
+under the machine-wide heavy-run lock (`scripts/heavy_lock.py`, #168): one
+suite, verify-red or Playwright run at a time on the machine; a second waits
+and says who holds the lock. Local workers: `PW_WORKERS=N`, else Playwright's
+default (half the cores). It is not bounded lower yet: `e2e/seed.spec.ts`
+times out at 1-2 workers (#906); bound it once that is fixed.
 
 **Playwright config** starts both FastAPI (:8088) and Vite (:5173) dev servers. Uses `reuseExistingServer` in dev so you can keep servers running.
 
