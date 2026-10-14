@@ -436,7 +436,6 @@ REVIEWED_EXPERIMENTAL: dict[str, str] = {
     "extensions/journalism-investigation/tests/test_evidence_entry.py::TestEvidenceEntry::test_round_trip": _FIXTURE_LEAK,
     "extensions/journalism-investigation/tests/test_mcp_write_integration.py::TestLogSourceRoundTrip::test_log_source_and_query": _FIXTURE_LEAK,
     "extensions/journalism-investigation/tests/test_mcp_write_integration.py::TestEvidenceChainRoundTrip::test_full_evidence_chain": _FIXTURE_LEAK,
-    "extensions/journalism-investigation/tests/test_cli.py::TestPromoteClaimCommand::test_promote_claim_without_endpoint_fields_is_refused": "'machine-readable' output format; a schema refusal, not access",
     "extensions/journalism-investigation/tests/test_export_pack.py::TestBuildInvestigationPack::test_source_no_redaction": "redaction switched off shows sources: the feature's default, the redaction itself is in the gate",
     "extensions/journalism-investigation/tests/test_ownership_chains.py::TestMaxDepthLimit::test_depth_limit_stops_traversal": "graph traversal depth, not a path leaving a root",
     "extensions/journalism-investigation/tests/test_promote_claim.py::TestDryRunMatchesRealRunRefusal::test_invalid_enum_endpoint_field_refused_the_same_way_by_both": "an enum value 'outside' the schema; dry-run parity of a schema refusal",
