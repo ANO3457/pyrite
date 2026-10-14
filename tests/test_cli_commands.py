@@ -771,3 +771,54 @@ class TestMcpCommandTier:
         assert str(admin_additions) in result.output, (
             f"expected live admin-tier addition count ({admin_additions}) in --help output"
         )
+
+
+@pytest.mark.cli
+@pytest.mark.core
+def test_index_sync_verify_finds_same_size_edit_with_restored_mtime(cli_env):
+    """A same-size edit with its mtime restored is invisible to a plain sync;
+    `--verify` reads the bytes and finds it. Real KB, real index, real command."""
+    import os
+
+    target = next(
+        f for f in cli_env["events_kb"].path.rglob("*.md") if "Test Event 0" in f.read_text()
+    )
+    before = target.stat()
+    original = target.read_bytes()
+    marker = b"title: Test Event "
+    offset = original.index(marker) + len(marker)
+    changed = original[:offset] + b"X" + original[offset + 1 :]
+    assert len(changed) == len(original)
+    target.write_bytes(changed)
+    os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert target.stat().st_mtime_ns == before.st_mtime_ns
+
+    def indexed_title():
+        db = PyriteDB(cli_env["config"].settings.index_path)
+        try:
+            row = db._raw_conn.execute(
+                "SELECT title FROM entry WHERE file_path = ?", (str(target),)
+            ).fetchone()
+        finally:
+            db.close()
+        return row[0]
+
+    with _patch_config(cli_env):
+        plain_sync = runner.invoke(app, ["index", "sync", "--no-embed"])
+        assert plain_sync.exit_code == 0, plain_sync.output
+        assert "Updated: 0" in plain(plain_sync.output)
+        assert indexed_title() == "Test Event 0"
+
+        verified = runner.invoke(app, ["index", "sync", "--verify", "--no-embed"])
+        assert verified.exit_code == 0, verified.output
+        assert "Updated: 1" in plain(verified.output)
+        assert indexed_title() == "Test Event X"
+
+
+@pytest.mark.cli
+@pytest.mark.core
+def test_index_sync_verify_rejects_background_mode():
+    result = runner.invoke(app, ["index", "sync", "--verify", "--background"])
+
+    assert result.exit_code == 2
+    assert "cannot be combined with --background" in plain(result.output)
