@@ -51,6 +51,13 @@ ACCEPTORS = {
     ),
     # MCP tools shape their records with the shared rule but return JSON only.
     ("pyrite/server/mcp_server.py", "_project_fields"): ("mcp", None),
+    # The CLI search row's field list (`--fields` > PYRITE_SEARCH_FIELDS > the lean
+    # default); `search` above applies it, tests/test_search_contract.py pins it.
+    ("pyrite/services/read_shaping.py", "resolve_search_fields"): ("helper", None),
+    # The CLI's `--fields` parser: `parse_fields_param` plus `*` meaning every field.
+    ("pyrite/services/read_shaping.py", "parse_cli_fields"): ("helper", None),
+    # File search names the ignored `--fields` / PYRITE_SEARCH_FIELDS on stderr.
+    ("pyrite/cli/search_commands.py", "_warn_fields_not_applied"): ("helper", None),
 }
 #: Not acceptors, by design, and pinned below: `GET /api/entries` takes no `fields`.
 
@@ -180,6 +187,24 @@ def test_cli_acceptor_projects_in_every_format(command, fmt, console_width, cli_
         assert list(record) == ["id", "kb_name", "status"]  # absent keys are not invented
 
 
+@pytest.mark.parametrize("command", CLI_ACCEPTORS)
+@pytest.mark.parametrize("fmt", ["json", "yaml"])
+def test_cli_acceptor_star_means_every_field(command, fmt, cli_config):
+    """`--fields '*'` is the whole record on every command that takes `--fields`, not
+    the identity pair (the parser used to treat `*` as one unknown name)."""
+    args = [*CLI_ACCEPTORS[command], "--fields", "*", "--format", fmt]
+    with cli_world(cli_config):
+        result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.exception or result.output
+    data = json.loads(result.stdout) if fmt == "json" else yaml.safe_load(result.stdout)
+    record = data.get("results", data.get("entries", [data]))[0]
+    # The index columns the lean search row drops, on every command: not the identity pair.
+    assert {"id", "kb_name", "entry_type", "title", "status", "summary", "file_path"} <= set(record)
+    assert {"created_at", "indexed_at", "metadata"} <= set(record), sorted(record)
+    # Search leaves `body` to --include-body, as it did before `--fields`.
+    assert ("body" in record) == (command != "search")
+
+
 def test_search_files_is_not_projected_and_says_so(tmp_path, console_width):
     """`search --files` is the pre-index fallback. It prints its own Rich table
     (KB, Type, Title, ID) whatever `--format` and `--fields` say; it now tells the
@@ -201,6 +226,23 @@ def test_search_files_is_not_projected_and_says_so(tmp_path, console_width):
     assert "status" not in result.stdout.lower()  # no projected column anywhere in the output
     assert "--fields is not applied" in result.stderr
     assert "(--files)" not in result.stderr
+
+
+def test_search_files_says_so_when_the_variable_is_what_was_ignored(tmp_path):
+    """`PYRITE_SEARCH_FIELDS` is ignored by file search as `--fields` is: the caller is told."""
+    kb_path = tmp_path / "kb"
+    kb_path.mkdir()
+    (kb_path / "a.md").write_text("---\nid: a\ntitle: Needle\ntype: note\n---\nneedle body\n")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name="kb", path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db"),
+    )
+    with cli_world(config):
+        result = CliRunner().invoke(
+            app, ["search", "needle", "--files"], env={"PYRITE_SEARCH_FIELDS": "title"}
+        )
+    assert result.exit_code == 0, result.exception or result.output
+    assert "PYRITE_SEARCH_FIELDS is not applied by file search" in result.stderr
 
 
 def test_the_rich_fallback_to_file_search_says_so_without_naming_files(tmp_path):

@@ -429,13 +429,42 @@ Source of truth: `pyrite/server/endpoints/repos.py` (`_relativize_path`,
 {
   "query": "the search string",
   "count": 3,
-  "results": [ { "...": "entry dict", "similarity": 0.412, "legs": ["keyword", "semantic"] } ],
+  "results": [ { "id": "e1", "kb_name": "notes", "entry_type": "note", "title": "...", "snippet": "...", "similarity": 0.412 } ],
   "match": "weak",
   "match_basis": "keyword: nothing matched; semantic: best similarity 0.41, below 0.50 but 0.19 above the next 9 results",
   "legs_run": ["keyword", "semantic"],
   "keyword_match": "none"
 }
 ```
+
+### What a result row carries: the lean default (CLI only)
+
+`pyrite search` and `pyrite-read search` return, per result, `id`, `kb_name`,
+`entry_type`, `title`, `snippet` and the score key the mode produced: `rank`
+(keyword), `similarity` (semantic), `rank`, `rrf_score` and `similarity`
+(hybrid; a row only one leg returned has only that leg's) and, in hybrid, the
+per-result `legs`. `distance` is not in the default. The page-level keys below
+(`match`, `match_basis`, `legs_run`, `keyword_match`, `warnings`) are in every
+response whatever the rows carry. A key that is not in the row is absent, not
+`null`: reading it is a `KeyError`, never a wrong answer.
+
+To get more: `--fields '*'` (or `PYRITE_SEARCH_FIELDS='*'`) is the whole row
+as before #54 (`body` still needs `--include-body`), a named list
+(`--fields title,date,status`) is those fields after `id` and `kb_name`, and
+`PYRITE_SEARCH_FIELDS` sets the same list for every search in a shell.
+`--fields` wins over the variable; an empty or blank value of either
+(`--fields ''`, `--fields ','`) is "not given" and gives the lean row (before
+#54 it gave the whole row). Names are case-sensitive and the variable is as
+lenient as the flag: a name that no returned row carries and no search row is
+known to have (`Title`, a typo) is skipped, and a warning naming it goes to
+stderr. A name a row merely lacks (`status` on an entry with none) is silent, and an empty result page gives no warning.
+`--fields '*'` means every field on every CLI command that takes `--fields`
+(`search`, `get`, `list-entries`, `recent`, `batch-read`); on REST and MCP `*`
+is not special. `search --files` ignores both and says so on stderr.
+`--include-body` adds `body` to the default row. In CSV the
+columns are the default row's keys that the page has; Markdown keeps its list.
+MCP `kb_search` and REST `GET /api/search` are unchanged: they return the
+whole row.
 
 ### What the page is worth: `match`, `match_basis`, `keyword_match`, `similarity`
 
@@ -851,7 +880,9 @@ line, so a value that itself contains a blank line can look like a record
 boundary. Nothing is cut with an ellipsis, and from a console width of 2 no
 value is cut; at width 1 a stacked value made of wide characters is dropped,
 since a wide character needs 2 cells. A projection never changes the
-underlying records or the fields returned when no projection is requested.
+underlying records. What a command returns when no projection is requested is
+that command's default: the whole record everywhere except `search`, whose
+default row is the lean one above (#54).
 
 Empty projected CSV responses retain their column header and contain no data
 records. Rich retains each command's existing no-results message. JSON and
