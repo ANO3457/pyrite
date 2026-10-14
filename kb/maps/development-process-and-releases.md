@@ -54,6 +54,25 @@ is defined.
 - **Risk spikes.** Throwaway code to learn before building, used when the scope
   or approach is uncertain. `.claude/agents/pyrite-spike.md`.
 
+## Find an agent process rule
+
+This map is the searchable index of record. Each rule lives in its linked skill
+section; follow the pointer for the current instruction. The table contains
+search vocabulary, not a second copy of the rules.
+
+| Search question or terms | Rule home |
+| --- | --- |
+| verify-red regression evidence | [pyrite-dev: Verification](../../.claude/skills/pyrite-dev/SKILL.md#verification) |
+| test driven development red green | [pyrite-dev: Test-driven development](../../.claude/skills/pyrite-dev/SKILL.md#test-driven-development) |
+| claim scope before building | [pyrite-dev: Before you build](../../.claude/skills/pyrite-dev/SKILL.md#before-you-build) |
+| finished worker report testing limits | [pyrite-dev: Finishing: the report](../../.claude/skills/pyrite-dev/SKILL.md#finishing-the-report) |
+| Andon cord pause resume | [pyrite-conductor: The Andon cord](../../.claude/skills/pyrite-conductor/SKILL.md#the-andon-cord) |
+| cold review finding fixes | [pyrite-conductor: 2. Absorb: review before it becomes a PR](../../.claude/skills/pyrite-conductor/SKILL.md#2-absorb-review-before-it-becomes-a-pr) |
+| blocked split risk spike small theme | [pyrite-conductor: 3. Choose: compose themes](../../.claude/skills/pyrite-conductor/SKILL.md#3-choose-compose-themes) |
+| release deployment tagged build | [pyrite-conductor: Releasing and deploying](../../.claude/skills/pyrite-conductor/SKILL.md#releasing-and-deploying) |
+| stop conditions autonomy | [pyrite-conductor: Stop conditions](../../.claude/skills/pyrite-conductor/SKILL.md#stop-conditions) |
+| bookkeeping feedback | [pyrite-dev: Capture what you learned](../../.claude/skills/pyrite-dev/SKILL.md#capture-what-you-learned) |
+
 ## The design today
 
 1. `dev` is the integration branch and default; `main` moves only by
