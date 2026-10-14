@@ -1702,3 +1702,11 @@ class TestTheTestJobIsShardedAndProvesItRanEverything:
     def test_every_nested_job_a_required_check_could_name_is_unchanged(self, ci):
         for job in ("gate", "kb", "frontend", "changes"):
             assert "name" not in ci["jobs"][job] or ci["jobs"][job]["name"] == job
+
+
+class TestGitAttributes:
+    def test_gitattributes_normalizes_text_to_lf(self):
+        path = REPO / ".gitattributes"
+        assert path.exists(), ".gitattributes must exist at repo root"
+        content = path.read_text(encoding="utf-8")
+        assert "* text=auto eol=lf" in content
