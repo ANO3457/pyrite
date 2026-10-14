@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -63,7 +64,12 @@ exec .venv/bin/python scripts/test-affected --run -n 2
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
     ).stdout
 
 
@@ -108,7 +114,16 @@ def _isolated(tmp_path, monkeypatch):
     assert shutil.which("gh") == str(fake), "the real gh would be reached"
 
     # `--wait-ci 0` everywhere; a test that sleeps has a bug.
+    # `release.time` is the global `time` module, so the patch also reaches the
+    # stdlib: `subprocess` polls with `time.sleep` while it waits on a child under
+    # a `timeout=` (tests-t1 gave every git call one). That poll is the deadline,
+    # not a test sleeping; every other caller still fails.
+    real_sleep = time.sleep
+    subprocess_file = subprocess.__file__
+
     def no_sleeping(seconds):
+        if sys._getframe(1).f_code.co_filename == subprocess_file:
+            return real_sleep(seconds)
         raise AssertionError(f"a test slept {seconds}s")
 
     monkeypatch.setattr(release.time, "sleep", no_sleeping)
@@ -540,6 +555,7 @@ class TestExecute:
             cwd=checkout,
             capture_output=True,
             text=True,
+            timeout=120,
         )
         assert pushed.returncode != 0
         assert len(pytest_calls()) == 1
