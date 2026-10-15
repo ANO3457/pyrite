@@ -734,17 +734,23 @@ class PyriteMCPServer:
         body_offset = args.get("body_offset", 0)
         body_limit = args.get("body_limit")
 
+        # The same lookup `get_entry` reads through (shortname mapping, then
+        # config and the index's registry), not the startup config alone: a
+        # KB `pyrite kb add` registered while this server runs is served by
+        # kb_list_entries and kb_read_body, so it must not be KB_NOT_FOUND here.
+        named = named_kb(kb_name)
+        if named and self.svc.get_kb(self.config.kb_name_for(named)) is None:
+            return _refusal(KBNotFoundError(f"KB not found: {kb_name}"))
+
         # Scoped lookup: without `kb_name` it walks only readable KBs, so a
         # private entry neither answers nor shadows a readable twin (P-R5),
         # and the entry's links cover readable KBs only (P-R4).
         result = self.svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=readable_kbs)
 
         if not result:
-            return _error(
-                "NOT_FOUND",
-                f"Entry '{entry_id}' not found",
-                suggestion="Use kb_list_entries or kb_search to find entries",
-            )
+            refusal = _refusal(EntryNotFoundError(f"Entry '{entry_id}' not found"))
+            refusal["suggestion"] = "Use kb_list_entries or kb_search to find entries"
+            return refusal
 
         # Chunk first, project second (ADR-0034 rules 1 and 3): `fields` is a
         # token-reduction parameter and must never raise the body bound. #58
@@ -1446,6 +1452,12 @@ class PyriteMCPServer:
             written = self.svc.update(entry_id, kb_name, updates)
         except ValidationError as e:
             return _refusal(e)
+        except (EntryNotFoundError, KBNotFoundError) as e:
+            # Keep the old handler-level spelling for one release while the
+            # class code becomes the primary contract (ADR-0037).
+            refusal = _refusal(e)
+            refusal["legacy_error_code"] = "UPDATE_FAILED"
+            return refusal
         except PyriteError as e:
             return _error("UPDATE_FAILED", _safe_message(e), retryable=True)
 
