@@ -134,6 +134,10 @@ def test_qa_validate_reports_the_file_with_its_line(tmp_path: Path, name: str):
     assert Path(issue["path"]).name == f"{name}.md"
 
 
+@pytest.mark.control(
+    reason="the refusal itself landed with #971 (P3a: apply() refuses, nothing written); "
+    "this pins it beside the report so the two halves of #760 (b) are read together"
+)
 @pytest.mark.parametrize("name", ["tagged-key", "complex-key"])
 def test_an_update_of_such_a_file_is_refused_with_the_reason_and_nothing_written(
     tmp_path: Path, name: str
