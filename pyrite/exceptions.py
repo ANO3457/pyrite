@@ -568,3 +568,53 @@ class Forbidden(AccessDenied):
     """
 
     error_code = "FORBIDDEN"
+
+
+class InvalidQATierError(ValidationError):
+    """A QA tier that does not exist was asked for (#795).
+
+    ``QA_TIERS`` in ``services/qa_service.py`` lists the tiers QA runs. Any
+    other value is refused before anything is checked or recorded, so a
+    record never names a tier no check stands behind.
+    """
+
+    error_code = "INVALID_TIER"
+
+
+class AINotConfiguredError(PyriteError):
+    """A QA tier needs a model and none is configured (#795).
+
+    The same code REST's AI routes answer (``endpoints/ai_ep.py``). Refused
+    before anything is recorded: a tier that cannot run writes no record and
+    is never reported as a pass.
+    """
+
+    error_code = "AI_NOT_CONFIGURED"
+    suggestion = "Set ai_provider, ai_api_key and ai_model in the config, or use tier 1."
+
+
+class EvaluationFailedError(PyriteError):
+    """A model-judged check did not run to an answer (#795).
+
+    The model call raised, or its reply was empty, not JSON, not a list, or
+    did not answer every rubric item it was asked. ``reason`` says which.
+    Not an empty finding list: a check that did not answer is not a pass.
+    """
+
+    error_code = "EVALUATION_FAILED"
+
+    def __init__(self, entry_id: str, reason: str):
+        self.entry_id = entry_id
+        self.reason = reason
+        super().__init__(f"Tier 2 evaluation of '{entry_id}' did not run: {reason}")
+
+
+class KBUnreadableError(PyriteError):
+    """A KB's folder is missing or cannot be read (#950).
+
+    QA refuses to assess it: no record could be read back from, or written
+    to, a folder that is not there, and writing one would recreate a missing
+    folder. The message names the KB and the reason, never the path.
+    """
+
+    error_code = "KB_UNREADABLE"
