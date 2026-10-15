@@ -402,9 +402,7 @@ class IndexManager:
         `resolve_entry` (#979)."""
         if not prefix:
             return kb_name
-        from ..services.kb_resolver import readable_kb_named
-
-        kb = readable_kb_named(self.config, prefix, None)
+        kb = self.config.readable_kb_named(prefix, readable_kbs=None)
         return kb.name if kb is not None else prefix
 
     def _entry_to_dict(
