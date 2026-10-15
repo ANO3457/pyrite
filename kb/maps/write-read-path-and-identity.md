@@ -33,8 +33,9 @@ Marks: **decided** = accepted ADR; **proposed** = ADR-0044 only (all of ADR-0038
    `unset` (P3b: CLI `--append/--remove/--unset`, MCP `kb_update`, REST PATCH
    `op`; the in-process callers send one operation through
    `KBService.apply_operations`); a create writes its values onto a skeleton
-   the same way (C2); `add_link` and the other writers still emit whole files
-   (P4).
+   the same way (C2); `add_link`/`add_links` append one `links:` item through
+   `apply_operations` (P4); rename's link rewrite, `schema migrate`, `ids
+   pin` and `migrate-standards` still emit whole files (P4, the rest).
 3. A single-entry read reads the file's current bytes and returns a
    `content_hash`; lists and search stay index reads. **decided** ADR-0042
    decision 9. Built for the read (#753, `KBService._read_entry`); the type's
@@ -121,10 +122,10 @@ over who may write an entry file's bytes.
 
 ## Known gaps
 
-- `add_link`/`add_links`, rename's link rewrite, `schema migrate`, `ids pin`
-  and software-kb's `migrate-standards` still emit or write whole files (B6
-  P4); `Entry.save`, `to_markdown` and `_publish_exclusive` stay until the
-  last of them is converted; hooks
+- Rename's link rewrite, `schema migrate`, `ids pin` and software-kb's
+  `migrate-standards` still emit or write whole files (B6 P4; `add_link`/
+  `add_links` are converted); `Entry.save`, `to_markdown` and
+  `_publish_exclusive` stay until the last of them is converted; hooks
   still change a create, and what a hook sets in place reaches an update's
   index row until the index derives it (P6); the id comes from the title; a
   single read returns defaults among the file's fields (P5). ADR-0042 and
