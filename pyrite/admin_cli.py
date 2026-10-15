@@ -249,6 +249,7 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
         is_available,
         semantic_unavailable_for,
     )
+    from .utils.install_hints import extra_install_command
 
     if not is_available():
         # Nothing was embedded: refused, exit 1 (#526). `cli_error` keeps the
@@ -256,7 +257,7 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
         cli_error(
             "sentence-transformers is not installed.",
             error_code="DEPENDENCY_MISSING",
-            suggestion="Install semantic extras: pip install pyrite[semantic]",
+            suggestion=f"Install semantic extras: {extra_install_command('semantic')}",
         )
 
     config, db = get_config_and_db()
