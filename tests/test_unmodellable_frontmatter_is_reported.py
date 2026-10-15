@@ -27,7 +27,7 @@ from pyrite.services.access_policy import UNSCOPED
 from pyrite.services.kb_service import KBService
 from pyrite.services.qa_service import QAService
 from pyrite.storage.database import PyriteDB
-from pyrite.storage.file_operations import FrontmatterSpan, unmodellable_reason
+from pyrite.storage.file_operations import FrontmatterSpan
 from pyrite.storage.index import IndexManager
 from pyrite.utils.frontmatter import Frontmatter, split_frontmatter
 
@@ -158,6 +158,14 @@ def _span(text: str) -> FrontmatterSpan:
     split = split_frontmatter(text)
     assert isinstance(split, Frontmatter)
     return FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+
+
+def unmodellable_reason(text: str, span: FrontmatterSpan):
+    # Imported here, not at the top: the file must collect without the
+    # change, so that every other test in it is red for its own reason.
+    from pyrite.storage.file_operations import unmodellable_reason as rule
+
+    return rule(text, span)
 
 
 @pytest.mark.parametrize("name", sorted(SHAPES))
