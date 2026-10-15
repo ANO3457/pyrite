@@ -197,11 +197,8 @@ def test_health_answers_for_a_kb_whose_schema_fails_to_load(drift, shape, surfac
         if surface.startswith("index"):
             assert data["status"] == "warning"
             assert data["checks"]["schema_errors"] == data["schema_errors"]
-            # No declared types: every non-core spelling is undeclared.
-            assert {r["type"] for r in data["undeclared_types"] if r["kb"] == "one"} == {
-                "research-note",
-                "research_note",
-                "research note",
-            }
+            # No declared types means unrestricted (#595): nothing is
+            # undeclared; the failed load shows in schema_errors above.
+            assert not [r for r in data["undeclared_types"] if r["kb"] == "one"]
     else:
         assert "kb.yaml failed to load" in result.stdout
