@@ -392,6 +392,21 @@ class IndexManager:
         self.db = db
         self.config = config or load_config()
 
+    def _link_kb(self, prefix: str | None, kb_name: str) -> str:
+        """The KB a link's ``prefix:`` names, as the index stores it: the
+        full name of the KB the prefix names (by full name, then shortname;
+        the indexer is unscoped), the owning KB when there is no prefix, or
+        the prefix as written when it names no KB, so the link counts as
+        broken, which it is. ADR-0049 / #952: the index stores the full
+        name, so backlinks, the graph and the broken-link count agree with
+        `resolve_entry` (#979)."""
+        if not prefix:
+            return kb_name
+        from ..services.kb_resolver import readable_kb_named
+
+        kb = readable_kb_named(self.config, prefix, None)
+        return kb.name if kb is not None else prefix
+
     def _entry_to_dict(
         self,
         entry: Entry,
@@ -571,7 +586,7 @@ class IndexManager:
                     data["links"].append(
                         {
                             "target": target,
-                            "kb": kb_prefix or kb_name,
+                            "kb": self._link_kb(kb_prefix, kb_name),
                             "relation": "wikilink",
                             "note": note,
                         }
@@ -615,7 +630,8 @@ class IndexManager:
                 if not ref_str:
                     continue
                 if ":" in ref_str and not ref_str.startswith("http"):
-                    ref_kb, ref_id = ref_str.split(":", 1)
+                    ref_prefix, ref_id = ref_str.split(":", 1)
+                    ref_kb = self._link_kb(ref_prefix, kb_name)
                 else:
                     ref_kb, ref_id = kb_name, ref_str
                 if ref_id and ref_id != entry.id and ref_id not in existing_targets:
@@ -650,7 +666,7 @@ class IndexManager:
                     data["links"].append(
                         {
                             "target": target,
-                            "kb": kb_prefix or kb_name,
+                            "kb": self._link_kb(kb_prefix, kb_name),
                             "relation": "transclusion",
                             "note": note,
                         }
@@ -1302,6 +1318,7 @@ class IndexManager:
             "stale_entries": [],
             "content_changed": [],
             "broken_links": 0,
+            "links_to_unknown_kb": 0,
             "undeclared_types": [],
             "missing_required_fields": [],
             "subdirectory_mismatches": [],
@@ -1449,6 +1466,25 @@ class IndexManager:
         rows = self.db.execute_sql(broken_sql, broken_params)
         if rows:
             health["broken_links"] = rows[0]["cnt"]
+
+        # Link rows whose KB is not a KB name (ADR-0049 Q3): the index stores
+        # the full name a `kb:` prefix resolves to, so a row naming a
+        # shortname is one indexed before that rule, or after a shortname
+        # was renamed in config; a reindex of the source KB rewrites it.
+        # Counted apart from a missing entry (it is in `broken_links` too).
+        kb_names = sorted({kb.name for kb in self.config.all_kbs()})
+        unknown_sql = "SELECT COUNT(*) AS cnt FROM link l WHERE 1 = 1"
+        unknown_params: dict[str, Any] = {}
+        if kb_names:
+            placeholders = ",".join(f":n{i}" for i in range(len(kb_names)))
+            unknown_sql += f" AND l.target_kb NOT IN ({placeholders})"
+            unknown_params.update({f"n{i}": n for i, n in enumerate(kb_names)})
+        if kb_name is not None:
+            unknown_sql += " AND l.source_kb = :kb_name"
+            unknown_params["kb_name"] = kb_name
+        rows = self.db.execute_sql(unknown_sql, unknown_params)
+        if rows:
+            health["links_to_unknown_kb"] = rows[0]["cnt"]
 
         # Each kb.yaml is loaded once here, never again below: a schema that
         # fails to load is reported in `schema_errors` and its KB counts as

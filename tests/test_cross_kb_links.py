@@ -317,3 +317,112 @@ class TestWikilinkExtraction:
         targets = {l["target"] for l in data["links"]}
         assert "real-target" in targets
         assert "123" not in targets
+
+
+class TestAShortnameLinkIsIndexedUnderTheFullName:
+    """ADR-0049 / #952: the server resolves a `[[short:id]]` prefix to the
+    KB's full name and the index stores the full name, so backlinks, the
+    graph and the broken-link count agree with `resolve_entry` on whether
+    the link resolves (#979). Stored as written, `ops` named no KB and every
+    consumer of the link table called the link broken."""
+
+    @staticmethod
+    def _config(tmp_path):
+        from pyrite.config import KBConfig, PyriteConfig, Settings
+
+        for name in ("kb1", "kb2"):
+            (tmp_path / name).mkdir()
+        return PyriteConfig(
+            knowledge_bases=[
+                KBConfig(name="dev-kb", path=tmp_path / "kb1", shortname="dev"),
+                KBConfig(name="ops-kb", path=tmp_path / "kb2", shortname="ops"),
+            ],
+            settings=Settings(index_path=tmp_path / "index.db"),
+        )
+
+    @pytest.fixture
+    def indexed(self, tmp_path):
+        from pyrite.models import NoteEntry
+        from pyrite.storage.database import PyriteDB
+        from pyrite.storage.index import IndexManager
+        from pyrite.storage.repository import KBRepository
+
+        config = self._config(tmp_path)
+        dev, ops = config.knowledge_bases
+        KBRepository(ops).save(NoteEntry(id="runbook", title="Runbook", body="ops body"))
+        KBRepository(dev).save(
+            NoteEntry(
+                id="note",
+                title="Note",
+                body="See [[ops:runbook]] and ![[ops:runbook]]; [[ops-kb:runbook|by name]].",
+                metadata={"references": ["ops:runbook"]},
+            )
+        )
+        db = PyriteDB(config.settings.index_path)
+        for kb in (ops, dev):
+            IndexManager(db, config).sync_kb(kb)
+        try:
+            yield config, db
+        finally:
+            db.close()
+
+    def test_every_link_row_names_the_full_kb(self, indexed):
+        _, db = indexed
+        rows = db.execute_sql(
+            "SELECT relation, target_kb FROM link WHERE source_id = 'note' ORDER BY relation",
+            {},
+        )
+        assert rows, "no link rows indexed"
+        assert {r["target_kb"] for r in rows} == {"ops-kb"}, rows
+
+    def test_the_link_is_not_broken_and_is_a_backlink(self, indexed):
+        _, db = indexed
+        broken = db.execute_sql(
+            "SELECT COUNT(*) AS cnt FROM link l LEFT JOIN entry e "
+            "ON l.target_id = e.id AND l.target_kb = e.kb_name WHERE e.id IS NULL",
+            {},
+        )
+        assert broken[0]["cnt"] == 0
+        back = db.execute_sql(
+            "SELECT source_id FROM link WHERE target_id = 'runbook' AND target_kb = 'ops-kb'", {}
+        )
+        assert {r["source_id"] for r in back} == {"note"}
+
+    def test_an_unknown_prefix_stays_as_written(self, tmp_path):
+        """A prefix that names no KB (full or short) is kept verbatim, so
+        the link is counted broken, which it is."""
+        from pyrite.models import NoteEntry
+        from pyrite.storage.database import PyriteDB
+        from pyrite.storage.index import IndexManager
+        from pyrite.storage.repository import KBRepository
+
+        config = self._config(tmp_path)
+        dev = config.knowledge_bases[0]
+        KBRepository(dev).save(NoteEntry(id="dangling", title="D", body="[[nowhere:x]]"))
+        db = PyriteDB(config.settings.index_path)
+        try:
+            IndexManager(db, config).sync_kb(dev)
+            rows = db.execute_sql("SELECT target_kb FROM link WHERE source_id = 'dangling'", {})
+            assert [r["target_kb"] for r in rows] == ["nowhere"]
+        finally:
+            db.close()
+
+    def test_index_health_reports_link_rows_whose_kb_is_not_a_kb_name(self, indexed):
+        """ADR-0049 Q3: a shortname change in config needs a reindex, and
+        `index health` reports the rows that still name the old prefix. A
+        stale row (the prefix as the index stored it before this change, or
+        after a renamed shortname) is counted apart from a missing entry."""
+        from pyrite.storage.index import IndexManager
+
+        config, db = indexed
+        health = IndexManager(db, config).check_health()
+        assert health["links_to_unknown_kb"] == 0
+        db._raw_conn.execute(
+            "INSERT INTO link (source_id, source_kb, target_id, target_kb, relation, "
+            "inverse_relation, note) VALUES ('note', 'dev-kb', 'other', 'ops', 'wikilink', "
+            "'wikilink', '')"
+        )
+        db._raw_conn.commit()
+        health = IndexManager(db, config).check_health()
+        assert health["links_to_unknown_kb"] == 1
+        assert health["broken_links"] == 1  # counted there as well
