@@ -121,6 +121,127 @@ def _norm_relation(relation: str) -> str:
     return _DEFAULT_RELATION if relation == _LEGACY_DEFAULT_RELATION else relation
 
 
+#: What one link of a file's `links:` must hold for the index insert to store
+#: it, field by field of the mapping ``Link.to_dict()`` hands to
+#: ``_sync_links`` (``pyrite/storage/backends/sqlite_backend.py``). A field is
+#: refused when it is null where the column is NOT NULL, or when it is a list
+#: or mapping -- unhashable in the row's key ``(target, kb, relation)``, or a
+#: value SQLite cannot bind (``note``). ``note`` and ``kb`` reach the insert
+#: only when truthy (``to_dict`` drops them otherwise), so a null or empty one
+#: is stored as the default. Anything else is a scalar SQLite stores as the
+#: file spells it, read back as text (``true`` becomes ``'1'``).
+_LINK_INSERT_RULES: dict[str, bool] = {
+    # field: refuse when null?
+    "target": True,  # target_id NOT NULL; part of the key
+    "relation": True,  # relation NOT NULL; part of the key
+    "note": False,  # dropped when falsy; bound as a value
+    "kb": False,  # dropped when falsy (defaults to the source KB); part of the key
+}
+
+
+def check_link_target(link: dict[str, Any]) -> None:
+    """Refuse a file's link exactly when the index insert cannot store it (#846).
+
+    The rule for links that arrive in a file or a frontmatter mapping
+    (``add``, a create's own ``links`` field, ``import``, MCP
+    ``kb_bulk_create``): ``link`` is ``Link.to_dict()``, what ``_sync_links``
+    receives, and it is refused for a null ``target`` or ``relation`` or a
+    list or mapping in any field (``_LINK_INSERT_RULES``). That is exactly the
+    set ``index sync`` reports as malformed, so ``add``, ``index sync`` and
+    ``update`` give one file one answer (principle 2; fix round 2). A blank
+    target or relation, a number, a boolean or a date is accepted and the
+    file is not rewritten. Before this, such a link was written and then the
+    index insert failed, after the file was on disk.
+    """
+    for key, refuse_null in _LINK_INSERT_RULES.items():
+        if key not in link:
+            continue
+        value = link[key]
+        if value is None and refuse_null:
+            raise ValidationError(f"A link's {key} is empty (null); the index cannot store it.")
+        if isinstance(value, list | tuple | set | dict):
+            raise ValidationError(
+                f"A link's {key} is a {type(value).__name__}, not a single value; "
+                "the index cannot store it."
+            )
+
+
+def _shown(value: Any) -> str:
+    """A non-text target as the caller likely typed it, and what YAML made of it."""
+    import datetime as _dt
+
+    if isinstance(value, bool):
+        return (
+            f"{value!r} (YAML reads yes/no/on/off/true/false as a boolean; "
+            f'quote it, e.g. target: "yes")'
+        )
+    if isinstance(value, int | float):
+        # Not echoed back as the example: YAML read `010` as 8, so "8" would
+        # be the wrong id. The caller knows what they typed.
+        return (
+            f"{value!r} (a number; YAML reads 010 as 8 and 1e3 as 1000.0; "
+            'quote the value as you wrote it, e.g. target: "2024")'
+        )
+    if isinstance(value, _dt.date):
+        return f'{value.isoformat()} (a date; quote it, e.g. target: "{value.isoformat()}")'
+    return repr(value)
+
+
+def check_link_spec(
+    target: Any,
+    relation: Any = None,
+    *,
+    note: Any = None,
+    target_kb: Any = None,
+) -> tuple[str, str, str]:
+    """The check a link the caller is creating passes before anything is written (#846).
+
+    For the explicit link-creation surfaces only: ``add_link`` (CLI ``link``,
+    MCP ``kb_link``), ``add_links`` (``links bulk-create``) and ``pyrite
+    create --link``, which calls it for every spec before it creates the
+    entry. There the caller typed the link, so it must say what it means:
+    the target must be non-blank text -- a number, boolean or date (what
+    YAML or JSON made of an unquoted value: ``yes`` is true, ``010`` is 8) is
+    refused with a hint to quote it, never converted, since converting
+    silently changes what was typed. A relation that is given must be
+    non-blank text; a note and a ``target_kb`` must be text.
+
+    Returns ``(target, relation, note)`` as they will be written: a relation
+    left out (``None``) is ``related_to``, a note left out is ``""``.
+
+    Never on read, and never on a file's own links: those get
+    :func:`check_link_target`, which refuses only what the index cannot store
+    (``kb/design.md``, principle 2). A ``:`` in a relation is accepted: it is
+    ambiguous only in the CLI's ``--link target:relation`` syntax, whose
+    parser refuses a third part.
+    """
+    if target is None or (isinstance(target, str) and not target.strip()):
+        raise ValidationError(f"A link needs a target entry id; got {target!r}.")
+    if not isinstance(target, str):
+        raise ValidationError(f"A link target must be text; got {_shown(target)}.")
+    if relation is None:
+        relation = _DEFAULT_RELATION
+    elif not isinstance(relation, str) or not relation.strip():
+        raise ValidationError(
+            f"A link's relation must be non-empty text; got {relation!r}. "
+            f"Leave it out for {_DEFAULT_RELATION}.",
+        )
+    if note is None:
+        note = ""
+    elif not isinstance(note, str):
+        raise ValidationError(f"A link's note must be text; got {type(note).__name__}.")
+    if target_kb is not None and not isinstance(target_kb, str):
+        raise ValidationError(f"A link's target_kb must be a KB name; got {target_kb!r}.")
+    return target, relation, note
+
+
+def _same_target(existing: Any, target: str) -> bool:
+    """The duplicate key's target comparison: as text, so a hand file's
+    ``target: 2024`` (an int) and a typed ``"2024"`` are one link, as they are
+    one row in the index (fix round 2)."""
+    return str(existing) == str(target)
+
+
 @dataclass
 class WriteResult:
     """What a write produced: the saved entry and the schema warnings it drew.
@@ -864,6 +985,20 @@ class KBService:
         errors = entry.validate()
         if errors:
             raise ValidationError("; ".join(errors))
+        # A new entry's own links (a file given to `add`, a create's `links`
+        # field, an import) are ingest, not a link the caller is typing: only
+        # what the index insert cannot store is refused (check_link_target) --
+        # such a link used to be written, then fail the insert (#846). Nothing
+        # else, so the
+        # file that `update` and `index sync` accept, `add` accepts
+        # (principle 2). The target is not rewritten: `target: 2024` stays an
+        # int in the file. Not in `_validate_write`, which an update also
+        # runs: a link already in a hand-edited file is not the update's.
+        for link in entry.links:
+            try:
+                check_link_target(link.to_dict())
+            except ValidationError as e:
+                raise ValidationError(f"links: {e}") from None
         warnings = self._validate_write(entry, kb_name, kb_config)
 
         # Create never replaces. Ids are derived from titles, so two entries
@@ -1673,10 +1808,15 @@ class KBService:
             identical -- round-2 cold read: a confirmation naming the
             caller's relation instead of the file's would mislead a caller
             who then greps the file for what they typed). The duplicate key
-            is ``(target, kb, relation)``: a second, different relation
-            between the same two entries is a new link, not a duplicate
-            (#396).
+            is ``(target, kb, relation)``, with targets compared as text: a
+            second, different relation between the same two entries is a new
+            link, not a duplicate (#396).
         """
+        # A malformed request is refused before anything is loaded or written
+        # (#846); every link writer passes through this one check.
+        target_id, relation, note = check_link_spec(
+            target_id, relation, note=note, target_kb=target_kb
+        )
         kb_config = self.config.get_kb(source_kb)
         if not kb_config:
             raise KBNotFoundError(f"KB not found: {source_kb}")
@@ -1717,7 +1857,7 @@ class KBService:
         # earlier pass wrote correctly.
         for existing in entry.links:
             if (
-                existing.target == target_id
+                _same_target(existing.target, target_id)
                 and (existing.kb or source_kb) == tkb
                 and _norm_relation(existing.relation) == _norm_relation(relation)
             ):
@@ -1762,8 +1902,12 @@ class KBService:
         second copy of any entry kept elsewhere (#375).
 
         Returns one result per spec, in input order:
-        ``{"status": "created" | "skipped" | "failed", "error"?: str}``.
-        ``dry_run`` reports what would happen without writing.
+        ``{"status": "created" | "skipped" | "failed", "error"?: str,
+        "error_code"?: str}``. A spec that is malformed (not a mapping, no
+        source, a target or relation :func:`check_link_spec` refuses) or names
+        a ``target_kb`` that does not exist is ``failed`` before its source is
+        touched, with the code that refusal carries; the other specs go on
+        (#846). ``dry_run`` reports what would happen without writing.
         """
         kb_config = self._writable_kb(kb_name)
         repo = KBRepository(kb_config)
@@ -1773,10 +1917,11 @@ class KBService:
         dirty: dict[str, list[int]] = {}
 
         for i, spec in enumerate(links):
-            source_id = spec.get("source")
-            target_id = spec.get("target")
-            tkb = spec.get("target_kb") or kb_name
-            relation = spec.get("relation") or "related_to"
+            try:
+                source_id, target_id, relation, note, tkb = self._checked_bulk_spec(spec, kb_name)
+            except (ValidationError, KBNotFoundError) as e:
+                results[i] = {"status": "failed", "error": str(e), "error_code": e.error_code}
+                continue
             if source_id not in loaded:
                 loaded[source_id] = repo.load(source_id)
             entry = loaded[source_id]
@@ -1787,19 +1932,14 @@ class KBService:
             # normalised the same way so legacy data (no `relation:` key,
             # loaded as "related") matches this method's "related_to" default.
             if any(
-                existing.target == target_id
+                _same_target(existing.target, target_id)
                 and (existing.kb or kb_name) == tkb
                 and _norm_relation(existing.relation) == _norm_relation(relation)
                 for existing in entry.links
             ):
                 results[i] = {"status": "skipped"}
                 continue
-            entry.add_link(
-                target=target_id,
-                relation=relation,
-                note=spec.get("note", ""),
-                kb=tkb,
-            )
+            entry.add_link(target=target_id, relation=relation, note=note, kb=tkb)
             results[i] = {"status": "created"}
             dirty.setdefault(source_id, []).append(i)
 
@@ -1817,6 +1957,28 @@ class KBService:
                 for i in positions:
                     results[i] = {"status": "failed", "error": message}
         return results
+
+    def _checked_bulk_spec(self, spec: Any, kb_name: str) -> tuple[str, str, str, str, str]:
+        """One ``add_links`` spec as ``(source, target, relation, note,
+        target_kb)``, or the refusal that fails it alone."""
+        if not isinstance(spec, dict):
+            raise ValidationError(f"expected a mapping, got {type(spec).__name__}")
+        for key in ("source", "target"):
+            if spec.get(key) is None:
+                raise ValidationError(f"missing required field '{key}'")
+        source_id = spec["source"]
+        if not isinstance(source_id, str) or not source_id.strip():
+            raise ValidationError(f"A link needs a source entry id; got {source_id!r}.")
+        target_id, relation, note = check_link_spec(
+            spec["target"],
+            spec.get("relation"),
+            note=spec.get("note"),
+            target_kb=spec.get("target_kb"),
+        )
+        tkb = spec.get("target_kb") or kb_name
+        if self.config.get_kb(tkb) is None:
+            raise KBNotFoundError(f"KB not found: {tkb}")
+        return source_id, target_id, relation, note, tkb
 
     # =========================================================================
     # Query Operations (read-only, delegate to db)
