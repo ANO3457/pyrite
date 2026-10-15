@@ -212,6 +212,9 @@ def test_a_link_is_one_appended_item_and_the_rest_keeps_its_bytes(tmp_path: Path
     assert_only_changed(before, after, [Append("links", NEW_ITEM), Set("updated_at", "x")])
 
 
+@pytest.mark.control(
+    reason="the model's save re-indexed the source too; the control pins that the operation write still indexes the appended link"
+)
 @pytest.mark.parametrize("surface", sorted(SURFACES))
 def test_the_link_is_indexed_as_an_outgoing_link(tmp_path: Path, surface: str):
     config, _path = _build(tmp_path)
@@ -251,6 +254,9 @@ def test_add_links_appends_each_new_item_to_its_source_once(tmp_path: Path):
     )
 
 
+@pytest.mark.control(
+    reason="a three-key file has nothing the model's re-emit could lose, so the bytes were right before; the control pins that Append creates the links: key"
+)
 def test_a_link_on_a_file_without_a_links_key_adds_one(tmp_path: Path):
     config, path = _build(tmp_path, TARGET_NOTE.replace(TARGET, ID), crlf=False)
     before = _text(path)
