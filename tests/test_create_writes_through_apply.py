@@ -41,7 +41,9 @@ def _config(tmp_path: Path, *, git: bool = True) -> PyriteConfig:
     kb_path.mkdir()
     (kb_path / "kb.yaml").write_text(f"name: {KB}\nkb_type: generic\n", encoding="utf-8")
     if git:
-        subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30
+        )
     config = PyriteConfig(
         knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
         settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
@@ -264,7 +266,7 @@ def test_task_create_writes_the_types_values(tmp_path: Path):
 
     kb_path = tmp_path / "tasks"
     (kb_path / "tasks").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30)
     config = PyriteConfig(
         knowledge_bases=[KBConfig(name="tasks", path=kb_path, kb_type="task")],
         settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
