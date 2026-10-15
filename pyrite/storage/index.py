@@ -1141,9 +1141,10 @@ class IndexManager:
           enough for the search path.
         - broken_links: count of link rows with an unresolvable target
         - undeclared_types: entries whose `entry_type` isn't declared in the
-          KB's `kb.yaml` types (and isn't a core type). Aggregated per
-          `(kb, type)` with a count. KBs without a `kb.yaml` are skipped
-          since there's no declared-type list to enforce.
+          KB's `kb.yaml` types, core types included. Aggregated per
+          `(kb, type)` with a count. KBs without a `kb.yaml`, or whose
+          `kb.yaml` declares no types, are skipped since there's no
+          declared-type list to enforce.
         - missing_required_fields: entries missing a field the type's
           `required:` list declares. One entry per (kb, id, type, missing).
           KBs without a `kb.yaml` are skipped.
