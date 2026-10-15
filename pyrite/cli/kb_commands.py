@@ -777,18 +777,12 @@ def schema_set(
     """Replace schema from a YAML file."""
     from ..services.schema_service import SchemaService
     from ..utils.yaml import load_yaml_file as load_yaml
+    from .context import input_file_or_exit
+
+    # Before the KB lookup: that opens (and may create) the index DB.
+    input_file_or_exit(schema_file, "Schema file", output_format)
 
     config = get_config_with_registered_kbs(load_config(), name=kb_name)
-
-    if not schema_file.exists():
-        from ..utils.errors import cli_error
-
-        cli_error(
-            f"File not found: {schema_file}",
-            output_format,
-            error_code="NOT_FOUND",
-            suggestion="Pass an existing YAML file with --schema-file.",
-        )
 
     schema = load_yaml(schema_file)
 
