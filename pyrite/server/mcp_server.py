@@ -56,7 +56,7 @@ MAX_BATCH_READ_ENTRIES = 50
 #: Arguments of kb_create / kb_update that steer the tool, never entry fields.
 _CREATE_CONTROL_KEYS = frozenset({"kb_name", "validate", "allow_undeclared"})
 #: Arguments of kb_update that name the entry or steer the tool.
-_UPDATE_CONTROL_KEYS = frozenset({"entry_id", "kb_name", "validate"})
+_UPDATE_CONTROL_KEYS = frozenset({"entry_id", "kb_name", "validate", "append", "remove", "unset"})
 
 
 # Identity fields every `fields` projection keeps. Agents key on these to
@@ -1424,7 +1424,14 @@ class PyriteMCPServer:
         )
 
         try:
-            written = self.svc.update(entry_id, kb_name, updates)
+            written = self.svc.update(
+                entry_id,
+                kb_name,
+                updates,
+                append=args.get("append"),
+                remove=args.get("remove"),
+                unset=args.get("unset"),
+            )
         except (ValidationError, ConflictError) as e:
             return _refusal(e)
         except StorageError as e:

@@ -89,11 +89,6 @@ UPDATE_FLAGS = frozenset({"echo", "stale"})
 #: test fails outright, so a reason cannot quietly stop being true.
 #: Measured on dev at c097e7f6, 2026-10-03.
 KNOWN_DIVERGENCES: dict[str, tuple[str, str]] = {
-    "appending-to-a-list-leaves-the-existing-items-alone": (
-        "principle 3: kb_update sets `links` aside (`ignored: ['links']`) and writes "
-        "nothing; no operation appends to a list",
-        r"diff was:\n\(end of diff\)",
-    ),
     "a-stale-whole-document-replace-is-refused": (
         "decision 11: kb_get returns `content_hash` since #753 (decision 9), but "
         "kb_update sets it aside as `ignored` and writes over the hand edit",
@@ -299,13 +294,8 @@ def _to_kb_update_args(
     """The doc's operation as today's ``kb_update`` arguments.
 
     - ``set`` names fields, sent as fields.
-    - ``append`` has no counterpart today. The item is added to the list as
-      the *file* holds it, and the whole list is sent. A read would hand back
-      Pyrite's normalised reading of the items (``target_id``/``target_kb``,
-      ``since`` dropped), and sending that would rewrite them for a reason
-      that is not this example's. Under ADR-0042 decision 2, a set of a whole
-      list copies unchanged items byte for byte, so this mapping can pass.
-      When kb_update grows an ``append`` operation, send that here instead.
+    - ``append`` is ``kb_update``'s own ``append`` argument (#955, B6 P3b):
+      the item alone, never the list.
     - ``replace`` is a whole-document write (decision 11): its fields, plus
       the body as the file holds it, plus ``content_hash``.
     """
@@ -317,9 +307,7 @@ def _to_kb_update_args(
             args.update(value)
             args["body"] = _file_body(file_text)
         elif key == "append":
-            current = _front(file_text)
-            for name, item in value.items():
-                args[name] = [*(current.get(name) or []), item]
+            args["append"] = dict(value)
         elif key == "content_hash":
             args["content_hash"] = value
         else:
@@ -862,14 +850,13 @@ def _check(
     else:
         args = _to_kb_update_args(op, config, entry_id, path.read_text(), echo=echo)
         before = path.read_bytes().decode("utf-8")
-        for name in op.get("append", {}):
-            # Against PyYAML's parse of the bytes on disk, not the parse that
-            # built the arguments: a mapping that sent Pyrite's reading of the
-            # items (normalised keys, `since` dropped) fails here.
-            on_disk = yaml.safe_load(before.split("---\n", 2)[1]) or {}
+        for name, item in op.get("append", {}).items():
+            # The append carries the item alone: a mapping that sent the whole
+            # list (Pyrite's reading of the items, `since` dropped) would make
+            # the example measure something else.
             _require(
-                args[name][:-1] == on_disk.get(name, []),
-                f"the {name} sent are not the file's own items, so the append is not "
+                args.get("append", {}).get(name) == item and name not in args,
+                f"the append of {name} did not send the item alone, so the append is not "
                 "what was measured",
             )
         with pytest.MonkeyPatch.context() as spy_patch:

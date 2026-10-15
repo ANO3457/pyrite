@@ -49,11 +49,15 @@ from ..storage.database import PyriteDB
 from ..storage.document_manager import DocumentManager
 from ..storage.entry_writer import FileChanged, create_entry_text, publish_entry_text
 from ..storage.file_operations import (
+    AddSubkey,
+    Append,
     FrontmatterSpan,
     OperationRefusedError,
+    Remove,
     ReplaceBody,
     Set,
     TimestampText,
+    Unset,
     apply,
 )
 from ..storage.index import IndexManager, content_hash
@@ -1484,8 +1488,26 @@ class KBService:
                 updates[key] = value
         return updates, sorted(ignored), sorted(unchanged)
 
-    def update(self, entry_id: str, kb_name: str, updates: dict[str, Any]) -> WriteResult:
+    def update(
+        self,
+        entry_id: str,
+        kb_name: str,
+        updates: dict[str, Any],
+        *,
+        append: dict[str, Any] | None = None,
+        remove: dict[str, Any] | None = None,
+        unset: list[str] | None = None,
+    ) -> WriteResult:
         """Update an existing entry for a caller, returning it and its warnings.
+
+        ``append`` and ``remove`` name a list field and one item (or a list
+        of items, each one appended or removed); ``unset`` names keys to
+        remove with their own lines (ADR-0042 decision 1; #955, B6 P3b).
+        ``null`` sent in ``updates`` is a value, never a removal. An appended
+        link is checked as a link (``check_link_target``). ``links`` and
+        ``sources`` may be appended to and removed from here, though a set
+        of the whole list is still refused: an item operation touches only
+        the item it names.
 
         The surfaces' update (REST PUT/PATCH, MCP ``kb_update``, CLI
         ``update``). ``updates`` is the caller's field set as sent, ADR-0034
@@ -1503,10 +1525,33 @@ class KBService:
             EntryNotFoundError: If entry not found
             ValidationError: (or a subclass) if the write is refused
         """
-        return self._update(entry_id, kb_name, updates, restrict=True)
+        return self._update(
+            entry_id,
+            kb_name,
+            updates,
+            ops=_item_operations(append, remove, unset),
+            restrict=True,
+        )
+
+    def apply_operations(self, entry_id: str, kb_name: str, ops: list[Any]) -> WriteResult:
+        """The in-process form of an operation write: ``ops`` are
+        ``file_operations`` operations (``Set``, ``Append``, ``Remove``,
+        ``Unset``, ``AddSubkey``, ``ReplaceBody``) whose paths name the
+        file's keys as a read returns them; aliases and a key the file nests
+        under ``metadata:`` resolve as for a field update. The services that
+        own a type's managed fields (a task's audit trail and evidence, qa
+        fix's link and tag repairs) write one item here instead of a list
+        read through the model (#955, B6 P3b)."""
+        return self._update(entry_id, kb_name, {}, ops=list(ops), restrict=False)
 
     def _update(
-        self, entry_id: str, kb_name: str, updates: dict[str, Any], *, restrict: bool
+        self,
+        entry_id: str,
+        kb_name: str,
+        updates: dict[str, Any],
+        *,
+        restrict: bool,
+        ops: list[Any] | None = None,
     ) -> WriteResult:
         """The one update: the request as operations applied to the file's own
         bytes (ADR-0042; #955, B6 P3a).
@@ -1550,7 +1595,7 @@ class KBService:
                 raise EntryNotFoundError(
                     f"Entry not found: {entry_id}{repo.not_found_hint(entry_id)}"
                 ) from None
-            self._refuse_update_keys(entry, entry_id, updates, restrict, kb_config)
+            self._refuse_update_keys(entry, entry_id, updates, restrict, kb_config, ops or [])
 
             text = raw.decode("utf-8")
             split = split_frontmatter(text)
@@ -1562,15 +1607,17 @@ class KBService:
                 raise ValidationError(
                     f"Cannot update '{entry_id}': the frontmatter is not a mapping"
                 )
-            ops = self._operations_for(entry, file_values, updates)
+            all_ops = self._operations_for(entry, file_values, updates) + [
+                self._resolve_operation(entry, file_values, op) for op in ops or []
+            ]
             # Decided again on the keys the update will actually write: a key
             # the request nests under `metadata` is a top-level key of the
             # file after the mapping (decision 6), so `metadata.type`,
             # `metadata.id`, `metadata.links` and `metadata.body` are the same
             # refusals as their top-level spellings (#971 fix round 1).
-            self._refuse_update_keys(entry, entry_id, {}, restrict, kb_config, ops)
+            self._refuse_update_keys(entry, entry_id, {}, restrict, kb_config, all_ops)
             try:
-                new_text, _report = apply(text, ops, span)
+                new_text, _report = apply(text, all_ops, span)
                 changed = new_text != text
                 if changed and "updated_at" in file_values and "updated_at" not in updates:
                     stamp = _updated_at_stamp(
@@ -1700,7 +1747,22 @@ class KBService:
             )
         _, _, managed = self._field_sets(entry.entry_type, kb_config)
         if restrict:
-            refused = sorted({k for k in [*updates, *op_keys] if k in managed})
+            # An item operation on `links`/`sources` touches one item, so a
+            # surface may send it; a set of the whole list stays refused.
+            item_ok = {"links", "sources"}
+            refused = sorted(
+                {k for k in updates if k in managed}
+                | {
+                    str(_top_key_of(op))
+                    for op in ops
+                    if not isinstance(op, ReplaceBody)
+                    and str(_top_key_of(op)) in managed
+                    and not (
+                        isinstance(op, Append | Remove | AddSubkey)
+                        and str(_top_key_of(op)) in item_ok
+                    )
+                }
+            )
             if refused:
                 # #557: the usual way to arrive here is a KB using one of these
                 # names for a field of its own (`provenance:` on a draft), so
@@ -1791,6 +1853,55 @@ class KBService:
             else:
                 put(k, k, value)
         return ops
+
+    def _resolve_operation(self, entry: Entry, file_values: dict[str, Any], op: Any) -> Any:
+        """``op`` with its top-level key spelled as the file holds it (the
+        alias and nested-``metadata`` rules of ``_operations_for``) and its
+        value as plain data; an appended or added link checked as a link."""
+        if isinstance(op, ReplaceBody):
+            return op
+        segs = list(_segments_of(op))
+        if not segs or not isinstance(segs[0], str):
+            return op
+        head = self._spelling_for(entry, file_values, segs[0])
+        path: Any = head if len(head) == 1 and len(segs) == 1 else (*head, *segs[1:])
+        if isinstance(op, Set):
+            value = (
+                self._value_for_file(entry, segs[0], op.value)
+                if len(segs) == 1
+                else _plain_value(op.value)
+            )
+            return Set(path, value)
+        if isinstance(op, Append | Remove):
+            value = _plain_value(op.value)
+            if isinstance(op, Append) and segs[0] == "links" and isinstance(value, dict):
+                check_link_target(Link.from_dict(value).to_dict())
+            return type(op)(path, value)
+        if isinstance(op, AddSubkey):
+            return AddSubkey(path, op.key, _plain_value(op.value))
+        if isinstance(op, Unset):
+            return Unset(path)
+        return op
+
+    def _spelling_for(self, entry: Entry, file_values: dict[str, Any], key: str) -> tuple[str, ...]:
+        """The path the file holds ``key`` at: ``(key,)`` or ``("metadata", key)``."""
+        from ..schema.field_aliases import class_field_aliases
+
+        aliases = class_field_aliases(type(entry), entry.entry_type)
+        targets = set(aliases.values())
+        spelled = key
+        if key in aliases or key in targets:
+            target = aliases.get(key, key)
+            for candidate in (key, target, *(a for a, t in aliases.items() if t == target)):
+                if candidate in file_values:
+                    spelled = candidate
+                    break
+            else:
+                spelled = target
+        nested = file_values.get("metadata")
+        if isinstance(nested, dict) and spelled in nested and spelled not in file_values:
+            return ("metadata", spelled)
+        return (spelled,)
 
     @staticmethod
     def _value_for_file(entry: Entry, key: str, value: Any) -> Any:
@@ -3364,13 +3475,42 @@ class KBService:
 _UPDATE_ATTEMPTS = 6
 
 
+def _item_operations(
+    append: dict[str, Any] | None, remove: dict[str, Any] | None, unset: list[str] | None
+) -> list[Any]:
+    """The surfaces' ``append``/``remove``/``unset`` as operations: a list
+    value under a key means each of its items; ``unset`` is a list of keys."""
+    ops: list[Any] = []
+    for key, value in (append or {}).items():
+        ops += [Append(key, item) for item in (value if isinstance(value, list) else [value])]
+    for key, value in (remove or {}).items():
+        ops += [Remove(key, item) for item in (value if isinstance(value, list) else [value])]
+    for key in unset or []:
+        ops.append(Unset(key))
+    return ops
+
+
+def _segments_of(op: Any) -> tuple[Any, ...]:
+    """An operation's path as segments: a tuple as given, a string split on
+    ``.`` and ``[i]`` the way ``file_operations`` reads it."""
+    path = getattr(op, "path", None)
+    if isinstance(path, tuple):
+        return path
+    if not isinstance(path, str):
+        return ()
+    segs: list[Any] = []
+    for part in path.split("."):
+        head, *indexes = part.split("[")
+        if head:
+            segs.append(head)
+        for index in indexes:
+            segs.append(int(index.rstrip("]")))
+    return tuple(segs)
+
+
 def _top_key_of(op: Any) -> Any:
-    """The top-level frontmatter key an operation writes: the first segment
-    of its path (``"links"`` for ``("links", 0, "target")`` or ``"links[0].target"``)."""
-    path = op.path
-    if isinstance(path, tuple | list):
-        return path[0] if path else ""
-    return str(path).split(".", 1)[0].split("[", 1)[0]
+    segs = _segments_of(op)
+    return segs[0] if segs else ""
 
 
 def _frontmatter_span(text: str) -> FrontmatterSpan:

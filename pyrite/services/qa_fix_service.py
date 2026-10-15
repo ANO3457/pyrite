@@ -411,24 +411,51 @@ class QAFixService:
         written: the entry's file is gone, or the target is not in its
         ``links`` (a ``[[wikilink]]`` in the body is not rewritten).
         """
-        entry = self._load(entry_id, kb_name)
-        if not entry:
+        items = self._file_links(entry_id, kb_name)
+        if items is None:
             return "entry_not_found: the entry's file is gone"
 
-        # Update the link target in the entry's links list
-        changed = False
-        for link in entry.links:
-            if link.target == old_target:
-                link.target = new_target
-                changed = True
+        # One operation per broken item, on the key the item itself uses
+        # (`target:` or the legacy `to:`), so the other items and the rest of
+        # the item keep their bytes (ADR-0042 decisions 1 and 3; #955 P3b).
+        from ..storage.file_operations import Set
 
-        if not changed:
+        ops = []
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            key = "to" if "to" in item and "target" not in item else "target"
+            if item.get(key) == old_target:
+                ops.append(Set(("links", i, key), new_target))
+        if not ops:
             return (
                 f"link_not_rewritten: '{old_target}' is not in the entry's links "
                 "(a link in the body is not rewritten)"
             )
-        kb_svc.update_entry(entry_id, kb_name, links=entry.links)
+        kb_svc.apply_operations(entry_id, kb_name, ops)
         return None
+
+    def _file_links(self, entry_id: str, kb_name: str) -> list[Any] | None:
+        """The entry's ``links:`` items as the file holds them, or None when
+        there is no file. The items' own keys decide which key a fix sets."""
+        from ..storage.repository import KBRepository
+        from ..utils.frontmatter import load_frontmatter
+
+        kb_config = self.config.get_kb(kb_name)
+        if not kb_config:
+            return None
+        found = KBRepository(kb_config).read_for_write(entry_id)
+        if found is None:
+            return None
+        _path, raw = found
+        try:
+            parsed = load_frontmatter(raw.decode("utf-8"))
+        except Exception:
+            return None
+        if parsed is None:
+            return None
+        links = parsed[0].get("links")
+        return list(links) if isinstance(links, list) else []
 
     def _find_tag_normalisation_fixes(self, kb_name: str) -> list[dict[str, Any]]:
         """Find tags with mixed case that should be lowercased.
@@ -475,6 +502,11 @@ class QAFixService:
         if not entry:
             return "entry_not_found: the entry's file is gone"
 
-        new_tags = [new_tag if t == old_tag else t for t in entry.tags]
-        kb_svc.update_entry(entry_id, kb_name, tags=new_tags)
+        # One operation per tag, by its position in the file's list: the
+        # other tags, and the line's comment, keep their bytes (#955 P3b).
+        from ..storage.file_operations import Set
+
+        ops = [Set(("tags", i), new_tag) for i, t in enumerate(entry.tags) if t == old_tag]
+        if ops:
+            kb_svc.apply_operations(entry_id, kb_name, ops)
         return None
