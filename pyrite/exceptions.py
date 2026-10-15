@@ -113,6 +113,50 @@ class EntryNotFoundError(PyriteError):
     error_code = "ENTRY_NOT_FOUND"
 
 
+class AmbiguousEntryError(PyriteError):
+    """An entry id given without a KB names more than one KB the caller can read (#528).
+
+    Never resolved by config order: the caller names the KB. ``candidate_kbs``
+    lists only KBs the caller can read -- the raise site counts matches over
+    the readable set, so a private KB holding the same id is neither listed
+    nor a cause of the refusal (ADR-0037 section 4). The list is public by
+    construction; every transport copies it into its body through
+    ``refusal_fields`` (REST ``server/errors.py``, MCP ``_refusal``, the CLI's
+    ``utils/errors.py``).
+    """
+
+    error_code = "AMBIGUOUS"
+    suggestion = (
+        "Name one of these KBs: -k on the CLI, kb on REST, kb_name on MCP "
+        "(or a pyrite://kbs/<kb>/entries/<id> resource)."
+    )
+
+    def __init__(self, entry_id: str, candidate_kbs: list[str]):
+        self.entry_id = entry_id
+        self.candidate_kbs = list(candidate_kbs)
+        super().__init__(f"Entry '{entry_id}' exists in multiple KBs: {', '.join(candidate_kbs)}")
+
+
+#: Attributes a refusal carries beside its code, message and suggestion, each
+#: public by construction. Every transport copies those an exception has into
+#: its error body under the same key, through ``refusal_fields``, so a class
+#: that adds one (#777's unreadable candidates) is mapped on REST, MCP and the
+#: CLI by naming it here. Not every extra goes through it yet:
+#: ``UndeclaredTypeError.declared_types`` is still copied by MCP's ``_refusal``
+#: and REST's write-refusal path themselves, with their own suggestion text.
+REFUSAL_FIELDS: tuple[str, ...] = ("candidate_kbs",)
+
+
+def refusal_fields(exc: BaseException) -> dict:
+    """The ``REFUSAL_FIELDS`` ``exc`` carries, keyed by name (absent ones left out)."""
+    out = {}
+    for name in REFUSAL_FIELDS:
+        value = getattr(exc, name, None)
+        if value is not None:
+            out[name] = value
+    return out
+
+
 class KBNotFoundError(PyriteError):
     """Raised when a knowledge base cannot be found."""
 

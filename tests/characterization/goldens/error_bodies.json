@@ -22,6 +22,44 @@
       "status": 500
     }
   },
+  "AmbiguousEntryError": {
+    "cli": {
+      "candidate_kbs": [
+        "kb-a",
+        "kb-b"
+      ],
+      "error": "Entry 'characterization-entry' exists in multiple KBs: kb-a, kb-b",
+      "error_code": "AMBIGUOUS",
+      "outcome": "error",
+      "retryable": false,
+      "suggestion": "Name one of these KBs: -k on the CLI, kb on REST, kb_name on MCP (or a pyrite://kbs/<kb>/entries/<id> resource)."
+    },
+    "mcp": {
+      "candidate_kbs": [
+        "kb-a",
+        "kb-b"
+      ],
+      "error": "Entry 'characterization-entry' exists in multiple KBs: kb-a, kb-b",
+      "error_code": "AMBIGUOUS",
+      "retryable": false,
+      "suggestion": "Name one of these KBs: -k on the CLI, kb on REST, kb_name on MCP (or a pyrite://kbs/<kb>/entries/<id> resource)."
+    },
+    "rest": {
+      "body": {
+        "detail": {
+          "candidate_kbs": [
+            "kb-a",
+            "kb-b"
+          ],
+          "code": "AMBIGUOUS",
+          "hint": "Name one of these KBs: -k on the CLI, kb on REST, kb_name on MCP (or a pyrite://kbs/<kb>/entries/<id> resource).",
+          "message": "Entry 'characterization-entry' exists in multiple KBs: kb-a, kb-b",
+          "retryable": false
+        }
+      },
+      "status": 409
+    }
+  },
   "BrandingInvalidError": {
     "cli": {
       "error": "The server's branding configuration is invalid and could not be loaded. An administrator needs to fix branding.yaml; the server log names the file and the problem.",

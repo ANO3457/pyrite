@@ -12,7 +12,7 @@ from typing import Any
 
 from ..config import PyriteConfig
 from ..storage.database import PyriteDB
-from .access_policy import UNSCOPED
+from .access_policy import UNSCOPED, named_kb
 from .search_service import build_or_query, clip_semantic_text
 
 logger = logging.getLogger(__name__)
@@ -37,9 +37,13 @@ class LinkDiscoveryService:
         "not narrowed" (every KB), never a name. Called once per public
         call; the per-entry ``discover_neighbors`` calls inside
         ``batch_suggest`` and ``find_orphans`` repeat a dict lookup.
+
+        A blank name names no KB (``access_policy.named_kb``): it is not a
+        typo to refuse here but an id left unplaced, which the entry lookup
+        refuses as ``AMBIGUOUS`` when more than one KB holds it (#528).
         """
         for name in names:
-            if name is not None:
+            if named_kb(name):
                 self.config.require_kb(name)
 
     @staticmethod
@@ -79,6 +83,11 @@ class LinkDiscoveryService:
         entry = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=UNSCOPED)
         if entry is None:
             return []
+        # The KB the entry was found in, whatever the caller wrote: a blank
+        # `kb_name` placed the id by lookup, and every comparison below
+        # (self, backlinks) must use that KB, not the blank (#912).
+        kb_name = entry.get("kb_name") or kb_name
+        target_kb = named_kb(target_kb)
 
         query = self.build_suggest_query(entry)
         if not query.strip():
@@ -105,7 +114,7 @@ class LinkDiscoveryService:
         candidates = []
         for r in raw_results:
             rid = r.get("id", "")
-            if rid == entry_id:
+            if rid == entry_id and r.get("kb_name", search_kb) == kb_name:
                 continue
             if rid in existing_targets:
                 continue
@@ -166,6 +175,8 @@ class LinkDiscoveryService:
         entry = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=readable_kbs)
         if entry is None:
             return []
+        kb_name = entry.get("kb_name") or kb_name  # see suggest_links
+        target_kb = named_kb(target_kb)
 
         # Build search query from entry content
         title = entry.get("title", "")

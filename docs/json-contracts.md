@@ -48,6 +48,40 @@ JSON, not a promise that every command gives you the option.
   succeed on retry (e.g. a transient lock); `false` means the request
   itself needs to change first (e.g. a malformed query).
 
+**`AMBIGUOUS`: an id in more than one KB (#528).** An entry or task id given
+without a KB (or with a blank one) that the index holds in more than one KB
+the caller can read is refused, never answered by config order. Every surface
+that resolves an id this way answers the same code and lists the KBs in
+`candidate_kbs`, beside the contract's keys: CLI `get`, `task get`, `task
+status`, `pyrite-read get`, and `update`/`links suggest`/`links discover`
+given `-k ""`; MCP `kb_get`, `kb_read_body`, `task_status` and the four
+task-graph tools (in the tool result); REST `GET /api/entries/{id}/blocks`,
+`GET /api/collections/{id}` and `/entries`, and the AI routes, given a blank
+`kb`, answer `409` with `candidate_kbs` in `detail`. `candidate_kbs` names
+only KBs the caller can read: a private KB holding the same id is neither
+listed nor a cause of the refusal. One readable match still answers; zero is
+still `NOT_FOUND`. Only indexed copies are counted: an id indexed in one KB
+with a not-yet-indexed `<id>.md` in another answers from the indexed KB (the
+by-name read runs only when no readable KB's index holds the id, #753). To
+comply, name one of the KBs: `-k`, `kb`, `kb_name`, `kb_a`/`kb_b`
+(`find_connections`), or `pyrite://kbs/<kb>/entries/<id>`.
+
+**MCP prompts and resources** (`prompts/get`, `resources/read`) have no result
+shape for a refusal, so theirs is a JSON-RPC error: `message` is the
+envelope's `error`, `code` is `-32602` (invalid params), and `data` is the
+whole envelope above (`error_code`, `suggestion`, `retryable`, and
+`candidate_kbs` for `AMBIGUOUS`). Match on `data.error_code`. This holds for
+every refusal from a prompt or resource, `KB_NOT_FOUND` included; a KB in
+`pyrite://kbs/<kb>/entries/<id>` that does not exist answers `KB_NOT_FOUND`,
+as one the caller cannot read does.
+
+REST `GET /api/entries/{id}` without `kb` is refused the same way (`409`,
+`candidate_kbs` in `detail`); the web client's entry links carry `?kb=` (#910).
+
+**Not yet:** extension commands and tools that look ids up through
+their own queries (`sw`, `wiki`, `social vote`, `investigation_*`) and bare
+`[[id]]` resolution (`/api/entries/resolve`) are not covered either (#911).
+
 **MCP only, for one release: `legacy_error_code`.** Where a class's code
 changed on MCP because REST's more specific code won (ADR-0037 theme 2:
 `ENTRY_NOT_FOUND`/`KB_NOT_FOUND` replacing `NOT_FOUND`, `KB_READ_ONLY`
@@ -117,6 +151,7 @@ is reproduced by a command in "Reproduce the codes" below, which CI runs.
 |---|---|---|
 | `KB_NOT_FOUND` | the KB name is not registered (or, for a scoped caller, not readable). Every CLI write command (`create`, `update`, `delete`, `link`) reports it. | `pyrite kb list` shows the registered names; `pyrite orient` lists the KBs you can read. |
 | `NOT_FOUND` | the entry id does not exist: CLI `get`, `update`, `delete`, `link`. `pyrite backlinks` and `pyrite-read backlinks` on an id that no entry has and nothing links to answer `ENTRY_NOT_FOUND` (the class's code, today; #610 settles the spelling). An id that is only linked to (`[[ghost-page]]`) is answered with its linking entries. The intended MCP and REST code is `ENTRY_NOT_FOUND` (see "MCP only, for one release" above); today MCP `kb_get` answers `NOT_FOUND` and `kb_update` answers `UPDATE_FAILED` with `retryable: true` (#761: a bug, do not rely on it). | `pyrite search <term> -k <kb>` to find the id. |
+| `AMBIGUOUS` | the id was given without a KB (or with a blank `-k`) and more than one KB you can read holds it (see "`AMBIGUOUS`" above). The error lists them in `candidate_kbs`; REST answers `409`. | Repeat the command with `-k <kb>` (`kb` on REST, `kb_name` on MCP), one of `candidate_kbs`. |
 | `UNDECLARED_TYPE` | the KB's `kb.yaml` declares types and this is not one of them. Core types (`note`, `person`, …) are **not** exempt. Override with `allow_undeclared` (MCP, REST body or import query) / `--allow-undeclared` (CLI). The error carries `declared_types` on MCP and REST. | Use a declared type (`pyrite kb schema show <kb>`), or pass the override. |
 | `ENTRY_EXISTS` | the id (given, or derived from the title) already exists. Create never replaces; use update. REST answers `409`. | `update` it, or choose another title or id. |
 | `SCHEMA_VIOLATION` | the KB schema or a plugin validator rejected a field: enum, required, range, format. A kb.yaml enum (`options:`/`values:`, list `items:`, rule `enum:`) is refused when `validation.enforce_enums` is on (the default); every other kb.yaml finding when `validation.enforce` is on. The message names the field, the value and the allowed list (`kind: 'chore' is not one of [...]`). An update that leaves an off-list value as it was is not refused (see **Warnings**). | Re-read the message: it names the field and the allowed values. |
@@ -243,6 +278,32 @@ pyrite update nope -k notes --title x
 <!-- expect-text: "error_code": "NOT_FOUND" -->
 ```bash
 pyrite link hello nope -k notes
+```
+
+`AMBIGUOUS`, from an id in two KBs, and the same command with `-k`:
+
+<!-- expect-exit: 0 -->
+```bash
+pyrite init -t empty -p ./more --name more --no-examples
+pyrite create -k more -t note --title "Hello" --body "Elsewhere."
+```
+
+<!-- expect-exit: 1 -->
+<!-- expect-text: "error_code": "AMBIGUOUS" -->
+```bash
+pyrite get hello
+```
+
+<!-- expect-exit: 1 -->
+<!-- expect-text: "candidate_kbs": ["notes", "more"] -->
+```bash
+pyrite update hello -k "" --title x
+```
+
+<!-- expect-exit: 0 -->
+<!-- expect-text: "kb_name": "more" -->
+```bash
+pyrite get hello -k more
 ```
 
 `ENTRY_EXISTS`, `UNDECLARED_TYPE`, `SCHEMA_VIOLATION`, `VALIDATION_FAILED`:

@@ -31,6 +31,7 @@ from ..exceptions import (
     StorageError,
     ValidationError,
     public_text,
+    refusal_fields,
 )
 from ..services.access_policy import ROLES, named_kb
 from ..services.body_bounds import (
@@ -132,7 +133,9 @@ _LEGACY_OWN_ERROR_CODE: dict[str, str] = {
 #: job -- so there is no old MCP behaviour to disagree with, and no
 #: ``legacy_error_code`` should be reported for them even though they are
 #: not explicitly in the tables above either.
-_NEW_IN_THIS_THEME = frozenset({"AccessDenied", "NotAuthenticated", "Forbidden"})
+_NEW_IN_THIS_THEME = frozenset(
+    {"AccessDenied", "NotAuthenticated", "Forbidden", "AmbiguousEntryError"}
+)
 
 
 def _legacy_mcp_code(exc: PyriteError) -> str | None:
@@ -252,6 +255,9 @@ def _refusal(exc: PyriteError, *, already_logged: bool = False) -> dict:
         retryable=retryable,
         legacy_error_code=legacy_code,
     )
+    # A refusal's public extras (AMBIGUOUS's candidate_kbs, #528), mapped
+    # once for every class from REFUSAL_FIELDS in pyrite.exceptions.
+    err.update(refusal_fields(exc))
     declared = getattr(exc, "declared_types", None)
     if declared is not None:
         err["declared_types"] = declared
@@ -261,6 +267,22 @@ def _refusal(exc: PyriteError, *, already_logged: bool = False) -> dict:
             "or pass allow_undeclared=true to override.",
         )
     return err
+
+
+def _protocol_refusal(err: dict) -> Exception:
+    """A refusal from a prompt or resource, as a JSON-RPC error.
+
+    `prompts/get` and `resources/read` have no result shape for a refusal, so
+    the envelope ``_refusal``/``_error`` built (``error_code``, ``suggestion``,
+    ``retryable``, and ``REFUSAL_FIELDS`` such as ``candidate_kbs``) travels
+    whole in the JSON-RPC error's ``data``, with ``error`` as its message. A
+    bare ``ValueError`` here sent the message alone (#528 fix round 1).
+    Tools answer the same envelope as their result instead.
+    """
+    from mcp.shared.exceptions import McpError
+    from mcp.types import INVALID_PARAMS, ErrorData
+
+    return McpError(ErrorData(code=INVALID_PARAMS, message=err["error"], data=err))
 
 
 MAX_TIMELINE_EVENTS = 50
@@ -294,7 +316,17 @@ _PIPELINE_WRITE_TOOLS = frozenset({"kb_create", "kb_update", "kb_bulk_create"})
 #
 # The gate pins this set. Adding a name here without adding it there (or
 # vice versa) fails `test_the_chokepoint_checks_every_name_this_file_claims`.
-KB_ARGUMENT_NAMES = ("kb_name", "kb", "source_kb", "target_kb", "center_kb", "kb_names")
+KB_ARGUMENT_NAMES = (
+    "kb_name",
+    "kb",
+    "source_kb",
+    "target_kb",
+    "center_kb",
+    "kb_names",
+    # find_connections names a KB per entry (#528)
+    "kb_a",
+    "kb_b",
+)
 
 # The keyword by which `_dispatch_tool` hands the readable set to a handler
 # that spans KBs. A handler opts in by declaring it; handlers that do not --
@@ -680,11 +712,10 @@ class PyriteMCPServer:
     ) -> dict[str, Any]:
         """Get entry by ID.
 
-        With `kb_name` omitted, `KBService.get_entry` walks the KBs in
-        config order and returns the first hit -- so it is handed the
-        caller's readable set, and an entry in an unreadable KB is a plain
-        miss (naming the KB would reveal which private KB holds it) that
-        never hides a readable entry with the same id.
+        With `kb_name` omitted, `KBService.get_entry` considers only the
+        caller's readable KBs and refuses an ID found in more than one.
+        An entry in an unreadable KB neither answers nor becomes an
+        ambiguity candidate.
         """
         entry_id = args.get("entry_id")
         kb_name = args.get("kb_name")
@@ -2027,6 +2058,18 @@ class PyriteMCPServer:
                 "arguments": [
                     {"name": "entry_a", "description": "First entry ID", "required": True},
                     {"name": "entry_b", "description": "Second entry ID", "required": True},
+                    {
+                        "name": "kb_a",
+                        "description": "KB of the first entry (needed when its id is in "
+                        "more than one KB)",
+                        "required": False,
+                    },
+                    {
+                        "name": "kb_b",
+                        "description": "KB of the second entry (needed when its id is in "
+                        "more than one KB)",
+                        "required": False,
+                    },
                 ],
             },
             "daily_briefing": {
@@ -2166,12 +2209,18 @@ class PyriteMCPServer:
         entry_a_id = args.get("entry_a", "")
         entry_b_id = args.get("entry_b", "")
 
-        # Both lookups span every KB (no kb parameter at all), so each walks
-        # only the readable ones: an entry elsewhere reads as "not found",
-        # exactly as a missing id does, and the embedded links are bounded
-        # the same way.
-        entry_a = self.svc.get_entry(entry_a_id, readable_kbs=readable_kbs)
-        entry_b = self.svc.get_entry(entry_b_id, readable_kbs=readable_kbs)
+        # Without kb_a/kb_b each lookup spans the readable KBs only: an entry
+        # elsewhere reads as "not found", exactly as a missing id does, and
+        # the embedded links are bounded the same way. An id in more than one
+        # readable KB raises AMBIGUOUS (#528), which _get_prompt returns as
+        # the refusal; kb_a/kb_b are how the caller complies (both are in
+        # KB_ARGUMENT_NAMES, so an unreadable one is refused before this).
+        entry_a = self.svc.get_entry(
+            entry_a_id, kb_name=args.get("kb_a"), readable_kbs=readable_kbs
+        )
+        entry_b = self.svc.get_entry(
+            entry_b_id, kb_name=args.get("kb_b"), readable_kbs=readable_kbs
+        )
 
         entry_a_text = (
             json.dumps(entry_a, separators=(",", ":"), default=str)
@@ -2262,7 +2311,14 @@ class PyriteMCPServer:
             {
                 "uriTemplate": f"{URI_SCHEME}entries/{{id}}",
                 "name": "Entry",
-                "description": "Get a specific entry",
+                "description": "Get a specific entry (refused as AMBIGUOUS when the id "
+                "is in more than one KB: use the KB-qualified template)",
+                "mimeType": "application/json",
+            },
+            {
+                "uriTemplate": f"{URI_SCHEME}kbs/{{name}}/entries/{{id}}",
+                "name": "Entry in a KB",
+                "description": "Get a specific entry from a named knowledge base",
                 "mimeType": "application/json",
             },
         ]
@@ -2299,7 +2355,11 @@ class PyriteMCPServer:
             }
 
         # pyrite://kbs/{name}/entries
-        if uri.startswith(f"{URI_SCHEME}kbs/") and uri.endswith("/entries"):
+        if (
+            uri.startswith(f"{URI_SCHEME}kbs/")
+            and uri.endswith("/entries")
+            and "/entries/" not in uri
+        ):
             kb_name = uri[len(f"{URI_SCHEME}kbs/") : -len("/entries")]
             if readable_kbs is not None and kb_name not in readable_kbs:
                 return _kb_not_found(kb_name)
@@ -2314,14 +2374,31 @@ class PyriteMCPServer:
                 ]
             }
 
-        # pyrite://entries/{id}
+        # pyrite://entries/{id} and pyrite://kbs/{name}/entries/{id}
+        entry_id, entry_kb = None, None
         if uri.startswith(f"{URI_SCHEME}entries/"):
             entry_id = uri[len(f"{URI_SCHEME}entries/") :]
-            # The lookup walks the KBs in config order, so it is bounded by the
-            # caller's readable set: an entry in a private KB is a plain miss
-            # (naming the KB would reveal which one holds it) and never hides
-            # a readable entry with the same id; its links are bounded too.
-            entry = self.svc.get_entry(entry_id, readable_kbs=readable_kbs)
+        elif uri.startswith(f"{URI_SCHEME}kbs/") and "/entries/" in uri:
+            entry_kb, _, entry_id = uri[len(f"{URI_SCHEME}kbs/") :].partition("/entries/")
+            # A KB the caller cannot read and a KB that does not exist answer
+            # the same KB_NOT_FOUND (scoped or not), never a plain NOT_FOUND.
+            if (readable_kbs is not None and entry_kb not in readable_kbs) or self.svc.get_kb(
+                entry_kb
+            ) is None:
+                return _kb_not_found(entry_kb)
+        if entry_id is not None:
+            # Without a KB the lookup is bounded by the caller's readable set:
+            # an entry in a private KB is a plain miss (naming the KB would
+            # reveal which one holds it) and never hides or doubles a readable
+            # entry with the same id; its links are bounded too. An id in more
+            # than one readable KB is refused (AMBIGUOUS, #528) in the tool
+            # envelope; the KB-qualified URI is how the caller complies.
+            try:
+                entry = self.svc.get_entry(entry_id, kb_name=entry_kb, readable_kbs=readable_kbs)
+            except PyriteError as e:
+                if isinstance(e, StorageError):
+                    logger.error("Resource %s failed: %s", uri, e, exc_info=e)
+                return _refusal(e)
             if not entry:
                 return _error("NOT_FOUND", f"Entry '{entry_id}' not found")
             return {
@@ -2638,7 +2715,7 @@ class PyriteMCPServer:
                 raise ValueError(f"Unknown prompt: {name}")
             result = mcp_server._get_prompt(name, arguments or {}, readable_kbs=_readable_kbs)
             if "error" in result:
-                raise ValueError(result["error"])
+                raise _protocol_refusal(result)
             return GetPromptResult(
                 messages=[
                     PromptMessage(
@@ -2677,7 +2754,7 @@ class PyriteMCPServer:
         async def _read_resource(uri: AnyUrl):
             result = mcp_server._read_resource(str(uri), readable_kbs=_readable_kbs)
             if "error" in result:
-                raise ValueError(result["error"])
+                raise _protocol_refusal(result)
             return [
                 ReadResourceContents(content=c["text"], mime_type=c.get("mimeType"))
                 for c in result["contents"]

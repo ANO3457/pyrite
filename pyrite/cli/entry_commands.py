@@ -26,6 +26,7 @@ import typer
 from rich.console import Console
 
 from ..exceptions import (
+    AmbiguousEntryError,
     EntryNotFoundError,
     KBNotFoundError,
     PyriteError,
@@ -34,7 +35,7 @@ from ..exceptions import (
 )
 from ..services.access_policy import UNSCOPED
 from ..services.read_shaping import parse_cli_fields, project_fields
-from ..utils.errors import cli_error
+from ..utils.errors import cli_error, cli_error_from
 from ..utils.frontmatter import (
     Frontmatter,
     Malformed,
@@ -247,7 +248,10 @@ def register_entry_commands(app: typer.Typer) -> None:
         # this command and the shared option offers json, yaml and rich only. It moves
         # with `pyrite-read get` (ADR-0046, slice 3).
         with cli_context() as (config, db, svc):
-            result = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=UNSCOPED)
+            try:
+                result = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=UNSCOPED)
+            except AmbiguousEntryError as exc:
+                cli_error_from(exc, output_format)
 
             if not result:
                 cli_error(f"Entry '{entry_id}' not found", output_format, error_code="NOT_FOUND")

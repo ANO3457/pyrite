@@ -42,6 +42,7 @@ from ..exceptions import (
     StorageError,
     ValidationError,
     public_text,
+    refusal_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ logger = logging.getLogger(__name__)
 # class whose code nobody added below yet) maps to 500 INTERNAL_ERROR --
 # fails safe, the same way an unrecognised exception type used to.
 _STATUS_BY_CODE: dict[str, int] = {
+    "AMBIGUOUS": 409,
     "ENTRY_NOT_FOUND": 404,
     "KB_NOT_FOUND": 404,
     "KB_READ_ONLY": 403,
@@ -180,6 +182,9 @@ def error_response(exc: PyriteError) -> tuple[int, dict]:
     suggestion = getattr(exc, "suggestion", None)
     if suggestion:
         detail["hint"] = suggestion
+    # A refusal's public extras (AMBIGUOUS's candidate_kbs, #528), mapped
+    # once for every class from REFUSAL_FIELDS in pyrite.exceptions.
+    detail.update(refusal_fields(exc))
     return status_code, {"detail": detail}
 
 

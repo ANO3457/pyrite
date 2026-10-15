@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 from ..config import KBConfig, PyriteConfig
 from ..exceptions import (
+    AmbiguousEntryError,
     EntryExistsError,
     EntryNotFoundError,
     IndexSyncRecoveryHintError,
@@ -660,7 +661,7 @@ class KBService:
         """
         Get entry by ID, with its outlinks and backlinks.
 
-        If kb_name not specified, searches all KBs in config order.
+        If kb_name is omitted, searches readable KBs and refuses duplicate IDs.
 
         ``readable_kbs`` is the caller's ``ReadScope`` set (``None``:
         unscoped). With it, a lookup without a KB walks only readable KBs,
@@ -681,6 +682,7 @@ class KBService:
         """
         kb_name = named_kb(kb_name)
         if kb_name:
+            kb_name = self.config.kb_name_for(kb_name)  # a shortname names its KB
             if readable_kbs is not None and kb_name not in readable_kbs:
                 return None
             result = self._read_entry(entry_id, kb_name)
@@ -688,18 +690,33 @@ class KBService:
                 self._attach_links(result, entry_id, kb_name, readable_kbs)
             return result
 
-        # Search all KBs the caller can read
+        # Search all KBs the caller can read. An id the index knows in more
+        # than one of them is refused (#528), never answered by config order;
+        # only KBs in ``readable`` are counted, so a KB the caller cannot read
+        # never becomes a candidate (concealment, ADR-0037 section 4).
+        #
+        # KNOWN EXCEPTION to "never resolved silently": the by-name pass for
+        # unindexed files runs only when no readable KB's index knows the id
+        # (#857's cost bound). So an id indexed in one KB, with a
+        # not-yet-indexed <id>.md in another, is answered from the indexed KB
+        # (as #753 reads it); `pyrite index sync` removes the exception.
         readable = [
             kb.name
             for kb in self.config.all_kbs()
             if readable_kbs is None or kb.name in readable_kbs
         ]
         for unindexed in (False, True):
+            matches: list[tuple[str, dict[str, Any]]] = []
             for name in readable:
                 result = self._read_entry(entry_id, name, unindexed=unindexed)
                 if result:
-                    self._attach_links(result, entry_id, name, readable_kbs)
-                    return result
+                    matches.append((name, result))
+            if len(matches) > 1:
+                raise AmbiguousEntryError(entry_id, [name for name, _ in matches])
+            if matches:
+                name, result = matches[0]
+                self._attach_links(result, entry_id, name, readable_kbs)
+                return result
         return None
 
     def _read_entry(
