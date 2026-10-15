@@ -501,6 +501,7 @@ def index_health(
     off_list_severities = {row.get("severity") for row in off_list_values}
     duplicates = health.get("duplicates", [])
     removed_extensions = health.get("removed_extensions", [])
+    unmodellable_frontmatter = health.get("unmodellable_frontmatter", [])
     is_unhealthy = (
         health["missing_files"]
         or health["unindexed_files"]
@@ -523,6 +524,7 @@ def index_health(
         or bool(invalid_statuses)
         or "warning" in off_list_severities
         or bool(removed_extensions)
+        or bool(unmodellable_frontmatter)
     )
     status = "unhealthy" if is_unhealthy else ("warning" if has_warning else "healthy")
 
@@ -546,6 +548,7 @@ def index_health(
             "type_name_drift_total": health.get("type_name_drift_total", 0),
             "type_name_drift_has_more": health.get("type_name_drift_has_more", False),
             "schema_errors": health.get("schema_errors", []),
+            "unmodellable_frontmatter": unmodellable_frontmatter,
             "checks": health,
         },
         output_format,
@@ -566,6 +569,7 @@ def index_health(
         off_list_values=off_list_values,
         duplicates=duplicates,
         removed_extensions=removed_extensions,
+        unmodellable_frontmatter=unmodellable_frontmatter,
         health=health,
     )
     if is_unhealthy and fail:
@@ -586,6 +590,7 @@ def _report_health(
     off_list_values,
     duplicates=(),
     removed_extensions=(),
+    unmodellable_frontmatter=(),
     health,
 ):
     """Print the health report. Returns nothing; the caller sets the exit code."""
@@ -677,6 +682,18 @@ def _report_health(
             console.print(f"  • {row['kb']}: {row['path']} — {row['error']}")
         if len(malformed_frontmatter) > 10:
             console.print(f"  ... and {len(malformed_frontmatter) - 10} more")
+
+    if unmodellable_frontmatter:
+        # #760 (b): no write reaches these files; said here, with the line,
+        # so they are never invisible.
+        console.print(
+            f"[yellow]⚠ {len(unmodellable_frontmatter)} file(s) whose frontmatter Pyrite "
+            "cannot model (no update reaches them; fix the key by hand):[/yellow]"
+        )
+        for row in unmodellable_frontmatter[:10]:
+            console.print(f"  • {row['kb']}: {row['path']}:{row['line']} — {row['reason']}")
+        if len(unmodellable_frontmatter) > 10:
+            console.print(f"  ... and {len(unmodellable_frontmatter) - 10} more")
 
     if invalid_statuses:
         console.print(

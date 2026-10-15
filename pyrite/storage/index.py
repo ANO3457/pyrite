@@ -329,6 +329,36 @@ def _file_changed(row: dict[str, Any], stat: os.stat_result) -> bool:
     return row.get("file_mtime_ns") != stat.st_mtime_ns or row.get("file_size") != stat.st_size
 
 
+def unmodellable_files(kb: KBConfig) -> list[dict[str, Any]]:
+    """Every file of ``kb`` whose frontmatter Pyrite cannot model, with the
+    1-based line of the key and ``apply()``'s reason (#760 (b)).
+
+    ``index health`` and ``qa validate`` share this one walk, so the two
+    reports name the same files for the same reason. A file that does not
+    parse is not here (it is malformed); a file that cannot be read is
+    skipped.
+    """
+    from ..utils.frontmatter import Frontmatter, split_frontmatter
+    from .file_operations import FrontmatterSpan, unmodellable_reason
+
+    found: list[dict[str, Any]] = []
+    for path in sorted(KBRepository(kb).list_files()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        split = split_frontmatter(text)
+        if not isinstance(split, Frontmatter):
+            continue
+        why = unmodellable_reason(
+            text, FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+        )
+        if why is not None:
+            reason, line = why
+            found.append({"kb": kb.name, "path": str(path), "line": line, "reason": reason})
+    return found
+
+
 class IndexManager:
     """
     Manages the SQLite FTS index for all KBs.
@@ -1261,6 +1291,10 @@ class IndexManager:
             "off_list_values": [],
             "duplicates": [],
             "removed_extensions": [],
+            # Files whose frontmatter Pyrite cannot model (#760 (b)): a
+            # tagged, complex or duplicate key. No write reaches them, so
+            # they are listed with the line, never left invisible.
+            "unmodellable_frontmatter": [],
         }
 
         # The file's own value of each protocol column, per (kb, id), read
@@ -1338,6 +1372,7 @@ class IndexManager:
             health["duplicates"].extend(plan.duplicates)
             for bad in plan.malformed:
                 health["malformed_frontmatter"].append({"kb": kb.name, **bad})
+            health["unmodellable_frontmatter"].extend(unmodellable_files(kb))
 
             for entry_id, claim in sorted(plan.winners.items()):
                 file_path = claim.path

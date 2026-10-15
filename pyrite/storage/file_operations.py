@@ -579,6 +579,93 @@ def _why_no_frontmatter(text: str) -> str:
     return "the file has no YAML frontmatter"
 
 
+def unmodellable_reason(text: str, span: FrontmatterSpan) -> tuple[str, int] | None:
+    """Why ``apply()`` would refuse every operation on this file's frontmatter,
+    and the 1-based line (in ``text``) of the key it cannot model; None when
+    the frontmatter can be modelled.
+
+    The shapes are #760's: a complex key (``? [a, b]``), a tagged key
+    (``!!str a: 1``) and a duplicate key. Frontmatter that does not parse at
+    all is not one of them (the reader reports it as malformed), so it is
+    None here too. ``index health`` and ``qa validate`` list these files with
+    the line (maintainer, 2026-10-15: option (b) on #760).
+    """
+    if not (0 <= span.start <= span.end <= span.body <= len(text)):
+        return None
+    y = _yaml()
+    try:
+        root = y.compose(text[span.start : span.end])
+    except YAMLError:
+        return None
+    if root is None or not isinstance(root, MappingNode):
+        return None
+    base_line = text.count("\n", 0, span.start) + 1
+
+    def at(node: Node) -> int:
+        return base_line + node.start_mark.line
+
+    complex_key = _complex_key_node(root, set())
+    if complex_key is not None:
+        return (
+            f"the frontmatter has a complex key (? [a, b] or ? {{a: 1}}); not edited{_BODY_TOO}",
+            at(complex_key),
+        )
+    tagged = _tagged_key_node(root, set(), y)
+    if tagged is not None:
+        return (_TAGGED_KEY, at(tagged))
+    duplicate = _duplicate_key_node(root, set())
+    if duplicate is not None:
+        return (_DUPLICATE.format(duplicate.value), at(duplicate))
+    try:
+        loaded = y.constructor.construct_document(root)
+    except YAMLError:
+        return None
+    if _loaded_tagged_key(loaded, set()):
+        line = _explicitly_tagged_key_line(y, text[span.start : span.end])
+        return (_TAGGED_KEY, base_line + (line if line is not None else 0))
+    return None
+
+
+def _explicitly_tagged_key_line(y: YAML, yaml_text: str) -> int | None:
+    """The 0-based line of the first mapping key written with an explicit tag
+    (``!!str flag: 1``), from the parser's events, where the composed node
+    no longer says whether its tag was written or resolved; None if none."""
+    from ruamel.yaml.events import (
+        CollectionEndEvent,
+        MappingStartEvent,
+        ScalarEvent,
+        SequenceStartEvent,
+    )
+
+    stack: list[list[Any]] = []  # [kind, position]
+    try:
+        for event in y.parse(yaml_text):
+            if isinstance(event, MappingStartEvent):
+                at_key = bool(stack) and stack[-1][0] == "map" and stack[-1][1] % 2 == 0
+                if stack and stack[-1][0] == "map":
+                    stack[-1][1] += 1
+                stack.append(["map", 0])
+                if at_key:
+                    continue
+            elif isinstance(event, SequenceStartEvent):
+                if stack and stack[-1][0] == "map":
+                    stack[-1][1] += 1
+                stack.append(["seq", 0])
+            elif isinstance(event, CollectionEndEvent):
+                if stack:
+                    stack.pop()
+            elif isinstance(event, ScalarEvent):
+                if stack and stack[-1][0] == "map":
+                    is_key = stack[-1][1] % 2 == 0
+                    stack[-1][1] += 1
+                    explicit = event.tag is not None and not any(event.implicit)
+                    if is_key and explicit:
+                        return event.start_mark.line
+    except YAMLError:
+        return None
+    return None
+
+
 def _parse(text: str, span: FrontmatterSpan) -> _Doc:
     """Compose once and construct the values from the same nodes."""
     if not (0 <= span.start <= span.end <= span.body <= len(text)):
@@ -627,16 +714,27 @@ def _parse(text: str, span: FrontmatterSpan) -> _Doc:
 def _has_complex_key(node: Node, seen: set[int]) -> bool:
     """A mapping key that is itself a list or a mapping: Python cannot hold
     it as a dict key, and no path can name it."""
+    return _complex_key_node(node, seen) is not None
+
+
+def _complex_key_node(node: Node, seen: set[int]) -> Node | None:
+    """The first complex key (``_has_complex_key``), or None."""
     if id(node) in seen:
-        return False
+        return None
     seen.add(id(node))
     if isinstance(node, MappingNode):
-        return any(
-            not isinstance(k, ScalarNode) or _has_complex_key(v, seen) for k, v in node.value
-        )
-    if isinstance(node, SequenceNode):
-        return any(_has_complex_key(item, seen) for item in node.value)
-    return False
+        for k, v in node.value:
+            if not isinstance(k, ScalarNode):
+                return k
+            found = _complex_key_node(v, seen)
+            if found is not None:
+                return found
+    elif isinstance(node, SequenceNode):
+        for item in node.value:
+            found = _complex_key_node(item, seen)
+            if found is not None:
+                return found
+    return None
 
 
 # Every frontmatter-shape refusal also refuses ``ReplaceBody``: a body-only
@@ -656,20 +754,29 @@ def _has_tagged_key(node: Node, seen: set[int], y: YAML) -> bool:
     key written plain (or quoted): ``!!float 1: a`` (ruamel: float 1.0; plain:
     int 1), ``!!int "1"``, ``!foo a``, ``!!binary aGk=``. ``!!str x`` reads as
     ``x`` at node level, so ``_loaded_tagged_key`` finds it."""
+    return _tagged_key_node(node, seen, y) is not None
+
+
+def _tagged_key_node(node: Node, seen: set[int], y: YAML) -> Node | None:
+    """The first tagged key (``_has_tagged_key``), or None."""
     if id(node) in seen:
-        return False
+        return None
     seen.add(id(node))
     if isinstance(node, MappingNode):
         for k, v in node.value:
             if isinstance(k, ScalarNode):
                 implicit = (True, False) if k.style is None else (False, True)
                 if k.tag != y.resolver.resolve(ScalarNode, k.value, implicit):
-                    return True
-            if _has_tagged_key(v, seen, y):
-                return True
+                    return k
+            found = _tagged_key_node(v, seen, y)
+            if found is not None:
+                return found
     elif isinstance(node, SequenceNode):
-        return any(_has_tagged_key(item, seen, y) for item in node.value)
-    return False
+        for item in node.value:
+            found = _tagged_key_node(item, seen, y)
+            if found is not None:
+                return found
+    return None
 
 
 def _loaded_tagged_key(value: Any, seen: set[int]) -> bool:
@@ -711,6 +818,12 @@ def _loaded_tagged_key(value: Any, seen: set[int]) -> bool:
 def _duplicate_key(node: Node, seen: set[int]) -> str | None:
     """The first key that appears twice in one mapping, by loaded value (as
     the loader compares them: ``true`` and ``1`` collide), or None."""
+    found = _duplicate_key_node(node, seen)
+    return None if found is None else found.value
+
+
+def _duplicate_key_node(node: Node, seen: set[int]) -> ScalarNode | None:
+    """The second occurrence of the first duplicated key (``_duplicate_key``), or None."""
     if id(node) in seen:
         return None
     seen.add(id(node))
@@ -721,16 +834,16 @@ def _duplicate_key(node: Node, seen: set[int]) -> str | None:
             if value is not _MISSING and not (isinstance(k, ScalarNode) and k.value == "<<"):
                 try:
                     if value in keys:
-                        return k.value
+                        return k
                     keys[value] = k.value
                 except TypeError:
                     pass
-            found = _duplicate_key(v, seen)
+            found = _duplicate_key_node(v, seen)
             if found is not None:
                 return found
     elif isinstance(node, SequenceNode):
         for item in node.value:
-            found = _duplicate_key(item, seen)
+            found = _duplicate_key_node(item, seen)
             if found is not None:
                 return found
     return None

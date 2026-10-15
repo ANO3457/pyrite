@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ..config import PyriteConfig
@@ -181,6 +182,9 @@ class QAService:
         # folder that is missing or unreadable is one error for the KB, and
         # those checks are skipped, never passed or crashed (#950 round 2).
         if not self._report_unreadable_kb(issues, kb_name, tier=tier):
+            # Files whose frontmatter Pyrite cannot model (#760 (b)): no write
+            # reaches them, so say so here with the line, as index health does.
+            self._check_unmodellable_frontmatter(issues, kb_name)
             # Per-file pass: what the index cannot show, because it keeps only
             # Pyrite's reading -- reserved keys the KB uses for fields of its own
             # (#557), a task priority read from a word (#554)
@@ -1053,6 +1057,32 @@ class QAService:
     # =========================================================================
     # Reserved-key pass (reads the files)
     # =========================================================================
+
+    def _check_unmodellable_frontmatter(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+        """One issue per file whose frontmatter ``apply()`` cannot model (a
+        tagged, complex or duplicate key), with the line and the reason: the
+        same walk ``index health`` reports (``storage.index.unmodellable_files``)."""
+        from ..storage.index import unmodellable_files
+
+        kb_config = self.config.get_kb(kb_name)
+        if kb_config is None:
+            return
+        for row in unmodellable_files(kb_config):
+            issues.append(
+                {
+                    "entry_id": Path(row["path"]).stem,
+                    "kb_name": kb_name,
+                    "rule": "frontmatter_unmodellable",
+                    "severity": "error",
+                    "field": "frontmatter",
+                    "path": row["path"],
+                    "line": row["line"],
+                    "message": (
+                        f"frontmatter Pyrite cannot model at line {row['line']}: "
+                        f"{row['reason']}. No update reaches this file; fix the key by hand."
+                    ),
+                }
+            )
 
     def _check_file_values(
         self, issues: list[dict[str, Any]], kb_name: str, *, entry_id: str | None = None
