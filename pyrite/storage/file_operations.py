@@ -173,7 +173,7 @@ from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, cast
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
@@ -602,7 +602,7 @@ def unmodellable_reason(text: str, span: FrontmatterSpan) -> tuple[str, int] | N
     base_line = text.count("\n", 0, span.start) + 1
 
     def at(node: Node) -> int:
-        return base_line + node.start_mark.line
+        return base_line + int(node.start_mark.line)
 
     complex_key = _complex_key_node(root, set())
     if complex_key is not None:
@@ -660,7 +660,7 @@ def _explicitly_tagged_key_line(y: YAML, yaml_text: str) -> int | None:
                     stack[-1][1] += 1
                     explicit = event.tag is not None and not any(event.implicit)
                     if is_key and explicit:
-                        return event.start_mark.line
+                        return int(event.start_mark.line)
     except YAMLError:
         return None
     return None
@@ -725,7 +725,7 @@ def _complex_key_node(node: Node, seen: set[int]) -> Node | None:
     if isinstance(node, MappingNode):
         for k, v in node.value:
             if not isinstance(k, ScalarNode):
-                return k
+                return cast(Node, k)
             found = _complex_key_node(v, seen)
             if found is not None:
                 return found
@@ -834,7 +834,7 @@ def _duplicate_key_node(node: Node, seen: set[int]) -> ScalarNode | None:
             if value is not _MISSING and not (isinstance(k, ScalarNode) and k.value == "<<"):
                 try:
                     if value in keys:
-                        return k
+                        return cast(ScalarNode, k)
                     keys[value] = k.value
                 except TypeError:
                     pass

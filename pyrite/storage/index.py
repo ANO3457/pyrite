@@ -1277,7 +1277,7 @@ class IndexManager:
           winner is checked for staleness; a losing copy is not the indexed
           file, so it is neither stale nor changed.
         """
-        health = {
+        health: dict[str, Any] = {
             "missing_files": [],
             "unindexed_files": [],
             "stale_entries": [],
