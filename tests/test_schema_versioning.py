@@ -11,6 +11,7 @@ from pyrite.models.base import Entry
 from pyrite.models.core_types import NoteEntry, entry_from_frontmatter
 from pyrite.models.generic import GenericEntry
 from pyrite.schema import FieldSchema, KBSchema, TypeSchema
+from pyrite.storage.repository import new_entry_text
 
 
 # =========================================================================
@@ -139,7 +140,7 @@ class TestValidateSinceVersion:
 class TestEntrySchemaVersion:
     def test_roundtrip(self):
         entry = NoteEntry(id="test-1", title="Test", _schema_version=3)
-        md = entry.to_markdown()
+        md = new_entry_text(entry)
         parsed = NoteEntry.from_markdown(md)
         assert parsed._schema_version == 3
 

@@ -345,9 +345,18 @@ def schema_migrate(
 ):
     """Migrate entries to current schema version.
 
-    Loads and re-saves all entries, applying any pending migrations.
+    Each entry whose ``_schema_version`` is behind its type's gets the
+    registered migration chain applied to its frontmatter values, and the
+    difference (a ``Set`` per key the chain added or changed, an ``Unset``
+    per key it dropped, ``_schema_version`` set to the type's version) is
+    written onto the file's own bytes with ``apply`` and published with
+    compare-and-replace (#955, B6 P4). Every other byte stays as written.
     """
+    from ..exceptions import ValidationError
+    from ..storage.entry_writer import publish_entry_text
+    from ..storage.file_operations import FrontmatterSpan, apply
     from ..storage.repository import KBRepository
+    from ..utils.yaml import load_yaml
 
     with cli_context(kbs=(kb_name,), output_format="rich") as (config, db, svc):
         kb_config = config.get_kb(kb_name)
@@ -365,23 +374,31 @@ def schema_migrate(
 
         for file_path in repo.list_files():
             try:
-                entry = repo._load_entry(file_path)
-                if entry_type and entry.entry_type != entry_type:
+                raw = file_path.read_bytes()
+                text = raw.decode("utf-8")
+                split = split_frontmatter(text)
+                if not isinstance(split, Frontmatter):
+                    raise ValidationError(f"no frontmatter ({describe(split)})")
+                values = load_yaml(split.text)
+                if not isinstance(values, dict):
+                    raise ValidationError("the frontmatter is not a mapping")
+                if entry_type and values.get("type", "") != entry_type:
                     continue
 
-                # Check if version changed (migration happened on load)
-                type_schema = kb_config.kb_schema.get_type_schema(entry.entry_type)
-                needs_save = (
-                    type_schema
-                    and type_schema.version > 0
-                    and entry._schema_version != type_schema.version
-                )
+                type_schema = kb_config.kb_schema.get_type_schema(values.get("type", ""))
+                target = type_schema.version if type_schema else 0
+                needs_save = target > 0 and int(values.get("_schema_version", 0)) != target
 
                 if needs_save and not dry_run:
-                    entry._schema_version = type_schema.version
-                    entry.kb_name = kb_name
-                    entry.file_path = file_path
-                    entry.save(file_path)
+                    # `_maybe_migrate` is the load-time chain (the registry's
+                    # functions on a copy of the values); the type's version
+                    # is stamped even when no function is registered for it.
+                    after = repo._maybe_migrate(dict(values))
+                    after["_schema_version"] = target
+                    ops = migration_operations(values, after)
+                    span = FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+                    new_text, _report = apply(text, ops, span)
+                    publish_entry_text(file_path, new_text, expect=raw)
                 # Counted after the save: a file that failed to save was neither
                 # checked nor migrated, whatever the summary used to say.
                 checked += 1
@@ -400,6 +417,23 @@ def schema_migrate(
         elif migrated == 0:
             console.print("  [green]All entries are up to date.[/green]")
         exit_unless_whole(errors, checked)
+
+
+def migration_operations(before: dict[str, Any], after: dict[str, Any]) -> list[Any]:
+    """The operations that take the frontmatter values ``before`` to
+    ``after``: a ``Set`` per key added or changed (in ``after``'s order), an
+    ``Unset`` per key dropped. A key whose value is equal is not named, so
+    its bytes stay."""
+    from ..storage.file_operations import Set, Unset
+
+    ops: list[Any] = []
+    for key, value in after.items():
+        if key not in before or before[key] != value:
+            ops.append(Set(key, value))
+    for key in before:
+        if key not in after:
+            ops.append(Unset(key))
+    return ops
 
 
 def _collect_md_files(paths: list[Path]) -> list[Path]:

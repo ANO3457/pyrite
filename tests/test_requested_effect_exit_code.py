@@ -1586,6 +1586,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
+    ("extensions/software-kb/src/pyrite_software_kb/cli.py", "sw_migrate_standards"): (
+        "fixed",
+        "TestJournalismAndSoftwareResults",
+    ),
     ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_query_entries"): (
         "safe",
         "bad metadata reads as empty",

@@ -23,6 +23,7 @@ from pyrite_zettelkasten.plugin import ZettelkastenPlugin
 
 from pyrite.config import KBConfig, KBType, PyriteConfig, Settings
 from pyrite.models.base import Entry
+from pyrite.storage.repository import new_entry_text
 from pyrite.models.core_types import (
     ENTRY_TYPE_REGISTRY,
     EventEntry,
@@ -780,7 +781,7 @@ class TestEndToEnd:
         )
         assert isinstance(entry, ZettelEntry)
 
-        md = entry.to_markdown()
+        md = new_entry_text(entry)
         reparsed = Entry.from_markdown(md)
         # from_markdown returns (meta, body) — we need to reconstruct
         assert "zettel_type: permanent" in md
@@ -798,7 +799,7 @@ class TestEndToEnd:
             "This is my opinion.",
         )
         assert isinstance(entry, WriteupEntry)
-        md = entry.to_markdown()
+        md = new_entry_text(entry)
         assert "author_id: alice" in md
         assert "writeup_type: opinion" in md
 
@@ -814,7 +815,7 @@ class TestEndToEnd:
             "A" * 600,
         )
         assert isinstance(entry, ArticleEntry)
-        md = entry.to_markdown()
+        md = new_entry_text(entry)
         assert "quality: GA" in md
         assert "review_status: published" in md
         assert "physics" in md

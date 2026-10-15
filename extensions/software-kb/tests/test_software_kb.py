@@ -226,7 +226,9 @@ class TestADREntry:
             status="accepted",
             tags=["database"],
         )
-        md = entry.to_markdown()
+        from pyrite.storage.repository import new_entry_text
+
+        md = new_entry_text(entry)
         assert "adr_number: 1" in md
         assert "status: accepted" in md
         assert "Database choice." in md
