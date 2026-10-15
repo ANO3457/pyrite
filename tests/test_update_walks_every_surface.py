@@ -526,7 +526,19 @@ def test_a_timestamp_read_and_written_back_unchanged_leaves_the_bytes_unchanged(
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize("spelled", ["2026-01-15", "2026-01-15T10:00:00", "2026-01-15 10:00:00Z"])
+@pytest.mark.parametrize(
+    "spelled",
+    [
+        "2026-01-15",
+        "2026-01-15T10:00:00",
+        pytest.param(
+            "2026-01-15 10:00:00Z",
+            marks=pytest.mark.control(
+                reason="a timestamp with a zone already compared equal through apply's own rule; the control keeps the shape beside the two that were written"
+            ),
+        ),
+    ],
+)
 def test_a_created_at_read_and_written_back_is_the_same_instant_and_writes_nothing(
     tmp_path: Path, spelled: str
 ):

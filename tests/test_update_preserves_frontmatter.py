@@ -370,6 +370,9 @@ class TestAlwaysWrittenDefaultsStillWork:
         assert after.get("rank") == 0
         assert set(after) == expected, f"the update also invented {sorted(set(after) - expected)}"
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_assigning_the_attribute_directly_also_counts_as_explicit(self):
         """update_entry is not the only caller: REST, MCP and the software-kb
         reorder reach the model differently. The signal has to live on the
@@ -517,6 +520,9 @@ class TestValuesAreComparedByTypeNotTruthiness:
     The comparison is `apply`'s (ADR-0042 decision 3, `file_operations`):
     a bool set over an equal int is a change and is written."""
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_bool_replacing_an_equal_int_is_written(self, swkb_env):
         path = swkb_env["note_file"]
         text = path.read_text(encoding="utf-8").replace("tags: [alpha]", "flag: 1\ntags: [alpha]")
@@ -556,6 +562,9 @@ class TestNoRegisteredTypeInventsFrontmatter:
         assert len(types) > 20, f"only {len(types)} types registered; the sweep proves nothing"
         assert "backlog_item" in types and "adr" in types
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_a_minimal_entry_of_any_type_round_trips_without_gaining_keys(self, swkb_env):
         """Load a file holding only id/title/type, write it as a create would,
         gain nothing.
@@ -587,6 +596,9 @@ class TestNoRegisteredTypeInventsFrontmatter:
             f"never had -- the #46 corruption: {offenders}"
         )
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_the_pristine_probe_is_not_shared_into_any_entry(self, swkb_env):
         """The cached probe is per-class and shared; nothing may mutate it.
 
@@ -634,6 +646,9 @@ class TestNoRegisteredTypeInventsFrontmatter:
             f"update invented {sorted(set(after) - set(before) - {'tags'})}"
         )
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_the_index_still_sees_the_fields_the_file_omits(self, swkb_env):
         """The other half of the trade, stated so it cannot be quietly lost.
 
@@ -655,6 +670,9 @@ class TestNoRegisteredTypeInventsFrontmatter:
         assert "status" not in _read_frontmatter_text(new_entry_text(entry))
         assert "priority" not in _read_frontmatter_text(new_entry_text(entry))
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_an_explicit_assignment_still_reaches_the_file(self, swkb_env):
         """The `__setattr__` rule, checked on a type other than the two the
         original fix guarded by hand -- the suppression is now central, so the
@@ -772,6 +790,9 @@ class TestRepositorySaveDoesNotInventTimestamps:
         kb_path.mkdir(parents=True, exist_ok=True)
         return KBRepository(KBConfig(name=name, path=kb_path)), kb_path
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_a_file_without_timestamps_does_not_gain_them_on_save(self, tmp_path):
         """``repo.save`` over an existing file is the model's whole-file
         overwrite (a create's text, kept for fixtures and ``repo.save(entry)``
@@ -1002,6 +1023,9 @@ UNPARSEABLE_CREATED_AT_NODES = {
 }
 
 
+@pytest.mark.control(
+    reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+)
 @pytest.mark.parametrize("shape", sorted(UNPARSEABLE_CREATED_AT_NODES))
 def test_a_created_at_that_does_not_parse_is_kept_verbatim(tmp_path, shape):
     """#173 review: `created_at:` null / `''` / `Jan 15 2026` survive an update

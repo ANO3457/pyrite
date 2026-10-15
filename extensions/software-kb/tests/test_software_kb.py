@@ -217,6 +217,9 @@ class TestADREntry:
         entry = ADREntry.from_frontmatter(meta, "")
         assert entry.id == "use-event-sourcing"
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_roundtrip_markdown(self):
         entry = ADREntry(
             id="adr-001",

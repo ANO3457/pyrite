@@ -51,6 +51,10 @@ from pyrite.storage.repository import KBRepository
 from pyrite.utils.frontmatter import Frontmatter, split_frontmatter
 from pyrite.utils.yaml import load_yaml
 
+pytestmark = pytest.mark.control(
+    reason="the gate pins a property the base already had (an echo through apply writes nothing); it is rewritten here because its old form used Entry.save, gone since #955 P4"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REAL_KB_DIR = REPO_ROOT / "kb"
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "roundtrip"
@@ -71,7 +75,7 @@ KNOWN_REFUSED: dict[str, str] = {
 def _copy_kb_to(tmp_path: Path, source: Path) -> Path:
     dest = tmp_path / "kb_copy"
     shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git"))
-    subprocess.run(["git", "init", "-q"], cwd=dest, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-q"], cwd=dest, check=True, capture_output=True, timeout=30)
     return dest
 
 
@@ -233,7 +237,7 @@ class TestAdversarialFixtures:
     def _kb_with(tmp_path: Path, name: str, text: str | None = None) -> tuple[Path, object]:
         kb = tmp_path / "kb"
         kb.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=kb, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q"], cwd=kb, check=True, capture_output=True, timeout=30)
         dest = kb / name
         if text is None:
             shutil.copyfile(FIXTURES_DIR / name, dest)
@@ -343,7 +347,7 @@ class TestPristineProbeIsolation:
         # "status was absent" fact bleed into the second, or vice versa.
         kb = tmp_path / "kb"
         kb.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=kb, check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q"], cwd=kb, check=True, capture_output=True, timeout=30)
         no_status = kb / "no_status.md"
         no_status.write_text(
             "---\n"

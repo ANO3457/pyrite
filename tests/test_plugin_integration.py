@@ -767,6 +767,9 @@ class TestKBPresets:
 
 
 class TestEndToEnd:
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_zettel_roundtrip(self, patched_registry):
         """Create a zettel via frontmatter, serialize, and reparse."""
         entry = entry_from_frontmatter(
@@ -788,6 +791,9 @@ class TestEndToEnd:
         assert "maturity: sapling" in md
         assert "An interesting thought" in md
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_writeup_roundtrip(self, patched_registry):
         entry = entry_from_frontmatter(
             {
@@ -803,6 +809,9 @@ class TestEndToEnd:
         assert "author_id: alice" in md
         assert "writeup_type: opinion" in md
 
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_article_roundtrip(self, patched_registry):
         entry = entry_from_frontmatter(
             {

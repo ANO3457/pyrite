@@ -138,6 +138,9 @@ class TestValidateSinceVersion:
 
 
 class TestEntrySchemaVersion:
+    @pytest.mark.control(
+        reason="a rewritten test of a property that already held; its old form used the model's emitter (Entry.save/to_markdown), gone since #955 P4"
+    )
     def test_roundtrip(self):
         entry = NoteEntry(id="test-1", title="Test", _schema_version=3)
         md = new_entry_text(entry)

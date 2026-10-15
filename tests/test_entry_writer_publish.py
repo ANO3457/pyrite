@@ -25,13 +25,19 @@ import pytest
 
 from pyrite.storage.entry_writer import FileChanged, create_entry_text, publish_entry_text
 
+pytestmark = pytest.mark.control(
+    reason="the promises test_entry_save_atomic.py pinned for Entry.save, carried onto the one write path; each already held for atomic_write_text"
+)
+
 TEXT = "---\nid: note\ntitle: t\n---\n\nb\n"
 
 
 @pytest.fixture(params=["git", "no-git"])
 def folder(tmp_path: Path, request) -> Path:
     if request.param == "git":
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True, timeout=30
+        )
     return tmp_path
 
 

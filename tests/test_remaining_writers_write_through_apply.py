@@ -84,7 +84,9 @@ def _kb(
     kb_path = tmp_path / "kb"
     kb_path.mkdir(parents=True, exist_ok=True)
     if git:
-        subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30
+        )
     if kb_yaml:
         (kb_path / "kb.yaml").write_text(kb_yaml, encoding="utf-8")
     for rel, text in files.items():
@@ -254,6 +256,9 @@ def test_schema_migrate_writes_what_the_migration_changed_and_nothing_else(
     assert_only_changed(before, after, [Unset("old"), Set("new", 1), Set("_schema_version", 2)])
 
 
+@pytest.mark.control(
+    reason="the old command also wrote nothing for an up-to-date file; the control pins it while the write changes"
+)
 def test_schema_migrate_leaves_an_up_to_date_file_alone(tmp_path: Path, thing_migration):
     text = THING.replace("old: 1   # moves to new\n", "new: 1\n_schema_version: 2\n")
     config, kb_path = _kb(tmp_path, {"things/t.md": text}, kb_yaml=THING_KB_YAML)
