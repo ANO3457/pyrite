@@ -249,6 +249,9 @@ def test_null_is_a_value_not_a_removal(tmp_path: Path, surface: str):
     assert "\r\nextra: null\r\n" in after, after
 
 
+@pytest.mark.control(
+    reason="#455's rule, unchanged here: the control pins that an operation surface did not change what MCP does with a null"
+)
 def test_mcp_sets_a_null_aside_and_removes_nothing(tmp_path: Path):
     config, path = _build(tmp_path)
     before = path.read_bytes()
@@ -368,6 +371,9 @@ def test_qa_fix_link_repair_of_a_legacy_item_edits_its_own_key(tmp_path: Path):
     assert_only_changed(before, after, [Set("links[0].to", "x"), Set("updated_at", "x")])
 
 
+@pytest.mark.control(
+    reason="P3a's whole-list set already copied the unchanged items' bytes (apply's item-wise copy), so the bytes were right before; the control pins the property while the caller changes from sending the list to sending the one item"
+)
 def test_qa_fix_tag_normalisation_sets_the_one_tag(tmp_path: Path):
     from pyrite.services.access_policy import UNSCOPED
     from pyrite.services.qa_service import QAService
@@ -423,6 +429,9 @@ def _task_kb(tmp_path: Path, files: dict[str, str]):
     return config, db, kb_path / "tasks"
 
 
+@pytest.mark.control(
+    reason="P3a's whole-list set already copied the unchanged items' bytes (apply's item-wise copy), so the bytes were right before; the control pins the property while the caller changes from sending the list to sending the one item"
+)
 def test_link_qa_assessment_appends_one_evidence_item(tmp_path: Path):
     from pyrite.services.task_service import TaskService
 
@@ -439,6 +448,9 @@ def test_link_qa_assessment_appends_one_evidence_item(tmp_path: Path):
     assert_only_changed(before, after, [Append("evidence", "qa-1"), Set("updated_at", "x")])
 
 
+@pytest.mark.control(
+    reason="P3a's whole-list set already copied the unchanged items' bytes (apply's item-wise copy), so the bytes were right before; the control pins the property while the caller changes from sending the list to sending the one item"
+)
 def test_aggregate_evidence_appends_only_the_new_items(tmp_path: Path):
     from pyrite.services.task_service import TaskService
 
@@ -456,6 +468,9 @@ def test_aggregate_evidence_appends_only_the_new_items(tmp_path: Path):
     assert_only_changed(before, after, [Append("evidence", "c1"), Set("updated_at", "x")])
 
 
+@pytest.mark.control(
+    reason="P3a's whole-list set already copied the unchanged items' bytes (apply's item-wise copy), so the bytes were right before; the control pins the property while the caller changes from sending the list to sending the one item"
+)
 def test_update_task_appends_the_audit_entry(tmp_path: Path):
     from pyrite.services.task_service import TaskService
 

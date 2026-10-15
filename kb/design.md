@@ -139,9 +139,9 @@ Working in a guest file: [[pyrite-is-a-guest-in-state-it-does-not-own]].
 The design above is ahead of the code in these places. Do not assume the
 code follows it; check, and treat a mismatch as the work to do.
 
-- An update is operations on the file's own bytes since #955 (B6 P3a);
-  `add_link`, create and the other writers still emit whole files (P4, C2),
-  and the surfaces have no `append`/`unset` operation yet (P3b).
+- An update is operations on the file's own bytes since #955 (B6 P3a), and
+  the surfaces take `append`, `remove` and `unset` (P3b); `add_link`, create
+  and the other writers still emit whole files (P4, C2).
   [How Pyrite edits your files](../docs/how-pyrite-edits-your-files.md) holds
   the examples; `tests/test_doc_write_as_patch.py` runs them and lists each
   one the code still fails, and how.
