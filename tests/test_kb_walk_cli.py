@@ -289,3 +289,23 @@ def test_a_registry_only_kb_is_found_by_a_command_that_loads_its_own_config(cli_
     result = _run("pyrite", argv)
     assert result.exit_code == 0, (result.exit_code, result.output)
     assert "KB_NOT_FOUND" not in result.output, result.output
+
+
+@pytest.mark.parametrize(
+    ("spec", "exit_code", "expect"),
+    [
+        (f"{UNKNOWN}:hello", 1, "KB_NOT_FOUND"),
+        (f"{SHORT}:hello", 1, FULL),
+        (f"{FULL}:hello", 0, '"hello"'),
+    ],
+    ids=["unknown", "shortname", "full-name"],
+)
+def test_batch_read_resolves_the_kb_in_each_spec(cli_world, spec, exit_code, expect):
+    """`batch-read kb:id` names its KB inside a positional spec, which no
+    `-k` detection sees: an unknown KB or a shortname is refused as every
+    other surface refuses it, not reported as `not_found` (#966 review)."""
+    result = _run("pyrite", ["batch-read", spec, "--format", "json"])
+    assert result.exit_code == exit_code, (result.exit_code, result.output)
+    assert expect in result.output, result.output
+    if exit_code == 1:
+        assert "KB_NOT_FOUND" in result.output

@@ -13,7 +13,7 @@ from rich.table import Table
 from ..exceptions import PyriteError
 from ..services.access_policy import UNSCOPED
 from ..services.read_shaping import parse_cli_fields, project_fields
-from .context import cli_context
+from .context import cli_context, require_kb
 from .output import validate_output_format
 
 console = Console()
@@ -141,6 +141,11 @@ def register_browse_commands(app: typer.Typer) -> None:
             parsed_ids.append((eid.strip(), kb.strip()))
 
         with cli_context() as (config, db, svc):
+            # Each spec's KB is resolved before anything is read (#952): an
+            # unknown KB or a shortname is refused, never reported as
+            # `not_found`. A spec with no KB (":id") is left to the read.
+            for _eid, kb in parsed_ids:
+                require_kb(config, kb, db=db, output_format=output_format)
             results = svc.get_entries(parsed_ids)
 
             # Apply field projection. One rule for every read surface (#193).
