@@ -1,5 +1,11 @@
 """Health uses the KB's declared types, including unrestricted schemas."""
 
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from pyrite.config import KBConfig, PyriteConfig, Settings
 from pyrite.storage.database import PyriteDB
@@ -56,3 +62,26 @@ def _health(tmp_path, schema, entry_type):
         return manager.check_health()["undeclared_types"]
     finally:
         db.close()
+
+
+def test_health_reports_undeclared_core_type_through_the_cli(tmp_path):
+    env = {
+        **os.environ,
+        "PYRITE_CONFIG_DIR": str(tmp_path / "config"),
+        "PYRITE_DATA_DIR": str(tmp_path / "data"),
+    }
+    pyrite = [str(Path(sys.executable).parent / "pyrite")]
+
+    def run(*args):
+        result = subprocess.run(
+            [*pyrite, *args], env=env, capture_output=True, text=True, cwd=tmp_path, timeout=120
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.stdout
+
+    run("init", "-t", "software", "-p", str(tmp_path / "kb"), "-n", "sw", "--no-examples")
+    run("create", "-k", "sw", "-t", "note", "--title", "Stray", "-b", "body", "--allow-undeclared")
+    report = json.loads(run("index", "health", "--format", "json"))
+
+    undeclared = report["undeclared_types"]
+    assert {"kb": "sw", "type": "note", "count": 1} in undeclared, report
