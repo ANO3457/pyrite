@@ -1,10 +1,11 @@
 import json
+import urllib.error
 from contextlib import contextmanager
 from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 from pyrite.cli import qa_commands
-from pyrite.services.url_checker import URLChecker, URLCheckResult
+from pyrite.services.url_checker import URLChecker
 from pyrite.storage.database import PyriteDB
 
 
@@ -72,7 +73,11 @@ def test_check_urls_cli_includes_core_event_sources(db, monkeypatch):
         yield None, db, None
 
     monkeypatch.setattr(qa_commands, "cli_context", context)
-    monkeypatch.setattr(URLChecker, "check_url", lambda self, url: URLCheckResult(url, 404, False))
+
+    def not_found(self, req):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(URLChecker, "_urlopen", not_found)
     result = CliRunner().invoke(qa_commands.qa_app, ["check-urls", "test", "--format", "json"])
     assert result.exit_code == 0, result.output
     report = json.loads(result.stdout)

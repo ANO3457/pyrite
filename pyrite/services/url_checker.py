@@ -109,6 +109,12 @@ class URLChecker:
 
         return dict(url_entries)
 
+    def _urlopen(self, req: Any) -> Any:
+        """The network edge: one urlopen, nothing else."""
+        import urllib.request
+
+        return urllib.request.urlopen(req, timeout=self.timeout)
+
     def check_url(self, url: str) -> URLCheckResult:
         """Check a single URL for liveness."""
         import urllib.error
@@ -117,7 +123,7 @@ class URLChecker:
         try:
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", "Pyrite-QA/1.0 (URL liveness check)")
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._urlopen(req) as resp:
                 return URLCheckResult(
                     url=url,
                     status_code=resp.status,
