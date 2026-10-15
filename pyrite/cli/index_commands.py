@@ -510,6 +510,8 @@ def index_health(
     has_warning = (
         bool(broken_links)
         or bool(undeclared_types)
+        or bool(health.get("type_name_drift_total"))
+        or bool(health.get("schema_errors"))
         or bool(missing_required)
         or bool(subdirectory_mismatches)
         or bool(malformed_frontmatter)
@@ -533,6 +535,10 @@ def index_health(
             "invalid_statuses": invalid_statuses,
             "off_list_values": off_list_values,
             "duplicates": duplicates,
+            "type_name_drift": health.get("type_name_drift", []),
+            "type_name_drift_total": health.get("type_name_drift_total", 0),
+            "type_name_drift_has_more": health.get("type_name_drift_has_more", False),
+            "schema_errors": health.get("schema_errors", []),
             "checks": health,
         },
         output_format,
@@ -592,6 +598,24 @@ def _report_health(
             f"[yellow]⚠ {broken_links} broken link(s) found.[/yellow]"
             " Run 'pyrite links check' for details."
         )
+
+    for err in health.get("schema_errors", []):
+        console.print(
+            f"kb.yaml failed to load for {err['kb']}: {err['error']}",
+            style="yellow",
+            markup=False,
+            highlight=False,
+        )
+
+    if health.get("type_name_drift_total"):
+        console.print(
+            f"[yellow]Type name drift: {health['type_name_drift_total']} group(s)[/yellow]"
+        )
+        for group in health["type_name_drift"][:10]:
+            names = ", ".join(f"{r['type']} ({r['count']})" for r in group["spellings"][:10])
+            console.print(f"  • {group['kb']}: {names}", markup=False)
+        if health["type_name_drift_total"] > 10:
+            console.print("  ... use --format json for the bounded report and totals")
 
     if undeclared_types:
         total = sum(row["count"] for row in undeclared_types)
