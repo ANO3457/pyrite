@@ -1462,6 +1462,9 @@ def test_emitter_control_fails_when_the_update_uses_a_door_the_watch_cannot_see(
         _check(_one_field_with_emitter(), tmp_path, monkeypatch)
 
 
+@pytest.mark.control(
+    reason="the narrowing of the watch holds on either side; the probe changed from a create to a dump"
+)
 def test_emitter_watch_pointed_at_pyyaml_alone_does_not_see_the_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -118,12 +118,18 @@ def _with_service(config, fn):
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_service_create_writes_the_types_values(tmp_path: Path):
     config = _config(tmp_path)
     written = _with_service(config, lambda svc: svc.create(KB, dict(SPEC)))
     assert_file_holds_the_types_values(config, written.entry)
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_create_entry_writes_the_types_values(tmp_path: Path):
     config = _config(tmp_path)
     entry = _with_service(
@@ -135,6 +141,9 @@ def test_create_entry_writes_the_types_values(tmp_path: Path):
     assert_file_holds_the_types_values(config, entry)
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_bulk_create_writes_the_types_values(tmp_path: Path):
     from pyrite.storage.repository import KBRepository
 
@@ -162,6 +171,9 @@ def test_add_entry_from_file_writes_the_types_values(tmp_path: Path):
     assert_file_holds_the_types_values(config, entry)
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_mcp_kb_create_writes_the_types_values(tmp_path: Path):
     from pyrite.server.mcp_server import PyriteMCPServer
     from pyrite.storage.repository import KBRepository
@@ -177,6 +189,9 @@ def test_mcp_kb_create_writes_the_types_values(tmp_path: Path):
     assert_file_holds_the_types_values(config, entry)
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_rest_post_entries_writes_the_types_values(tmp_path: Path):
     pytest.importorskip("fastapi", reason="fastapi not installed")
     from fastapi.testclient import TestClient
@@ -201,6 +216,9 @@ def test_rest_post_entries_writes_the_types_values(tmp_path: Path):
     assert_file_holds_the_types_values(config, entry)
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_cli_create_writes_the_types_values(tmp_path: Path):
     from pyrite.storage.repository import KBRepository
 
@@ -237,6 +255,9 @@ def test_cli_create_writes_the_types_values(tmp_path: Path):
     assert_file_holds_the_types_values(config, entry)
 
 
+@pytest.mark.control(
+    reason="the old whole-file emit wrote the same values (that is what the spike measured on 1,323 files); the control pins them while the bytes come from apply() instead, which the emitter watch proves"
+)
 def test_task_create_writes_the_types_values(tmp_path: Path):
     from pyrite.services.task_service import TaskService
     from pyrite.storage.repository import KBRepository
@@ -277,6 +298,9 @@ def test_a_create_hands_no_document_to_the_yaml_emitter(tmp_path: Path, monkeypa
     assert watched.docs == [], f"the YAML emitter was handed {watched.keys()}"
 
 
+@pytest.mark.control(
+    reason="exclusivity held before (#391, #477); the control pins it for the new publish (expect=ABSENT, and the no-git fallback)"
+)
 def test_two_creates_of_one_id_give_one_file_and_one_refusal(tmp_path: Path):
     from pyrite.exceptions import EntryExistsError
 
@@ -292,6 +316,9 @@ def test_two_creates_of_one_id_give_one_file_and_one_refusal(tmp_path: Path):
     assert len(list(config.knowledge_bases[0].path.rglob("*.md"))) == 1
 
 
+@pytest.mark.control(
+    reason="exclusivity held before (#391, #477); the control pins it for the new publish (expect=ABSENT, and the no-git fallback)"
+)
 def test_a_create_outside_git_still_refuses_an_existing_file(tmp_path: Path):
     from pyrite.exceptions import EntryExistsError
 
