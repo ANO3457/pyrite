@@ -68,7 +68,7 @@ TARGET_NOTE = f"---\nid: {TARGET}\ntitle: Target\ntype: note\n---\n\nTarget.\n"
 def _build(tmp_path: Path, text: str = NOTE, *, crlf: bool = True):
     kb_path = tmp_path / "kb"
     (kb_path / "notes").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30)
     path = kb_path / "notes" / f"{ID}.md"
     path.write_bytes((text.replace("\n", "\r\n") if crlf else text).encode("utf-8"))
     (kb_path / "notes" / f"{TARGET}.md").write_text(TARGET_NOTE, encoding="utf-8")
