@@ -29,7 +29,7 @@ from ..api import (
     limiter,
     requires_tier,
 )
-from ..authz import authorize, get_principal, not_authenticated
+from ..authz import authorize, resolve_named_kb
 from ..schemas import (
     AIStatusResponse,
     KBReindexResponse,
@@ -41,19 +41,16 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_named_kb(request: Request, policy: AccessPolicy, name: str) -> None:
-    """The KB a permissions route names, through the one resolver (#952).
+    """The KB a route here names, through the one resolver (#952).
 
-    These two routes decide access inline (ADR-0037 theme 3c has not moved
-    them), so nothing resolved the path's KB before the handler: an unknown
-    name answered 200 with no grants, and a non-admin could not tell a
-    private KB from a missing one only by luck. Resolved for the caller's
-    read scope, an unknown, unreadable or shortname KB is 404
+    These routes decide access inline (ADR-0037 theme 3c has not moved
+    them), so nothing resolved the path's KB before the handler: the
+    permissions routes answered 200 with no grants for an unknown name, and
+    the admin-only KB routes each spelled their own 404. Resolved for the
+    caller's read scope, an unknown, unreadable or shortname KB is 404
     ``KB_NOT_FOUND`` before any role is looked at.
     """
-    principal = get_principal(request)
-    if principal is None:
-        raise not_authenticated()
-    policy.resolve_kb_for(principal, name)
+    resolve_named_kb(request, policy, name)
 
 
 router = APIRouter(tags=["Admin"])
@@ -225,8 +222,10 @@ def update_kb(
     description: str | None = Body(None),
     kb_type: str | None = Body(None),
     registry: KBRegistryService = Depends(get_kb_registry),
+    policy: AccessPolicy = Depends(get_access_policy),
 ):
     """Update a knowledge base's metadata."""
+    _resolve_named_kb(request, policy, name)
     try:
         result = registry.update_kb(name, description=description, kb_type=kb_type)
     except KBNotFoundError:
@@ -242,8 +241,10 @@ def delete_kb(
     request: Request,
     name: str,
     registry: KBRegistryService = Depends(get_kb_registry),
+    policy: AccessPolicy = Depends(get_access_policy),
 ):
     """Delete a knowledge base from the registry."""
+    _resolve_named_kb(request, policy, name)
     try:
         registry.remove_kb(name)
     except KBNotFoundError:
@@ -261,8 +262,10 @@ def reindex_kb(
     request: Request,
     name: str,
     registry: KBRegistryService = Depends(get_kb_registry),
+    policy: AccessPolicy = Depends(get_access_policy),
 ):
     """Reindex a specific knowledge base."""
+    _resolve_named_kb(request, policy, name)
     try:
         result = registry.reindex_kb(name)
     except KBNotFoundError:
@@ -425,8 +428,10 @@ def update_kb_default_role(
     name: str,
     role: str | None = Body(..., embed=True),
     registry: KBRegistryService = Depends(get_kb_registry),
+    policy: AccessPolicy = Depends(get_access_policy),
 ):
     """Update a KB's default access role. Requires admin."""
+    _resolve_named_kb(request, policy, name)
     if role is not None and role not in ("none", "read", "write"):
         raise HTTPException(status_code=400, detail="role must be 'none', 'read', 'write', or null")
     try:
