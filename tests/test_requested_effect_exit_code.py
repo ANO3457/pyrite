@@ -1715,7 +1715,6 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "appends to the errors list the command exits on",
     ),
-    ("pyrite/cli/schema_commands.py", "schema_migrate"): ("fixed", "TestSchemaMigrate"),
     ("pyrite/cli/schema_commands.py", "schema_validate"): (
         "safe",
         "path outside the KB is skipped",
