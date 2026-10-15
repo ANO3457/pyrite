@@ -98,8 +98,10 @@ decision 7 makes migration an explicit command), [[adr-0003]] (superseded).
 Components [[kb-service]], [[kb-repository]], [[document-manager]],
 [[index-manager]], [[entry-model]]. Paths: `pyrite/services/kb_service.py`
 (`_prepare`, `_update`, `rename_entry`), `pyrite/storage/repository.py`
-(`find_file`, `_load_entry`, `rename`), `pyrite/storage/document_manager.py`,
-`pyrite/models/base.py` (`Entry.save` and its load-time records).
+(`find_file`, `_load_entry`, `rename`, `new_entry_text`),
+`pyrite/storage/entry_writer.py` (the one publish), `pyrite/storage/document_manager.py`,
+`pyrite/models/base.py` (the load-time records; the model has no `save` since
+#955 P4).
 
 ## Tests that pin it
 
@@ -122,10 +124,13 @@ over who may write an entry file's bytes.
 
 ## Known gaps
 
-- Rename's link rewrite, `schema migrate`, `ids pin` and software-kb's
-  `migrate-standards` still emit or write whole files (B6 P4; `add_link`/
-  `add_links` are converted); `Entry.save`, `to_markdown` and
-  `_publish_exclusive` stay until the last of them is converted; hooks
+- Every writer of an entry file sends operations and publishes through
+  `entry_writer` (B6 P4 done: `add_link`/`add_links`, rename, `schema
+  migrate`, software-kb's `migrate-standards`; `ids pin` keeps its own
+  no-follow write, under the momentary lock); `Entry.save`, `to_markdown`
+  and `_publish_exclusive` are gone. `repo.save(entry)` over an existing
+  file is still the model's whole-file overwrite (a create's text, for
+  fixtures), published against the bytes read; no service path uses it. Hooks
   still change a create, and what a hook sets in place reaches an update's
   index row until the index derives it (P6); the id comes from the title; a
   single read returns defaults among the file's fields (P5). ADR-0042 and
