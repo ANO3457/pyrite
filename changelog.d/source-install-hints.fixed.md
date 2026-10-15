@@ -1,3 +1,1 @@
-Missing semantic dependency hints now target the installed editable checkout or
-Git revision, with a Git source fallback instead of an unavailable PyPI wheel.
-Missing AI SDK hints name the required SDK directly.
+- **Missing-dependency hints now name an install that works from a source checkout (#775).** There is no PyPI wheel, so `pip install pyrite[semantic]` failed. The hint from `pyrite index embed`, `pyrite-admin index embed` and the semantic-search refusals now targets the installed editable checkout or Git revision (falling back to the Git source), and a missing AI SDK hint names the SDK directly.
