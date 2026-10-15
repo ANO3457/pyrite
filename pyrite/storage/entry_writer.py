@@ -91,11 +91,8 @@ def updated_at_stamp(old: Any, raw: str | None = None) -> Any:
     if ":" not in spelled:
         return now.date() if not isinstance(old, str) else now.strftime("%Y-%m-%d")
     sep = "T" if "T" in spelled else " "
-    tz = (
-        "Z"
-        if spelled.endswith("Z")
-        else (_STAMP_TZ.search(spelled).group(0) if _STAMP_TZ.search(spelled) else "")
-    )
+    offset = _STAMP_TZ.search(spelled)
+    tz = "Z" if spelled.endswith("Z") else (offset.group(0) if offset else "")
     core = spelled[: -len(tz)] if tz else spelled
     digits = len(core.rsplit(".", 1)[1]) if "." in core else 0
     shown = now
