@@ -6,7 +6,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from ...exceptions import ConfigError, KBNotFoundError, KBProtectedError
-from ...services.access_policy import ROLES, Action, AnyKB, ReadScope
+from ...services.access_policy import ROLES, AccessPolicy, Action, AnyKB, ReadScope
 from ...services.auth_service import AuthService
 from ...services.embedding_worker import EmbeddingWorker
 from ...services.ephemeral_service import EphemeralKBService, InvalidEphemeralKBNameError
@@ -16,6 +16,7 @@ from ...services.llm_service import LLMService
 from ...services.llm_usage_service import LLMUsageService
 from ...storage.index import IndexManager
 from ..api import (
+    get_access_policy,
     get_auth_service,
     get_embedding_worker,
     get_ephemeral_service,
@@ -28,7 +29,7 @@ from ..api import (
     limiter,
     requires_tier,
 )
-from ..authz import authorize
+from ..authz import authorize, get_principal, not_authenticated
 from ..schemas import (
     AIStatusResponse,
     KBReindexResponse,
@@ -37,6 +38,23 @@ from ..schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_named_kb(request: Request, policy: AccessPolicy, name: str) -> None:
+    """The KB a permissions route names, through the one resolver (#952).
+
+    These two routes decide access inline (ADR-0037 theme 3c has not moved
+    them), so nothing resolved the path's KB before the handler: an unknown
+    name answered 200 with no grants, and a non-admin could not tell a
+    private KB from a missing one only by luck. Resolved for the caller's
+    read scope, an unknown, unreadable or shortname KB is 404
+    ``KB_NOT_FOUND`` before any role is looked at.
+    """
+    principal = get_principal(request)
+    if principal is None:
+        raise not_authenticated()
+    policy.resolve_kb(principal, name)
+
 
 router = APIRouter(tags=["Admin"])
 
@@ -337,8 +355,10 @@ def list_kb_permissions(
     name: str,
     auth_service: AuthService = Depends(get_auth_service),
     resolve_default: Callable[[str], str | None] = Depends(get_kb_default_role_resolver),
+    policy: AccessPolicy = Depends(get_access_policy),
 ):
     """List permission grants for a KB. Requires global admin or KB admin."""
+    _resolve_named_kb(request, policy, name)
     auth_user = getattr(request.state, "auth_user", None)
     global_role = getattr(request.state, "api_role", None)
 
@@ -364,8 +384,10 @@ def manage_kb_permission(
     revoke: bool = Body(False),
     auth_service: AuthService = Depends(get_auth_service),
     resolve_default: Callable[[str], str | None] = Depends(get_kb_default_role_resolver),
+    policy: AccessPolicy = Depends(get_access_policy),
 ):
     """Grant or revoke a per-KB permission. Requires global admin or KB admin."""
+    _resolve_named_kb(request, policy, name)
     auth_user = getattr(request.state, "auth_user", None)
     global_role = getattr(request.state, "api_role", None)
 
