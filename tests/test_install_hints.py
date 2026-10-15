@@ -70,3 +70,18 @@ def test_unknown_install_uses_git_fallback(monkeypatch, metadata):
         "install",
         "pyrite[semantic] @ git+https://github.com/pyrite-wiki/pyrite.git@dev",
     ]
+
+
+def test_admin_index_embed_hint_is_the_source_install_command(monkeypatch):
+    """`pyrite-admin index embed` without the extra names the source install."""
+    from typer.testing import CliRunner
+
+    from pyrite import admin_cli
+
+    monkeypatch.setattr(embedding_service, "is_available", lambda: False)
+    result = CliRunner().invoke(admin_cli.app, ["index", "embed", "demo"])
+    text = result.output + getattr(result, "stderr", "")
+    assert result.exit_code == 1, text
+    assert "DEPENDENCY_MISSING" in text
+    assert "pip install pyrite[semantic]" not in text
+    assert "git+" in text or "-e " in text, text
