@@ -158,12 +158,10 @@ class TaskService:
         if audit is not None:
             # The audit entry is appended as one item; the earlier entries and
             # every other key keep their bytes (ADR-0042 decision 1; #955 P3b).
-            from ..storage.file_operations import Append, Set
+            from ..storage.file_operations import Append, ReplaceBody, Set
 
-            ops = [Set(k, v) for k, v in updates.items() if k != "body"]
+            ops: list[Any] = [Set(k, v) for k, v in updates.items() if k != "body"]
             if "body" in updates:
-                from ..storage.file_operations import ReplaceBody
-
                 ops.append(ReplaceBody(updates["body"]))
             ops.append(Append("status_change_log", audit))
             entry = self.kb_svc.apply_operations(task_id, kb_name, ops).entry
