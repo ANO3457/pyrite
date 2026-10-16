@@ -50,15 +50,18 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_STAMP_TZ = re.compile(r"[+-]\d\d:\d\d$")
+#: A zone as YAML or ISO 8601 spell it after the time: ``+02``, ``+0530``,
+#: ``+05:30`` (#990); ``Z`` is checked apart.
+_STAMP_TZ = re.compile(r"[+-]\d\d(?::?\d\d)?$")
 
 
 def raw_scalar(yaml_text: str, key: str) -> str | None:
     """The spelling of top-level ``key``'s scalar in ``yaml_text`` as written
-    (a trailing comment stripped), or None when the key is not a plain
-    ``key: value`` line (quoted key, flow mapping, block scalar)."""
+    (a trailing comment stripped; a CRLF line read as its LF twin, #990), or
+    None when the key is not a plain ``key: value`` line (quoted key, flow
+    mapping, block scalar)."""
     found = re.search(
-        rf"^{re.escape(key)}:[ \t]*([^\s#][^#\r\n]*?)[ \t]*(?:#.*)?$", yaml_text, re.M
+        rf"^{re.escape(key)}:[ \t]*([^\s#][^#\r\n]*?)[ \t]*(?:#[^\r\n]*)?\r?$", yaml_text, re.M
     )
     return found.group(1) if found else None
 
@@ -76,7 +79,8 @@ def updated_at_stamp(old: Any, raw: str | None = None) -> Any:
     ruamel's timestamp or a ``date``); ``raw`` is the scalar as the file
     spells it (``raw_scalar``), for a bare value. A quoted value stays a
     quoted string; a bare one is ``TimestampText``, which ``apply`` writes
-    bare in that spelling.
+    bare in that spelling. A zone is kept as spelled: ``Z``, ``+02``,
+    ``+0530`` or ``+05:30`` (#990), the time converted to it.
     """
     from .file_operations import TimestampText
 
@@ -104,8 +108,10 @@ def updated_at_stamp(old: Any, raw: str | None = None) -> Any:
     digits = len(core.rsplit(".", 1)[1]) if "." in core else 0
     shown = now
     if tz and tz != "Z":
+        # `+02`, `+0530` or `+05:30`: the digits after the sign, hours first.
         sign = 1 if tz[0] == "+" else -1
-        hours, minutes = int(tz[1:3]), int(tz[4:6])
+        digits_only = tz[1:].replace(":", "")
+        hours, minutes = int(digits_only[:2]), int(digits_only[2:] or 0)
         shown = now.astimezone(timezone(sign * timedelta(hours=hours, minutes=minutes)))
     text = shown.strftime(f"%Y-%m-%d{sep}%H:%M:%S")
     if digits:

@@ -17,6 +17,7 @@ appended item's span (``file_operations_oracle``).
 
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -295,6 +296,23 @@ def test_a_link_stamps_updated_at_only_where_the_file_carries_it(tmp_path: Path)
     after = _text(path)
     assert "updated_at: '2020-01-01T00:00:00Z'" not in after, after
     assert "\r\nupdated_at: '20" in after and "T" in after.split("updated_at: '")[1][:20], after
+
+
+@pytest.mark.control(
+    reason="the stack already sends a link through the one update, whose stamp keeps the spelling since #971 fix round 1; the control pins #990's check on this path"
+)
+def test_a_links_stamp_keeps_the_files_own_spelling(tmp_path: Path):
+    """#990: `add_link` goes through the one update, so its `updated_at`
+    stamp keeps the file's spelling (a bare `T…Z` stays `T…Z`, #971 fix
+    round 1), where the model's save wrote the house form over it."""
+    stamped = NOTE.replace("extra: 1\n", "extra: 1\nupdated_at: 2020-01-01T00:00:00Z\n")
+    config, path = _build(tmp_path, stamped, crlf=False)
+
+    _service(config)
+
+    line = next(l for l in _text(path).splitlines() if l.startswith("updated_at:"))
+    assert re.fullmatch(r"updated_at: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", line), line
+    assert line != "updated_at: 2020-01-01T00:00:00Z", "the stamp did not move"
 
 
 def test_a_link_refused_by_the_file_writes_nothing_and_names_the_reason(tmp_path: Path):
