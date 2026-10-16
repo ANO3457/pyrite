@@ -519,8 +519,21 @@ def _send(surface: str, config, op: str, path: str, value: Any = "x") -> Any:
     return fn(config, unset=[path])
 
 
+_FIRST_SEGMENT_CAUGHT = pytest.mark.control(
+    reason="the first-segment check refused these before the round; the grid states the "
+    "invariant for every cell, the `metadata.k` column is the one that was open"
+)
+
+
 @pytest.mark.parametrize("surface", sorted(SURFACES))
-@pytest.mark.parametrize("form", list(PATH_FORMS))
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param("k", marks=_FIRST_SEGMENT_CAUGHT),
+        "metadata.k",
+        pytest.param("k[0].x", marks=_FIRST_SEGMENT_CAUGHT),
+    ],
+)
 @pytest.mark.parametrize("op", OPS)
 @pytest.mark.parametrize("key", ["evidence", "type", "id"])
 def test_a_refusal_holds_for_every_operation_kind_path_form_and_surface(
@@ -579,7 +592,15 @@ def test_an_item_operation_on_links_lands_on_the_list_itself(
 
 
 @pytest.mark.parametrize("surface", sorted(SURFACES))
-@pytest.mark.parametrize("op", OPS)
+@pytest.mark.parametrize(
+    "op",
+    [
+        pytest.param("set", marks=_FIRST_SEGMENT_CAUGHT),
+        "append",
+        "remove",
+        pytest.param("unset", marks=_FIRST_SEGMENT_CAUGHT),
+    ],
+)
 def test_an_operation_inside_a_link_item_is_refused(tmp_path: Path, surface: str, op: str):
     """The exemption is for adding or taking a whole item of `links` or
     `sources`; `links[0].note` is Pyrite's field, edited by none of the four.
@@ -615,7 +636,12 @@ def test_an_appended_link_must_be_a_link(tmp_path: Path, surface: str, value: An
         {"unset": "tags"},
         {"append": ["tags", "x"]},
         {"remove": "tags=x"},
-        {"unset": [1]},
+        pytest.param(
+            {"unset": [1]},
+            marks=pytest.mark.control(
+                reason="an int key reached apply() and was refused there before the round"
+            ),
+        ),
     ],
     ids=["unset a string", "append a list", "remove a string", "unset a non-string key"],
 )
