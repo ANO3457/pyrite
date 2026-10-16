@@ -111,26 +111,29 @@ class QAService:
         )
 
         if not rows:
-            return {
-                "entry_id": entry_id,
-                "kb_name": kb_name,
-                "issues": [
-                    {
-                        "entry_id": entry_id,
-                        "kb_name": kb_name,
-                        "rule": "entry_not_found",
-                        "severity": "error",
-                        "field": "id",
-                        "message": f"Entry '{entry_id}' not found in KB '{kb_name}'",
-                    }
-                ],
-            }
+            issues.append(
+                {
+                    "entry_id": entry_id,
+                    "kb_name": kb_name,
+                    "rule": "entry_not_found",
+                    "severity": "error",
+                    "field": "id",
+                    "message": f"Entry '{entry_id}' not found in KB '{kb_name}'",
+                }
+            )
+            # A file whose frontmatter Pyrite cannot model never reaches the
+            # index (a tagged or complex key is no JSON key), so the one
+            # check that explains why reads its file (#760 (b)).
+            if self._kb_folder_problem(kb_name) is None:
+                self._check_unmodellable_frontmatter(issues, kb_name, entry_id=entry_id)
+            return {"entry_id": entry_id, "kb_name": kb_name, "issues": issues}
 
         entry = rows[0]
         self._check_entry_fields(entry, issues)
         self._check_entry_links(entry_id, kb_name, issues, readable_kbs=readable_kbs)
         # The checks below read the KB's folder (its files, its kb.yaml).
         if not self._report_unreadable_kb(issues, kb_name):
+            self._check_unmodellable_frontmatter(issues, kb_name, entry_id=entry_id)
             sources = self._check_file_values(issues, kb_name, entry_id=entry_id)
             self._check_schema_validation(entry, issues, sources.get(entry_id))
             self._check_rubric_evaluation(entry, issues)
@@ -1058,22 +1061,32 @@ class QAService:
     # Reserved-key pass (reads the files)
     # =========================================================================
 
-    def _check_unmodellable_frontmatter(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+    def _check_unmodellable_frontmatter(
+        self, issues: list[dict[str, Any]], kb_name: str, *, entry_id: str | None = None
+    ) -> None:
         """One issue per file whose frontmatter ``apply()`` cannot model (a
         tagged, complex or duplicate key), with the line and the reason: the
-        same walk ``index health`` reports (``storage.index.unmodellable_files``)."""
+        same walk ``index health`` reports (``storage.index.unmodellable_files``),
+        on every file of the KB or on ``entry_id``'s file alone. A warning,
+        as it is to ``index health``: the file reads; no write reaches it."""
         from ..storage.index import unmodellable_files
+        from ..storage.repository import KBRepository
 
         kb_config = self.config.get_kb(kb_name)
         if kb_config is None:
             return
-        for row in unmodellable_files(kb_config):
+        only: Path | None = None
+        if entry_id is not None:
+            only = KBRepository(kb_config).find_file(entry_id)
+            if only is None:
+                return
+        for row in unmodellable_files(kb_config, only):
             issues.append(
                 {
-                    "entry_id": Path(row["path"]).stem,
+                    "entry_id": row["id"],
                     "kb_name": kb_name,
                     "rule": "frontmatter_unmodellable",
-                    "severity": "error",
+                    "severity": "warning",
                     "field": "frontmatter",
                     "path": row["path"],
                     "line": row["line"],

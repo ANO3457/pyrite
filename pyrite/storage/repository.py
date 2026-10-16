@@ -9,6 +9,7 @@ import glob
 import io
 import logging
 import os
+import stat
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -28,6 +29,16 @@ from ..utils.frontmatter import Frontmatter, split_frontmatter
 from ..utils.yaml import load_yaml, load_yaml_file
 
 logger = logging.getLogger(__name__)
+
+
+def _is_regular_file(path: Path) -> bool:
+    """``path`` (symlinks followed) is a regular file that can be opened
+    without blocking; False for a FIFO, a directory, a socket or a path that
+    cannot be stat'ed."""
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except OSError:
+        return False
 
 
 def _event_fallback(file_path: Path, text: str | None) -> Entry:
@@ -303,7 +314,10 @@ class KBRepository:
     def read_id(self, file_path: Path) -> tuple[str | None, str | None]:
         """``id_of_file`` with the reason: ``(id, None)``, or ``(None, why)``
         where ``why`` is the loader's own message (``title must be a string,
-        got a list``), or None when the file simply holds no entry."""
+        got a list``), or None when the file simply holds no entry. A path
+        that is not a regular file is not read (a FIFO would block)."""
+        if not _is_regular_file(file_path):
+            return None, "not a regular file"
         try:
             if file_path.name == "__collection.yaml":
                 return self._load_collection(file_path).id or None, None
@@ -792,8 +806,13 @@ class KBRepository:
         return entry
 
     def list_entries(self) -> Iterator[tuple[Entry, Path]]:
-        """Iterate over all entries in the KB."""
+        """Iterate over all entries in the KB. What is not a regular file (a
+        FIFO, whose open blocks for a writer that never comes; a directory
+        named ``*.md``) is skipped, as the reconcile skips it (#972 round 1)."""
         for file_path in self.list_files():
+            if not _is_regular_file(file_path):
+                logger.warning("Skipping %s: not a regular file", file_path)
+                continue
             try:
                 entry = self._load_entry(file_path)
                 entry.kb_name = self.name

@@ -238,6 +238,26 @@ non-core types appear in `undeclared_types` and no spelling is `declared`.
 Any row makes the status `warning`. The same field is on `kb health`, REST
 and MCP `kb_health`.
 
+**`index health` → `unmodellable_frontmatter`; `qa validate` →
+`frontmatter_unmodellable`.** A file whose frontmatter Pyrite cannot model
+(a tagged key `!!str a: 1`, a complex key `? [a, b]`, a duplicate key, a
+non-mapping or one flow-style `{...}` root) gets no write through Pyrite,
+body included; an update is refused with `VALIDATION_FAILED` and the reason
+(#760 (b)). `index health` lists each such file once under
+`unmodellable_frontmatter`: `{kb, id, path, line, reason}`, where `line` is
+the 1-based line of the key (or root) the reason names, `reason` is the
+refusal's own text, and `id` is the reader's id for the file (an explicit
+`id:`, else the one derived from the title; the file's stem when the file
+cannot be read at all). The status is `warning`. `qa validate` (the KB and
+one entry alike) reports one `frontmatter_unmodellable` issue per such file,
+`severity: "warning"`, `field: "frontmatter"`, with the same `path`, `line`
+and `entry_id` and the reason in `message`. One rule decides both
+(`storage.file_operations.frontmatter_refusal`), so a file is listed exactly
+when an update of it is refused, for the same reason, at the same line.
+Frontmatter that does not parse is not listed here: it is the reader's
+`malformed_frontmatter` row. A file that is not a regular file, cannot be
+read or is not UTF-8 is skipped, as the reconcile skips it.
+
 **Update fields.** An update applies the fields it names: the entry type's
 own fields (its model's fields and every field its `kb.yaml` names for the
 type) and, on every surface, keys the type does not declare, which are

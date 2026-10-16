@@ -14,7 +14,10 @@ written by hand here, never computed from the module under test.
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -27,7 +30,12 @@ from pyrite.services.access_policy import UNSCOPED
 from pyrite.services.kb_service import KBService
 from pyrite.services.qa_service import QAService
 from pyrite.storage.database import PyriteDB
-from pyrite.storage.file_operations import FrontmatterSpan
+from pyrite.storage.file_operations import (
+    FrontmatterSpan,
+    OperationRefusedError,
+    ReplaceBody,
+    apply,
+)
 from pyrite.storage.index import IndexManager
 from pyrite.utils.frontmatter import Frontmatter, split_frontmatter
 
@@ -128,7 +136,9 @@ def test_qa_validate_reports_the_file_with_its_line(tmp_path: Path, name: str):
     found = [i for i in report["issues"] if i.get("rule") == "frontmatter_unmodellable"]
     assert len(found) == 1, report["issues"]
     issue = found[0]
-    assert issue["severity"] == "error"
+    # One severity across the surfaces: `index health` reports these as a
+    # warning (the file reads; no write reaches it), so the issue is one too.
+    assert issue["severity"] == "warning"
     assert issue["line"] == line
     assert word in issue["message"] and f"line {line}" in issue["message"]
     assert Path(issue["path"]).name == f"{name}.md"
@@ -197,3 +207,213 @@ def test_a_tagged_key_deeper_in_the_file_is_found_with_its_own_line():
     text = "---\nid: g\ntitle: G\nmeta:\n  !!str inner: 1\n---\n\nText.\n"
     got = unmodellable_reason(text, _span(text))
     assert got is not None and got[1] == 5, got
+
+
+# --- fix round 1: listed exactly when apply() refuses, same reason, same line ---
+
+#: Every reason ``apply()`` refuses a whole file for. name -> (file text,
+#: 1-based line the listing must name, or None when the file is not listed:
+#: frontmatter that does not parse is the reader's ``malformed_frontmatter``
+#: row, the one stated exception). The line is written by hand (the oracle).
+REFUSALS: dict[str, tuple[str, int | None]] = {
+    "sequence root": ("---\n- a\n- b\n---\n\nText.\n", 2),
+    "scalar root": ("---\njust words\n---\n\nText.\n", 2),
+    "flow mapping root": ("---\n{id: flow, title: Flow}\n---\n\nText.\n", 2),
+    "complex key": ("---\nid: c\n? [a, b]\n: 1\n---\n\nText.\n", 3),
+    "tagged key, foreign tag": ("---\nid: t\n!foo flag: 1\n---\n\nText.\n", 3),
+    "tagged key, natural tag": ("---\nid: t\ntitle: T\n!!str flag: 1\n---\n\nText.\n", 4),
+    "tagged key beside its plain twin": ("---\nid: t\n!!str a: 1\na: 2\n---\n\nText.\n", 3),
+    "tagged key in a set member's value": ("---\nid: t\ns: !!set {? a: {!!str k: 1}}\n---\n", 3),
+    "duplicate key": ("---\nid: d\nyear: 2025\nyear: 2026\n---\n\nText.\n", 4),
+    "duplicate key by value": ("---\nid: d\n1: a\n1.0: b\n---\n\nText.\n", 4),
+    "does not parse: compose": ("---\nid: m\ntitle: 'unterminated\n---\n\nText.\n", None),
+    "does not parse: construct": ("---\nid: m\nx: !!float abc\n---\n\nText.\n", None),
+    # 800 levels overflow Python's default recursion limit in ruamel's
+    # composer (400 do); deeper costs seconds per read, and the reader reads
+    # this file at every surface the tests below walk
+    "does not parse: nesting": ("---\nid: m\nx: " + "[" * 800 + "]" * 800 + "\n---\n", None),
+}
+
+_DOES_NOT_PARSE = "the frontmatter does not parse"
+
+
+def _apply_refusal(text: str) -> str:
+    with pytest.raises(OperationRefusedError) as info:
+        apply(text, [ReplaceBody("new body\n")], _span(text))
+    return info.value.reason
+
+
+#: Cases on which the two surfaces agreed before the round (0bbef521): kept
+#: as controls, so the property is stated for every reason, not only the
+#: ones that failed it.
+AGREED_BEFORE = {
+    "complex key",
+    "tagged key, foreign tag",
+    "tagged key, natural tag",
+    "duplicate key",
+    "duplicate key by value",
+    "does not parse: compose",
+}
+
+
+def _case(name: str) -> Any:
+    if name in AGREED_BEFORE:
+        return pytest.param(name, marks=pytest.mark.control(reason="agreed before the round"))
+    return name
+
+
+@pytest.mark.parametrize("name", [_case(n) for n in REFUSALS])
+def test_the_listing_agrees_with_apply_on_every_refusal_reason_and_line(name: str):
+    """One rule decides both: what ``apply()`` refuses a file for is what the
+    listing says, at the line of the key (or the root) it names. The
+    exception is frontmatter that does not parse: apply refuses it, the
+    reader lists it as malformed, this listing does not repeat it."""
+    text, line = REFUSALS[name]
+    reason = _apply_refusal(text)
+    listed = unmodellable_reason(text, _span(text))
+    if line is None:
+        assert reason.startswith(_DOES_NOT_PARSE), reason
+        assert listed is None, listed
+    else:
+        assert not reason.startswith(_DOES_NOT_PARSE), reason
+        assert listed == (reason, line), (listed, reason)
+
+
+def _env_with(tmp_path: Path, files: dict[str, str]) -> PyriteConfig:
+    kb_path = tmp_path / "kb"
+    (kb_path / "notes").mkdir(parents=True)
+    (kb_path / "notes" / "good.md").write_text(GOOD, encoding="utf-8")
+    for name, text in files.items():
+        (kb_path / "notes" / name).write_text(text, encoding="utf-8")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+    finally:
+        db.close()
+    return config
+
+
+def _health(config: PyriteConfig) -> dict:
+    db = PyriteDB(config.settings.index_path)
+    try:
+        return IndexManager(db, config).check_health(KB)
+    finally:
+        db.close()
+
+
+def _validate_kb(config: PyriteConfig) -> dict:
+    db = PyriteDB(config.settings.index_path)
+    try:
+        return QAService(config, db).validate_kb(KB, readable_kbs=UNSCOPED)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("name", [_case(n) for n in REFUSALS if REFUSALS[n][1] is None])
+def test_a_file_that_does_not_parse_is_the_readers_malformed_row_not_a_crash(
+    tmp_path: Path, name: str
+):
+    """A ``!!float abc`` value raised ``ValueError`` and deep nesting
+    ``RecursionError`` out of ``check_health`` and, through it, every
+    validate surface (review of #972). The reader already reads around these;
+    the listing must too."""
+    text, _ = REFUSALS[name]
+    config = _env_with(tmp_path, {"broken.md": text})
+    health = _health(config)
+    assert [Path(r["path"]).name for r in health["malformed_frontmatter"]] == ["broken.md"]
+    assert health["unmodellable_frontmatter"] == []
+    report = _validate_kb(config)
+    assert not [i for i in report["issues"] if i.get("rule") == "frontmatter_unmodellable"]
+
+
+def test_a_non_regular_or_unreadable_file_is_read_around(tmp_path: Path):
+    """A FIFO named ``*.md`` hung ``check_health`` (its open blocks for a
+    writer that never comes); a directory, a dangling symlink and bytes that
+    are not UTF-8 are skipped as the reconcile skips them."""
+    config = _env_with(tmp_path, {"tagged.md": SHAPES["tagged-key"][0]})
+    notes = config.knowledge_bases[0].path / "notes"
+    os.mkfifo(notes / "fifo.md")
+    (notes / "dir.md").mkdir()
+    (notes / "dangling.md").symlink_to(notes / "nowhere.md")
+    (notes / "latin1.md").write_bytes(b"---\nid: l\ntitle: caf\xe9\n---\n")
+
+    result: dict = {}
+    worker = threading.Thread(target=lambda: result.update(_health(config)), daemon=True)
+    worker.start()
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "check_health hung on the FIFO"
+    assert [Path(r["path"]).name for r in result["unmodellable_frontmatter"]] == ["tagged.md"]
+
+    report = _validate_kb(config)
+    found = [i for i in report["issues"] if i.get("rule") == "frontmatter_unmodellable"]
+    assert [Path(i["path"]).name for i in found] == ["tagged.md"]
+
+
+@pytest.mark.control(reason="the line was right before the round; pinned through the file read")
+def test_a_listed_files_line_counts_a_bom_and_crlf_as_the_editor_does(tmp_path: Path):
+    text = "﻿---\r\nid: bom\r\ntitle: Bom\r\n!!str flag: 1\r\n---\r\n\r\nText.\r\n"
+    config = _env_with(tmp_path, {"bom.md": text})
+    rows = _health(config)["unmodellable_frontmatter"]
+    assert [(Path(r["path"]).name, r["line"]) for r in rows] == [("bom.md", 4)], rows
+    got = unmodellable_reason(text, _span(text))
+    assert got is not None and got[1] == 4, got
+
+
+def test_validate_entry_reports_the_entrys_own_file(tmp_path: Path):
+    """``qa validate <entry>`` reads the one file, as ``validate_kb`` reads
+    them all; the issue carries the entry's id, not the file's name. A
+    flow-style root is the shape the index holds (a tagged or complex key
+    is no JSON key, so such a file never indexes; see the next test)."""
+    text = "---\n{id: real-id, title: Real, type: note}\n---\n\nText.\n"
+    config = _env_with(tmp_path, {"some-file.md": text})
+    db = PyriteDB(config.settings.index_path)
+    try:
+        one = QAService(config, db).validate_entry("real-id", KB, readable_kbs=UNSCOPED)
+        good = QAService(config, db).validate_entry("good", KB, readable_kbs=UNSCOPED)
+    finally:
+        db.close()
+    assert not [i for i in one["issues"] if i.get("rule") == "entry_not_found"], one["issues"]
+    found = [i for i in one["issues"] if i.get("rule") == "frontmatter_unmodellable"]
+    assert len(found) == 1, one["issues"]
+    assert found[0]["entry_id"] == "real-id"
+    assert found[0]["line"] == 2 and Path(found[0]["path"]).name == "some-file.md"
+    assert not [i for i in good["issues"] if i.get("rule") == "frontmatter_unmodellable"]
+
+
+def test_validate_entry_explains_an_unindexed_entry_whose_file_it_finds(tmp_path: Path):
+    """A tagged key keeps the file out of the index, so the entry is "not
+    found" there; the one check that says why reads its file."""
+    text = "---\nid: real-id\ntitle: Real\ntype: note\n!!str flag: 1\n---\n\nText.\n"
+    config = _env_with(tmp_path, {"some-file.md": text})
+    db = PyriteDB(config.settings.index_path)
+    try:
+        one = QAService(config, db).validate_entry("real-id", KB, readable_kbs=UNSCOPED)
+        none = QAService(config, db).validate_entry("nobody", KB, readable_kbs=UNSCOPED)
+    finally:
+        db.close()
+    assert [i["rule"] for i in one["issues"]] == ["entry_not_found", "frontmatter_unmodellable"]
+    assert one["issues"][1]["entry_id"] == "real-id" and one["issues"][1]["line"] == 5
+    assert [i["rule"] for i in none["issues"]] == ["entry_not_found"]
+
+
+def test_the_listing_names_the_entry_by_its_id_not_its_file_name(tmp_path: Path):
+    """The id is the reader's (an explicit ``id:``, else the one derived from
+    the title); only a file that cannot be read at all (a duplicate key)
+    falls back to the file's stem."""
+    tagged = "---\nid: real-id\ntitle: Real\ntype: note\n!!str flag: 1\n---\n\nText.\n"
+    dup = "---\ntitle: Dup\ntype: note\nyear: 2025\nyear: 2026\n---\n\nText.\n"
+    config = _env_with(tmp_path, {"some-file.md": tagged, "dup-file.md": dup})
+    rows = {Path(r["path"]).name: r for r in _health(config)["unmodellable_frontmatter"]}
+    assert rows["some-file.md"]["id"] == "real-id"
+    assert rows["dup-file.md"]["id"] == "dup-file"
+    issues = {
+        Path(i["path"]).name: i
+        for i in _validate_kb(config)["issues"]
+        if i.get("rule") == "frontmatter_unmodellable"
+    }
+    assert issues["some-file.md"]["entry_id"] == "real-id"
+    assert issues["dup-file.md"]["entry_id"] == "dup-file"

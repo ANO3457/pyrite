@@ -329,33 +329,52 @@ def _file_changed(row: dict[str, Any], stat: os.stat_result) -> bool:
     return row.get("file_mtime_ns") != stat.st_mtime_ns or row.get("file_size") != stat.st_size
 
 
-def unmodellable_files(kb: KBConfig) -> list[dict[str, Any]]:
-    """Every file of ``kb`` whose frontmatter Pyrite cannot model, with the
-    1-based line of the key and ``apply()``'s reason (#760 (b)).
+def unmodellable_files(kb: KBConfig, only: Path | None = None) -> list[dict[str, Any]]:
+    """Every file of ``kb`` whose frontmatter Pyrite cannot model (``only``
+    that one file), with the 1-based line of the key and ``apply()``'s
+    reason (#760 (b)): ``{kb, id, path, line, reason}``.
 
     ``index health`` and ``qa validate`` share this one walk, so the two
     reports name the same files for the same reason. A file that does not
-    parse is not here (it is malformed); a file that cannot be read is
-    skipped.
+    parse is not here (it is malformed; the reader's row). What the
+    reconcile reads around, this reads around too: a file that is not a
+    regular file (a FIFO would block the read), that cannot be read or is
+    not UTF-8, or that the check itself cannot handle, is skipped with a log
+    line, never a crash of the health or validate surface (#972 round 1).
+
+    ``id`` is the reader's id for the file (``KBRepository.read_id``: an
+    explicit ``id:``, else the one derived from the title), or the file's
+    stem when the file cannot be read at all (a duplicate key).
     """
     from ..utils.frontmatter import Frontmatter, split_frontmatter
     from .file_operations import FrontmatterSpan, unmodellable_reason
 
+    repo = KBRepository(kb)
     found: list[dict[str, Any]] = []
-    for path in sorted(KBRepository(kb).list_files()):
+    for path in [only] if only is not None else sorted(repo.list_files()):
         try:
-            text = path.read_text(encoding="utf-8")
+            if not stat_module.S_ISREG(path.stat().st_mode):
+                continue
+            text = path.read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        split = split_frontmatter(text)
-        if not isinstance(split, Frontmatter):
+        try:
+            split = split_frontmatter(text)
+            if not isinstance(split, Frontmatter):
+                continue
+            why = unmodellable_reason(
+                text, FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+            )
+        except Exception as e:
+            logger.warning("Could not check the frontmatter of %s: %s", path, e)
             continue
-        why = unmodellable_reason(
-            text, FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+        if why is None:
+            continue
+        reason, line = why
+        entry_id = repo.read_id(path)[0] or path.stem
+        found.append(
+            {"kb": kb.name, "id": entry_id, "path": str(path), "line": line, "reason": reason}
         )
-        if why is not None:
-            reason, line = why
-            found.append({"kb": kb.name, "path": str(path), "line": line, "reason": reason})
     return found
 
 
