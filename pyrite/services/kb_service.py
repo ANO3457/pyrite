@@ -944,6 +944,9 @@ class KBService:
     # =========================================================================
 
     def _writable_kb(self, kb_name: str) -> KBConfig:
+        # require_kb, the one resolver (#952), through this service's index:
+        # a KB registered after this process started is writable wherever
+        # it is readable (#764 review), not KB_NOT_FOUND to create/update alone.
         kb_config = self.require_kb(kb_name)
         if kb_config.read_only:
             raise KBReadOnlyError(f"KB is read-only: {kb_name}")

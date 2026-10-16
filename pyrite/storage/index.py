@@ -1226,9 +1226,10 @@ class IndexManager:
           enough for the search path.
         - broken_links: count of link rows with an unresolvable target
         - undeclared_types: entries whose `entry_type` isn't declared in the
-          KB's `kb.yaml` types (and isn't a core type). Aggregated per
-          `(kb, type)` with a count. KBs without a `kb.yaml` are skipped
-          since there's no declared-type list to enforce.
+          KB's `kb.yaml` types, core types included. Aggregated per
+          `(kb, type)` with a count. KBs without a `kb.yaml`, or whose
+          `kb.yaml` declares no types, are skipped since there's no
+          declared-type list to enforce.
         - missing_required_fields: entries missing a field the type's
           `required:` list declares. One entry per (kb, id, type, missing).
           KBs without a `kb.yaml` are skipped.
@@ -1395,21 +1396,21 @@ class IndexManager:
         if rows:
             health["broken_links"] = rows[0]["cnt"]
 
-        # Entries using an undeclared `entry_type` — drift detector.
-        # For each KB that ships a kb.yaml, build the set of declared types
-        # (kb.yaml types + CORE_TYPES) and report any (kb, type, count) not
-        # in that set. KBs without a kb.yaml are skipped: we can't enforce
-        # what isn't configured.
-        from ..schema.core_types import CORE_TYPES
+        # Each kb.yaml is loaded once here, never again below: a schema that
+        # fails to load is reported in `schema_errors` and its KB counts as
+        # declaring no types, so health still answers for the broken KB.
+        schemas = self._load_schemas(kbs)
 
+        # The schema owns the type vocabulary; an empty declaration is
+        # unrestricted, including plugin types and core types.
         for kb in kbs:
             if not kb.path.exists() or not kb.kb_yaml_path.exists():
                 continue
 
-            declared: set[str] = set(CORE_TYPES.keys())
-            kb_schema = kb.kb_schema
-            if kb_schema and kb_schema.types:
-                declared.update(kb_schema.types.keys())
+            kb_schema = schemas[kb.name][0]
+            declared = set(kb_schema.declared_types()) if kb_schema else set()
+            if not declared:
+                continue
 
             type_rows = self.db.execute_sql(
                 "SELECT entry_type, COUNT(*) AS cnt FROM entry "
@@ -1423,13 +1424,15 @@ class IndexManager:
                         {"kb": kb.name, "type": etype, "count": row["cnt"]}
                     )
 
+        health.update(self._type_name_drift(kbs, schemas))
+
         # Required-field + subdirectory checks. Per KB with a kb.yaml,
         # compare each entry against its type's `required:` list (default
         # ["title"]) and its `subdirectory:` hint. Skip KBs with no kb.yaml.
         for kb in kbs:
             if not kb.path.exists() or not kb.kb_yaml_path.exists():
                 continue
-            kb_schema = kb.kb_schema
+            kb_schema = schemas[kb.name][0]
             if not kb_schema or not kb_schema.types:
                 continue
 
@@ -1501,9 +1504,86 @@ class IndexManager:
 
         for kb in kbs:
             if kb.path.exists():
-                self._check_off_list_values(kb, health, file_values, validators_for(kb))
+                self._check_off_list_values(
+                    kb, health, file_values, validators_for(kb), schemas[kb.name][0]
+                )
 
         return health
+
+    @staticmethod
+    def _load_schemas(kbs: Iterable[KBConfig]) -> dict[str, tuple[Any, str | None]]:
+        """Each KB's schema, loaded once: ``{kb: (schema or None, error or None)}``.
+
+        Health diagnoses broken KBs, so a kb.yaml that fails to load (invalid
+        YAML, `types: null`, `types: [a, b]`) gives ``(None, error)`` -- the KB
+        declares no types -- instead of raising. ``KBConfig.kb_schema`` does not
+        cache a failure, so every later read would raise again. A KB with no
+        kb.yaml gives ``(None, None)``.
+        """
+        loaded: dict[str, tuple[Any, str | None]] = {}
+        for kb in kbs:
+            if not kb.kb_yaml_path.exists():
+                loaded[kb.name] = (None, None)
+                continue
+            try:
+                loaded[kb.name] = (kb.kb_schema, None)
+            except Exception as exc:
+                loaded[kb.name] = (None, str(exc) or type(exc).__name__)
+        return loaded
+
+    def _type_name_drift(
+        self,
+        kbs: Iterable[KBConfig],
+        schemas: dict[str, tuple[Any, str | None]] | None = None,
+    ) -> dict[str, Any]:
+        """Report exact case/underscore/space variants, independently per KB.
+
+        Only the derived index is read; this does not normalize stored types.
+        JSON is bounded to 100 groups and 50 spellings per group, with totals.
+        ``schemas`` is ``_load_schemas(kbs)`` when the caller already loaded
+        them; ``schema_errors`` names each KB whose kb.yaml failed to load.
+        """
+        kbs = sorted(kbs, key=lambda item: item.name)
+        if schemas is None:
+            schemas = self._load_schemas(kbs)
+        groups = []
+        schema_errors = []
+        for kb in kbs:
+            schema, error = schemas[kb.name]
+            if error is not None:
+                schema_errors.append({"kb": kb.name, "error": error})
+            declared: set[str] = schema.declared_types() if schema is not None else set()
+            by_name: dict[str, list[dict[str, Any]]] = {}
+            rows = self.db.execute_sql(
+                "SELECT entry_type, COUNT(*) AS cnt FROM entry "
+                "WHERE kb_name = :kb_name GROUP BY entry_type ORDER BY entry_type",
+                {"kb_name": kb.name},
+            )
+            for row in rows:
+                spelling = row["entry_type"]
+                if not spelling:
+                    continue
+                normalized = spelling.lower().replace("_", "-").replace(" ", "-")
+                by_name.setdefault(normalized, []).append(
+                    {"type": spelling, "count": row["cnt"], "declared": spelling in declared}
+                )
+            for normalized, spellings in sorted(by_name.items()):
+                if len(spellings) > 1:
+                    groups.append(
+                        {
+                            "kb": kb.name,
+                            "normalized": normalized,
+                            "spellings": spellings[:50],
+                            "spellings_total": len(spellings),
+                            "spellings_has_more": len(spellings) > 50,
+                        }
+                    )
+        return {
+            "type_name_drift": groups[:100],
+            "type_name_drift_total": len(groups),
+            "type_name_drift_has_more": len(groups) > 100,
+            "schema_errors": schema_errors,
+        }
 
     #: Index columns that are never an enum-constrained field value.
     _NOT_FIELD_COLUMNS = frozenset(
@@ -1516,6 +1596,7 @@ class IndexManager:
         health: dict,
         file_values: dict[tuple[str, str], dict[str, Any]],
         validators: list,
+        kb_schema: Any = None,
     ) -> None:
         """Report every off-list value of a declared enum in ``kb`` (#555, #47).
 
@@ -1543,7 +1624,8 @@ class IndexManager:
         """
         from ..schema.enum_check import enum_findings
 
-        kb_schema = kb.kb_schema if kb.kb_yaml_path.exists() else None
+        # ``kb_schema`` is check_health's one load: None for no kb.yaml or one
+        # that failed to load (then only plugin validators apply).
         declares_enums = kb_schema is not None and (
             any(fs.allowed_values() for ts in kb_schema.types.values() for fs in ts.fields.values())
             or any(

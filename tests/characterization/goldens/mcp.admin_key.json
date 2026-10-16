@@ -3479,7 +3479,7 @@
     "did_you_mean": [],
     "error": "KB 'missing-kb' not found",
     "error_code": "KB_NOT_FOUND",
-    "legacy_error_code": "NOT_FOUND",
+    "legacy_error_code": "UPDATE_FAILED",
     "retryable": false,
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },

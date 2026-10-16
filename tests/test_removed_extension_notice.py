@@ -131,8 +131,11 @@ class TestIndexHealthNamesTheRemovedExtension:
         assert row["extension"] == "cascade"
         assert row["entry_types"] == ["actor", "timeline_event"]
         assert _is_the_notice(row["message"]), row
-        # The types it declared are still reported as undeclared: nothing hides them.
-        assert {r["type"] for r in body["undeclared_types"]} == {"actor", "timeline_event"}
+        # The removed extension's types are named by this row, not by
+        # `undeclared_types`: a kb.yaml that declares no types is unrestricted
+        # (#809, "the schema owns the type vocabulary"), so nothing is
+        # undeclared there, and nothing hides the types either.
+        assert body["undeclared_types"] == []
 
     def test_rich_report_prints_it_without_a_traceback(self, tmp_path):
         config = _env(tmp_path, "cascade-timeline")

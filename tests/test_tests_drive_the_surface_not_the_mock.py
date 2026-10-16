@@ -106,6 +106,9 @@ EDGES: dict[str, str] = {
     "pyrite.services.git_service.GitService.fork_repo": (
         "one GitHub API request (a fork); needs the network and a real token"
     ),
+    "pyrite.services.url_checker.URLChecker._urlopen": (
+        "one HEAD request via urlopen; needs the network, status mapping stays in check_url"
+    ),
     "pyrite.services.id_pin_service._rename": (
         "one os.rename (fault injection: a real disk cannot be made to fail, or a link "
         "swapped in right before the rename, on cue)"

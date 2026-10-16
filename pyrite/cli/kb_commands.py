@@ -194,20 +194,41 @@ def kb_discover(
         console.print("[yellow]No KB configurations found.[/yellow]")
         return
 
-    formatted = _format_output(
-        {
-            "discovered": [
-                {
-                    "name": kb.name,
-                    "type": kb.kb_type,
-                    "path": str(kb.path),
-                    "already_registered": config.get_kb(kb.name) is not None,
-                }
-                for kb in discovered
-            ]
-        },
-        output_format,
-    )
+    # Snapshot discovery before registration so output keeps its original status.
+    data = {
+        "discovered": [
+            {
+                "name": kb.name,
+                "type": kb.kb_type,
+                "path": str(kb.path),
+                "already_registered": config.get_kb(kb.name) is not None,
+            }
+            for kb in discovered
+        ]
+    }
+
+    added = 0
+    if add:
+        from ..exceptions import KBAlreadyExistsError
+
+        with cli_registry_context() as (_, _, _, registry):
+            for kb in discovered:
+                if not config.get_kb(kb.name):
+                    try:
+                        registry.add_kb(
+                            name=kb.name,
+                            path=str(kb.path),
+                            kb_type=kb.kb_type,
+                            description=kb.description,
+                        )
+                        added += 1
+                    except KBAlreadyExistsError:
+                        pass  # Already registered, including duplicate discovered names.
+                    except (PyriteError, ValueError) as exc:
+                        _kb_error(exc, output_format)
+
+    # The requested write must finish before any presentation branch can return.
+    formatted = _format_output(data, output_format)
     if formatted is not None:
         typer.echo(formatted)
         return
@@ -228,23 +249,8 @@ def kb_discover(
 
     console.print(table)
 
-    if add:
-        with cli_registry_context() as (_, _, _, registry):
-            added = 0
-            for kb in discovered:
-                if not config.get_kb(kb.name):
-                    try:
-                        registry.add_kb(
-                            name=kb.name,
-                            path=str(kb.path),
-                            kb_type=kb.kb_type,
-                            description=kb.description,
-                        )
-                        added += 1
-                    except (PyriteError, ValueError):
-                        pass  # Already exists in DB
-            if added:
-                console.print(f"[green]Added {added} KB(s) to registry.[/green]")
+    if added:
+        console.print(f"[green]Added {added} KB(s) to registry.[/green]")
 
 
 @kb_app.command("validate")
@@ -544,6 +550,14 @@ def kb_health(
         console.print(f"  Files: {result['file_count']}, Indexed entries: {result['entry_count']}")
         console.print(f"  Last indexed: {result['last_indexed'] or 'never'}")
         console.print(f"  Source: {result['source']}")
+        for err in result.get("schema_errors", []):
+            console.print(
+                f"  kb.yaml failed to load: {err['error']}", markup=False, highlight=False
+            )
+        if result.get("type_name_drift_total"):
+            console.print(
+                f"  [yellow]Type name drift: {result['type_name_drift_total']} group(s); use --format json for spellings[/yellow]"
+            )
 
 
 @kb_app.command("commit")

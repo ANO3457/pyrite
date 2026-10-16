@@ -725,17 +725,22 @@ class PyriteMCPServer:
         body_offset = args.get("body_offset", 0)
         body_limit = args.get("body_limit")
 
+        # `kb_name` has already been through the one resolver in
+        # `_dispatch_tool` (#952): an unknown name, a KB outside the caller's
+        # readable set and a shortname were refused before this ran, and a KB
+        # `pyrite kb add` registered while this server runs was found there
+        # through the index's registry (#764, #925), so it is served here as
+        # kb_list_entries and kb_read_body serve it.
+
         # Scoped lookup: without `kb_name` it walks only readable KBs, so a
         # private entry neither answers nor shadows a readable twin (P-R5),
         # and the entry's links cover readable KBs only (P-R4).
         result = self.svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=readable_kbs)
 
         if not result:
-            return _error(
-                "NOT_FOUND",
-                f"Entry '{entry_id}' not found",
-                suggestion="Use kb_list_entries or kb_search to find entries",
-            )
+            refusal = _refusal(EntryNotFoundError(f"Entry '{entry_id}' not found"))
+            refusal["suggestion"] = "Use kb_list_entries or kb_search to find entries"
+            return refusal
 
         # Chunk first, project second (ADR-0034 rules 1 and 3): `fields` is a
         # token-reduction parameter and must never raise the body bound. #58
@@ -1428,6 +1433,12 @@ class PyriteMCPServer:
             # `retryable`, its public text, the detail logged once (#431).
             logger.error("Tool kb_update failed: %s", e, exc_info=e)
             return _refusal(e, already_logged=True)
+        except (EntryNotFoundError, KBNotFoundError) as e:
+            # Keep the old handler-level spelling for one release while the
+            # class code becomes the primary contract (ADR-0037).
+            refusal = _refusal(e)
+            refusal["legacy_error_code"] = "UPDATE_FAILED"
+            return refusal
         except PyriteError as e:
             return _error("UPDATE_FAILED", _safe_message(e), retryable=True)
 
@@ -2533,6 +2544,13 @@ class PyriteMCPServer:
         for kb_name in named_kbs:
             refusal = _kb_refusal(self.svc, kb_name, readable_kbs)
             if refusal is not None:
+                if name == "kb_update" and readable_kbs is None:
+                    # The one refusal, with the old code the old algorithm
+                    # gave this caller: an unscoped kb_update reached its
+                    # handler, which answered a missing KB with UPDATE_FAILED
+                    # until 0.25.8 (#761, #981); a scoped caller was refused
+                    # here, with NOT_FOUND, as every other tool still is.
+                    refusal["legacy_error_code"] = "UPDATE_FAILED"
                 return refusal
 
         takes_readable = readable_kbs is not None and self._handler_takes_readable_kbs(name)

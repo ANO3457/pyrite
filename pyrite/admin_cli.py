@@ -257,6 +257,7 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
         is_available,
         semantic_unavailable_for,
     )
+    from .utils.install_hints import extra_install_command
 
     # The KB first (#952): a name that is not a KB is refused before the
     # dependency check, so the answer names the thing that is wrong.
@@ -268,7 +269,7 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
         cli_error(
             "sentence-transformers is not installed.",
             error_code="DEPENDENCY_MISSING",
-            suggestion="Install semantic extras: pip install pyrite[semantic]",
+            suggestion=f"Install semantic extras: {extra_install_command('semantic')}",
         )
 
     try:
