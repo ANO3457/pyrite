@@ -120,8 +120,19 @@ Two more in 0.25.8 (#761): MCP `kb_get` and `kb_update` answer a missing
 entry with `ENTRY_NOT_FOUND` and a KB that does not exist with
 `KB_NOT_FOUND`, both `retryable: false`. Their old codes are in
 `legacy_error_code`: `NOT_FOUND` for `kb_get`, and `UPDATE_FAILED` for
-`kb_update`, which used to answer both with `retryable: true`. Any other
-`kb_update` failure is still `UPDATE_FAILED`, `retryable: true`.
+`kb_update`, which used to answer both with `retryable: true`. The
+`UPDATE_FAILED` legacy code for a missing KB holds for an unscoped caller
+only (an operator key, auth off), the one whose call reached the old
+handler; a scoped caller is refused by the resolver before the handler,
+with `legacy_error_code: NOT_FOUND`, as on every other tool (#952). The
+other `kb_update` refusals answer their class's own code, each with
+`legacy_error_code: UPDATE_FAILED`, the one code the old handler gave
+everything it did not name: `CONFLICT` (a write that lost the race for its
+file, `retryable: true`) and `STORAGE_ERROR` (a storage fault on the write;
+`retryable: true` only for a lock held too long) -- see "Update fields"
+below; a `VALIDATION_FAILED` refusal carries no legacy code (the code did
+not change). Any other `kb_update` failure is still `UPDATE_FAILED`,
+`retryable: true`.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape

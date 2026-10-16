@@ -223,6 +223,16 @@ def _error(
     return r
 
 
+def _with_old_kb_update_code(refusal: dict) -> dict:
+    """``kb_update``'s ``legacy_error_code`` for a class its old handler never
+    named: ``UPDATE_FAILED``, the one code it answered every such failure
+    with (its ``except PyriteError`` catch-all), kept one release (ADR-0037
+    theme 2). ``_refusal`` alone would carry the module-wide fallback
+    ``REQUEST_REFUSED``, a code ``kb_update`` never gave (#990)."""
+    refusal["legacy_error_code"] = "UPDATE_FAILED"
+    return refusal
+
+
 def _refusal(exc: PyriteError, *, already_logged: bool = False) -> dict:
     """Map a service refusal to the MCP envelope.
 
@@ -1432,14 +1442,19 @@ class PyriteMCPServer:
                 remove=args.get("remove"),
                 unset=args.get("unset"),
             )
-        except (ValidationError, ConflictError) as e:
+        except ValidationError as e:
             return _refusal(e)
+        except ConflictError as e:
+            # A write that lost the race for its file (#955): the class's
+            # own code, with the old code this handler gave everything it
+            # did not name (ADR-0037, one release).
+            return _with_old_kb_update_code(_refusal(e))
         except StorageError as e:
             # A storage fault on the write (a hard-linked file, the lock
             # directory, a lock held too long): the class's own code and
             # `retryable`, its public text, the detail logged once (#431).
             logger.error("Tool kb_update failed: %s", e, exc_info=e)
-            return _refusal(e, already_logged=True)
+            return _with_old_kb_update_code(_refusal(e, already_logged=True))
         except (EntryNotFoundError, KBNotFoundError) as e:
             # Keep the old handler-level spelling for one release while the
             # class code becomes the primary contract (ADR-0037).

@@ -1011,6 +1011,57 @@ def test_a_hard_linked_file_is_refused_as_a_storage_error(tmp_path: Path, surfac
     assert path.read_bytes() == before
 
 
+def test_mcp_kb_update_carries_its_own_old_code_for_a_storage_fault(tmp_path: Path):
+    """`kb_update` answered every failure it did not name with `UPDATE_FAILED`
+    before ADR-0037, so that is its `legacy_error_code` for a storage fault
+    too; `REQUEST_REFUSED` (the module-wide fallback a plain `_refusal` would
+    carry) is a code `kb_update` never gave (#990, the #992 merge review)."""
+    from pyrite.server.mcp_server import PyriteMCPServer
+
+    text, flags = SHAPES["root-file"]
+    config, path = _build(tmp_path, text, flags)
+    os.link(path, path.with_name("another-name.bak"))
+    server = PyriteMCPServer(config, tier="write")
+    try:
+        result = server._dispatch_tool(
+            "kb_update", {"kb_name": KB, "entry_id": ID, "title": "Walk, second draft"}
+        )
+    finally:
+        server.close()
+    assert result["error_code"] == "STORAGE_ERROR", result
+    assert result["legacy_error_code"] == "UPDATE_FAILED", result
+    assert result["retryable"] is False
+
+
+def test_mcp_kb_update_carries_its_own_old_code_for_a_lost_race(tmp_path: Path, monkeypatch):
+    """The same for a write that lost the race for its file (`CONFLICT`,
+    #955): a class that did not exist before, which `kb_update`'s old
+    handler would have answered as `UPDATE_FAILED`. The race itself is a
+    file that keeps changing under the update, which no test can time; the
+    service's `update` is replaced by a function that raises the refusal."""
+    from pyrite.exceptions import ConflictError
+    from pyrite.server.mcp_server import PyriteMCPServer
+    from pyrite.services.kb_service import KBService
+
+    text, flags = SHAPES["root-file"]
+    config, _path = _build(tmp_path, text, flags)
+
+    def lost_the_race(self, *args, **kwargs):
+        raise ConflictError("the file kept changing; re-read it and try again")
+
+    monkeypatch.setattr(KBService, "update", lost_the_race)
+    server = PyriteMCPServer(config, tier="write")
+    try:
+        result = server._dispatch_tool(
+            "kb_update", {"kb_name": KB, "entry_id": ID, "title": "Walk, second draft"}
+        )
+    finally:
+        server.close()
+    assert result["error_code"] == "CONFLICT", result
+    assert result["legacy_error_code"] == "UPDATE_FAILED", result
+    assert result["retryable"] is True
+
+
 def test_a_lock_held_too_long_is_a_busy_refusal(tmp_path: Path, monkeypatch):
     """`LockTimeout` is `StorageBusyError` (`retryable`): the same call can
     succeed once the other writer lets go. The lock is real, held by another
