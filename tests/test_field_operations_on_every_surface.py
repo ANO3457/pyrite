@@ -491,3 +491,199 @@ def test_update_task_appends_the_audit_entry(tmp_path: Path):
         after,
         [Set("status", "x"), Append("status_change_log", {"x": 1}), Set("updated_at", "x")],
     )
+
+
+# --------------------------------------------------------------------------
+# Fix round 1: every refusal is decided once, on the RESOLVED path of every
+# operation, so no operation kind, path form or surface can skip it
+# --------------------------------------------------------------------------
+
+#: A task: `evidence` and `status_change_log` are its managed fields, `links`
+#: is the list a surface may add an item to or take one from.
+GUARDED = NOTE.replace("type: note", "type: task\nstatus: open\nevidence: [e0]")
+
+OPS = ["set", "append", "remove", "unset"]
+#: The forms a path reaches the service in: the key, the key under
+#: `metadata` (decision 6 maps it to the top level), a sub-key of an item.
+PATH_FORMS = {"k": "{k}", "metadata.k": "metadata.{k}", "k[0].x": "{k}[0].x"}
+
+
+def _send(surface: str, config, op: str, path: str, value: Any = "x") -> Any:
+    fn = SURFACES[surface]
+    if op == "set":
+        return fn(config, set={path: value})
+    if op == "append":
+        return fn(config, append={path: value})
+    if op == "remove":
+        return fn(config, remove={path: value})
+    return fn(config, unset=[path])
+
+
+@pytest.mark.parametrize("surface", sorted(SURFACES))
+@pytest.mark.parametrize("form", list(PATH_FORMS))
+@pytest.mark.parametrize("op", OPS)
+@pytest.mark.parametrize("key", ["evidence", "type", "id"])
+def test_a_refusal_holds_for_every_operation_kind_path_form_and_surface(
+    tmp_path: Path, surface: str, form: str, op: str, key: str
+):
+    """A managed field (`evidence`), the type and the id are refused whatever
+    the operation (set, append, remove, unset), however the path is spelled
+    (`k`, `metadata.k`, `k[0].x`) and whichever surface sends it; the file is
+    not touched. Review of #973: `append metadata.evidence` and
+    `unset metadata.evidence` were written, and `append evidence[0].x`
+    reached the file."""
+    config, path = _build(tmp_path, GUARDED)
+    before = path.read_bytes()
+
+    try:
+        result = _send(surface, config, op, PATH_FORMS[form].format(k=key))
+    except ValidationError:
+        pass
+    else:
+        # MCP's one exception, #455's rule: a bare managed key *set* in an
+        # echoed read result is set aside and named in `ignored`, not
+        # refused. Nothing else may pass.
+        assert (surface, op, form) == ("mcp", "set", "k"), (surface, op, form, result)
+        assert key in result.get("ignored", []), result
+
+    assert path.read_bytes() == before
+
+
+LINK = {"target": "bar", "relation": "related"}
+
+
+@pytest.mark.parametrize("surface", sorted(SURFACES))
+@pytest.mark.parametrize(
+    "form",
+    [
+        pytest.param("k", marks=pytest.mark.control(reason="the item exemption held for `links`")),
+        "metadata.k",
+    ],
+)
+@pytest.mark.parametrize("op", ["append", "remove"])
+def test_an_item_operation_on_links_lands_on_the_list_itself(
+    tmp_path: Path, surface: str, form: str, op: str
+):
+    """`append links` and `append metadata.links` are one request (decision
+    6: an update never nests a key under `metadata:`): the item goes to the
+    top-level `links`, checked as a link; nothing called `metadata:` appears.
+    Review of #973: `append metadata.links` wrote a nested `metadata:`."""
+    text = GUARDED.replace("  since: 2020\n", "  since: 2020\n- target: bar\n  relation: related\n")
+    config, path = _build(tmp_path, text if op == "remove" else GUARDED)
+
+    _send(surface, config, op, PATH_FORMS[form].format(k="links"), LINK)
+
+    after = _text(path)
+    assert "metadata" not in after, after
+    assert ("- target: bar\r\n  relation: related\r\n" in after) == (op == "append"), after
+
+
+@pytest.mark.parametrize("surface", sorted(SURFACES))
+@pytest.mark.parametrize("op", OPS)
+def test_an_operation_inside_a_link_item_is_refused(tmp_path: Path, surface: str, op: str):
+    """The exemption is for adding or taking a whole item of `links` or
+    `sources`; `links[0].note` is Pyrite's field, edited by none of the four.
+    Review of #973: `append links[0].note` wrote the file, then the index
+    insert failed with an untyped sqlite error (REST 500)."""
+    config, path = _build(tmp_path, GUARDED)
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationError):
+        _send(surface, config, op, "links[0].note")
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("surface", sorted(SURFACES))
+@pytest.mark.parametrize("value", ["x", [["x"]]], ids=["a string", "a list in a list"])
+def test_an_appended_link_must_be_a_link(tmp_path: Path, surface: str, value: Any):
+    """An item appended to `links` is checked as a link before anything is
+    written: a string or a nested list is refused as `VALIDATION_FAILED`,
+    never written and then refused by the index."""
+    config, path = _build(tmp_path, GUARDED)
+    before = path.read_bytes()
+
+    with pytest.raises(ValidationError):
+        _send(surface, config, "append", "links", value)
+
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"unset": "tags"},
+        {"append": ["tags", "x"]},
+        {"remove": "tags=x"},
+        {"unset": [1]},
+    ],
+    ids=["unset a string", "append a list", "remove a string", "unset a non-string key"],
+)
+def test_mcp_refuses_a_malformed_operation_argument(tmp_path: Path, args: dict[str, Any]):
+    """`append` and `remove` are objects ({field: item}), `unset` a list of
+    keys; a wrong shape is `VALIDATION_FAILED`, nothing written. Review of
+    #973: `unset: "tags"` was iterated per character, a malformed `append`
+    was `INTERNAL`, retryable."""
+    from pyrite.server.mcp_server import PyriteMCPServer
+
+    config, path = _build(tmp_path)
+    before = path.read_bytes()
+    server = PyriteMCPServer(config, tier="write")
+    try:
+        result = server._dispatch_tool("kb_update", {"kb_name": KB, "entry_id": ID, **args})
+    finally:
+        server.close()
+    assert result.get("error_code") == "VALIDATION_FAILED", result
+    assert path.read_bytes() == before
+
+
+def _fix(config, rule: str) -> dict:
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.qa_service import QAService
+
+    db = PyriteDB(config.settings.index_path)
+    try:
+        return QAService(config, db).fix_kb(
+            KB, dry_run=False, fix_rules=[rule], readable_kbs=UNSCOPED
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("spelled", "fixed"),
+    [("tags: Alpha", "tags: alpha"), ("tags: Alpha, beta", "tags: alpha, beta")],
+    ids=["a scalar", "a comma string"],
+)
+def test_qa_fix_tag_normalisation_keeps_a_scalar_tags_value_a_scalar(
+    tmp_path: Path, spelled: str, fixed: str
+):
+    """`tags: Alpha` is one tag (the model's rule, #561); the repair lowers
+    it in place, as the scalar it is. Review of #973: the per-position set
+    failed on a scalar, and the repair with it."""
+    config, path = _build(tmp_path, NOTE.replace("tags: [alpha, beta]", spelled))
+    before = _text(path)
+
+    result = _fix(config, "tag_case")
+
+    after = _text(path)
+    assert result["fixed_count"] == 1, result
+    assert f"{fixed}  # trailing" in after, after
+    assert_only_changed(before, after, [Set("tags", "x"), Set("updated_at", "x")])
+
+
+def test_qa_fix_link_repair_rewrites_a_string_link_item(tmp_path: Path):
+    """`links: [foo]` is a link to `foo` (the model's rule); the repair sets
+    the item itself, keeping it a string. Review of #973: a string item was
+    skipped and the broken link left."""
+    text = NOTE.replace("extra: 1\n", f"- {ID[:-1]}x   # a typo, as a bare id\nextra: 1\n")
+    config, path = _build(tmp_path, text)
+    before = _text(path)
+
+    result = _fix(config, "broken_link")
+
+    after = _text(path)
+    assert result["fixed_count"] == 1, result
+    assert f"- {ID}   # a typo, as a bare id\r\n" in after, after
+    assert LEGACY_ITEM in after
+    assert_only_changed(before, after, [Set("links[1]", "x"), Set("updated_at", "x")])

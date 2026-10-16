@@ -302,7 +302,18 @@ without a lock and the result says `"locked": false`. An item operation
 (`append`, `remove`) touches the one item it names: the other items keep
 their bytes, and `links`/`sources` take item operations on every surface
 though a set of the whole list is still refused; an appended link is
-checked as a link. `unset` removes a key with its own lines; a `null`
+checked as a link. Every operation (`set`, `append`, `remove`, `unset`)
+is first resolved onto the file's own key -- an alias to the spelling the
+file uses, `metadata.k` to the top-level `k` (decision 6; the file's own
+`metadata.k` only where it holds one) -- and every refusal is decided on
+that key, in one place, whatever the path form (`k`, `metadata.k`,
+`k[0].x`) or surface: a managed field, `type`, `id` and `body` as a key are
+refused for every operation; `links` and `sources` take an item appended or
+removed as a whole item only (`links[0].x` is refused), and an appended
+item must be a mapping the item type reads (a link: `target` and
+`relation`), checked before anything is written. MCP's `append` and
+`remove` are objects (`{field: item}`), `unset` a list of keys; another
+shape is `VALIDATION_FAILED`. `unset` removes a key with its own lines; a `null`
 value is written as `null` (MCP `kb_update` sets a `null` for an undeclared
 key aside, as before). In-process callers (`qa fix`'s link and tag
 repairs, a task's evidence and audit trail) send one operation each
