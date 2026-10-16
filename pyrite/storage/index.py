@@ -345,10 +345,11 @@ def _file_changed(row: dict[str, Any], stat: os.stat_result) -> bool:
     return row.get("file_mtime_ns") != stat.st_mtime_ns or row.get("file_size") != stat.st_size
 
 
-def unmodellable_files(kb: KBConfig, only: Path | None = None) -> list[dict[str, Any]]:
-    """Every file of ``kb`` whose frontmatter Pyrite cannot model (``only``
-    that one file), with the 1-based line of the key and ``apply()``'s
-    reason (#760 (b)): ``{kb, id, path, line, reason}``.
+def unmodellable_files(kb: KBConfig, paths: Iterable[Path] | None = None) -> list[dict[str, Any]]:
+    """Every file of ``kb`` whose frontmatter Pyrite cannot model (or of
+    ``paths``, the files a caller already narrowed it to, in that order),
+    with the 1-based line of the key and ``apply()``'s reason (#760 (b)):
+    ``{kb, id, path, line, reason}``.
 
     ``index health`` and ``qa validate`` share this one walk, so the two
     reports name the same files for the same reason. A file that does not
@@ -367,7 +368,7 @@ def unmodellable_files(kb: KBConfig, only: Path | None = None) -> list[dict[str,
 
     repo = KBRepository(kb)
     found: list[dict[str, Any]] = []
-    for path in [only] if only is not None else sorted(repo.list_files()):
+    for path in sorted(repo.list_files()) if paths is None else paths:
         try:
             if not stat_module.S_ISREG(path.stat().st_mode):
                 continue
@@ -1451,7 +1452,20 @@ class IndexManager:
             health["duplicates"].extend(plan.duplicates)
             for bad in plan.malformed:
                 health["malformed_frontmatter"].append({"kb": kb.name, **bad})
-            health["unmodellable_frontmatter"].extend(unmodellable_files(kb))
+            # The #760 listing, from the reconcile's own read (#990): only a
+            # file whose loaded frontmatter could be refused (a non-string
+            # key, a set, a flow-style root: `may_be_unmodellable`), or that
+            # did not load, is parsed again; the rest cannot be listed.
+            from .file_operations import may_be_unmodellable
+
+            suspects = [
+                claim.path
+                for claims in plan.holders.values()
+                for claim in claims
+                if claim.entry is None
+                or may_be_unmodellable(getattr(claim.entry, "_source_frontmatter", None))
+            ] + [Path(bad["path"]) for bad in plan.malformed]
+            health["unmodellable_frontmatter"].extend(unmodellable_files(kb, sorted(suspects)))
 
             from ..schema.field_aliases import double_spellings
 

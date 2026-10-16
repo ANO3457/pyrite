@@ -942,6 +942,8 @@ class KBRepository:
                 # pre-count its body or double-write.
                 if md_file.resolve() == src.resolve():
                     continue
+                if not _is_regular_file(md_file):
+                    continue  # a FIFO would block the read (#990)
                 rel = self._rel(md_file)
                 try:
                     raw = md_file.read_bytes()
@@ -1242,6 +1244,8 @@ class KBRepository:
         """
         query_lower = query.lower()
         for file_path in self.list_files():
+            if not _is_regular_file(file_path):
+                continue  # a FIFO would block the read (#990)
             try:
                 content = file_path.read_text(encoding="utf-8")
                 if query_lower in content.lower():
