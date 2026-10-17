@@ -388,6 +388,7 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
         )
         assert {r["source_id"] for r in back} == {"note"}
 
+    @pytest.mark.control(reason="an unknown prefix was stored as written before the fix too")
     def test_an_unknown_prefix_stays_as_written(self, tmp_path):
         """A prefix that names no KB (full or short) is kept verbatim, so
         the link is counted broken, which it is."""

@@ -296,7 +296,12 @@ def test_a_registry_only_kb_is_found_by_a_command_that_loads_its_own_config(cli_
     [
         (f"{UNKNOWN}:hello", 1, "KB_NOT_FOUND"),
         (f"{SHORT}:hello", 1, FULL),
-        (f"{FULL}:hello", 0, '"hello"'),
+        pytest.param(
+            f"{FULL}:hello",
+            0,
+            '"hello"',
+            marks=pytest.mark.control(reason="a full name was read before the fix too"),
+        ),
     ],
     ids=["unknown", "shortname", "full-name"],
 )
