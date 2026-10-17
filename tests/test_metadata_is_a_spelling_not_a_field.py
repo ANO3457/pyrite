@@ -587,3 +587,86 @@ def test_a_field_spelled_once_under_metadata_is_edited_there(tmp_path: Path):
     after = path.read_text(encoding="utf-8")
     assert "metadata:\n  rank: 5\n" in after, after
     assert "\nrank:" not in after, after
+
+
+def test_create_places_a_declared_field_sent_under_metadata_at_its_own_key(tmp_path: Path):
+    """The create request's `metadata` envelope (REST, MCP, the web form)
+    is a spelling too: a declared field sent as `metadata.k` lands at `k`.
+    939910c nested it and emitted the field's default at the top level, so
+    Pyrite itself wrote a file spelling `source_type` twice (`folder` on top,
+    `query` nested) and the row's bag-wins merge hid it; with the model's
+    reading winning, every stored-query collection read as a folder."""
+    kb_path = tmp_path / "kb"
+    (kb_path / "entries").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30)
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        svc = KBService(config, db)
+        svc.create_entry(
+            kb_name=KB,
+            entry_id="c1",
+            entry_type="collection",
+            title="C",
+            body="",
+            metadata={"source_type": "query", "query": "type:note", "colour": "red"},
+        )
+        entry = KBRepository(config.knowledge_bases[0]).load("c1")
+        row = db.get_entry("c1", KB)
+    finally:
+        db.close()
+    assert entry is not None and row is not None
+    text = next(kb_path.rglob("c1.md")).read_text(encoding="utf-8")
+    assert "\nsource_type: query\n" in text and "\nquery: type:note\n" in text, text
+    assert "\n  source_type:" not in text and "\n  query:" not in text, text
+    # an undeclared key keeps create's nested placement (#178), spelled once
+    assert "metadata:\n  colour: red\n" in text, text
+    assert (entry.source_type, entry.query) == ("query", "type:note")
+    assert (row["metadata"].get("source_type"), row["metadata"].get("query")) == (
+        "query",
+        "type:note",
+    )
+    from pyrite.schema.field_aliases import double_spellings
+
+    assert double_spellings(entry._source_frontmatter, type(entry), "collection") == {}
+
+
+def test_a_top_level_aliases_key_resolves_a_wikilink(tmp_path: Path):
+    """`aliases` has no column: the row holds it only in its `metadata`
+    JSON, where the wikilink resolver's alias pass reads it (`$.aliases`),
+    and before #994 only a file that nested `aliases` under `metadata:` put
+    it there. The field's own spelling resolves too: the row carries the
+    model's reading for either spelling."""
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.wikilink_service import WikilinkService
+
+    kb_path = tmp_path / "kb"
+    (kb_path / "notes").mkdir(parents=True)
+    (kb_path / "notes" / "n4.md").write_text(
+        "---\nid: n4\ntitle: N4\ntype: note\naliases: [Hidden moniker]\n---\n\nText.\n",
+        encoding="utf-8",
+    )
+    (kb_path / "notes" / "n5.md").write_text(
+        "---\nid: n5\ntitle: N5\ntype: note\nmetadata:\n  aliases: [Nested moniker]\n---\n\nText.\n",
+        encoding="utf-8",
+    )
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        svc = WikilinkService(config, db)
+        top = svc.resolve_entry("Hidden moniker", readable_kbs=UNSCOPED)
+        nested = svc.resolve_entry("Nested moniker", readable_kbs=UNSCOPED)
+        row = db.get_entry("n4", KB)
+    finally:
+        db.close()
+    assert row is not None and row["metadata"].get("aliases") == ["Hidden moniker"]
+    assert top is not None and top["id"] == "n4", top
+    assert nested is not None and nested["id"] == "n5", nested

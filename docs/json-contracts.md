@@ -246,7 +246,9 @@ file that spells one field twice (`k:` and `metadata.k`, a field and its
 alias, or either under `metadata:`) is read one way, the field's own
 top-level name first, in the model and the index row alike, and an update
 of that field is refused with `VALIDATION_FAILED` naming both spellings
-until one goes; its other fields stay editable. `index health` lists each
+until one goes; its other fields stay editable. On create, a declared field
+or an alias sent inside the `metadata` envelope lands at its own key; only
+an undeclared key is placed under `metadata:` (#178). `index health` lists each
 such field once under `double_spellings`: `{kb, id, field, spellings}`,
 where `spellings` are the dotted paths as the file spells them. The status
 is `warning`. `qa validate` (the KB and one entry alike) reports one

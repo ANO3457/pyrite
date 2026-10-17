@@ -112,6 +112,18 @@ unchanged in both the model and the index row.
 - `metadata` as a request envelope (REST PUT, MCP, the web form) stays:
   each nested key is a path whose field `field_at` answers. A client that
   sends `metadata: {metadata: {...}}` is refused.
+- On create, a declared field or an alias sent inside `metadata` lands at
+  its own key (`build_entry`); only an undeclared key keeps the nested
+  placement (#178). Before, create nested the caller's value and emitted
+  the field's default at the top level: Pyrite itself wrote files spelling
+  `source_type` twice, and the row's bag-wins merge hid it. The repo's own
+  KB holds such files (13 entries, 47 fields, nine of them disagreeing on
+  `status`), reported by `index health` now.
+- `aliases` has no column of its own; the row held it only in its
+  `metadata` JSON, and only for a file that nested it under `metadata:`, so
+  a top-level `aliases:` (the field's own spelling) never resolved a
+  wikilink. The row now carries the model's `aliases` in that JSON, where
+  the resolver's alias pass reads it, for either spelling.
 - Out of scope, on #990: the `sources` publish-before-index failure and
   `links[x]` INTERNAL.
 

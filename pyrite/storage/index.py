@@ -543,6 +543,12 @@ class IndexManager:
             if hasattr(entry, "metadata") and isinstance(entry.metadata, dict):
                 ext_fields.update(entry.metadata)
             ext_fields.update({k: v for k, v in fm.items() if k not in stored_keys})
+            # `aliases` has no column: the row holds it only here, where the
+            # wikilink resolver's alias pass reads it (`$.aliases`). The
+            # model's reading, so a top-level `aliases:` resolves like one
+            # the file nested under `metadata:` (it never did before #994).
+            if entry.aliases:
+                ext_fields["aliases"] = data["aliases"]
             if ext_fields:
                 data["metadata"] = ext_fields  # stored as dict; upsert_entry JSON-encodes
         except Exception:
