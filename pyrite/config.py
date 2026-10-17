@@ -660,6 +660,41 @@ class PyriteConfig:
         """The config.yaml entry of KB `name` (not a registry KB), or None."""
         return self._kb_by_name.get(name)
 
+    def readable_kb_with_shortname(
+        self, name: str, *, readable_kbs: set[str] | None
+    ) -> KBConfig | None:
+        """The KB among the caller's readable ones whose shortname is `name`.
+
+        Looked up in the readable set only (None: every KB), never in every
+        KB and then checked: a private KB sharing the shortname would
+        otherwise be the one found, and the caller's answer would change
+        with a KB it cannot see (#952, #965). `readable_kbs` is a required
+        keyword so that forgetting it is a TypeError, never "see everything".
+        The services' spelling is `services/kb_resolver.readable_kb_with_shortname`;
+        it lives here so that the index, which may not import services, can
+        store the KB a link prefix names (ADR-0049 Q3).
+        """
+        for kb in self.all_kbs():
+            if kb.shortname == name and (readable_kbs is None or kb.name in readable_kbs):
+                return kb
+        return None
+
+    def readable_kb_named(self, name: str, *, readable_kbs: set[str] | None) -> KBConfig | None:
+        """The KB a link prefix (`[[name:id]]`) means for a caller who may read
+        `readable_kbs`: the readable KB with that full name, else the readable
+        KB with that shortname, else None.
+
+        Both steps consult the readable set only. Existence is never checked
+        first: a private KB whose full name is a readable KB's shortname would
+        otherwise turn the link into a miss, and the miss would say the
+        private name exists (#965 round 3). For the unscoped caller a full
+        name wins over another KB's shortname, as `validate` warns it will.
+        """
+        for kb in self.all_kbs():
+            if kb.name == name and (readable_kbs is None or kb.name in readable_kbs):
+                return kb
+        return self.readable_kb_with_shortname(name, readable_kbs=readable_kbs)
+
     def list_kbs(self, kb_type: str | None = None) -> list[KBConfig]:
         """List all KBs, optionally filtered by type."""
         if kb_type is None:

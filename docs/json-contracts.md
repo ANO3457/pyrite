@@ -258,6 +258,16 @@ Frontmatter that does not parse is not listed here: it is the reader's
 `malformed_frontmatter` row. A file that is not a regular file, cannot be
 read or is not UTF-8 is skipped, as the reconcile skips it.
 
+**`index health` → `links_stale_kb`.** A count (top level and under
+`checks`) of link rows that a rebuild would point at a different KB: the
+`kb:` prefix the file wrote, resolved against today's config, is not the KB
+the row stores (#980). It catches a shortname renamed or added in config since
+the file was indexed (`index sync` does not re-read an unchanged file) and a
+row indexed before the full name was stored. A link whose prefix names no KB
+is not counted: it is a broken link (`broken_links`), and a rebuild writes the
+same row. Any count makes the status `warning`; `pyrite index build` re-reads
+every file and clears it.
+
 **Update fields.** An update applies the fields it names: the entry type's
 own fields (its model's fields and every field its `kb.yaml` names for the
 type) and, on every surface, keys the type does not declare, which are

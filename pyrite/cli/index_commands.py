@@ -525,6 +525,9 @@ def index_health(
         or "warning" in off_list_severities
         or bool(removed_extensions)
         or bool(unmodellable_frontmatter)
+        # A link row a rebuild would point at a different KB (a shortname
+        # renamed since the file was indexed, or a row from before #980).
+        or bool(health.get("links_stale_kb"))
     )
     status = "unhealthy" if is_unhealthy else ("warning" if has_warning else "healthy")
 
@@ -536,6 +539,7 @@ def index_health(
             "stale_entries": len(health["stale_entries"]),
             "content_changed": len(health.get("content_changed", [])),
             "broken_links": broken_links,
+            "links_stale_kb": health.get("links_stale_kb", 0),
             "undeclared_types": undeclared_types,
             "missing_required_fields": missing_required,
             "subdirectory_mismatches": subdirectory_mismatches,
@@ -611,6 +615,15 @@ def _report_health(
         console.print(
             f"[yellow]⚠ {broken_links} broken link(s) found.[/yellow]"
             " Run 'pyrite links check' for details."
+        )
+
+    stale_rows = health.get("links_stale_kb") or 0
+    if stale_rows:
+        console.print(
+            f"[yellow]⚠ {stale_rows} link row(s) point at a different KB than their"
+            " file's prefix now names (a shortname changed since the file was indexed,"
+            " or a row from before the full name was stored).[/yellow]"
+            " Run 'pyrite index build' to rewrite them from the files."
         )
 
     if removed_extensions:
