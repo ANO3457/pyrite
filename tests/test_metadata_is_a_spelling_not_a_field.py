@@ -1512,9 +1512,39 @@ def _create_cell_id(c: Any) -> str:
     return f"{c[0]}:{_dotted(c[2])}+{_dotted(c[3])}:{c[6]}"
 
 
-@pytest.mark.parametrize(
-    "cell", [pytest.param(c, id=_create_cell_id(c)) for c in _create_pair_cells()]
-)
+def _create_pair_params(write_half: bool) -> list[Any]:
+    """The cells, with the ones the base already got right labelled controls
+    (verify-red against 8b26895): the #720 rule there grouped an alias and
+    its target across the top level and the envelope, so every
+    `actors`/`participants` pair was refused and, equal, written once; and an
+    undeclared key sent as `custom` and `metadata.custom` met in the bag, so
+    equal values were one key. The evidence is a declared field with no
+    alias spelled `k` and `metadata.k` (`title`, `tags`; and `custom` for the
+    refusal), which the base nested as a second spelling."""
+    params: list[Any] = []
+    for c in _create_pair_cells():
+        type_name, field = c[0], c[1]
+        reason = None
+        if type_name == "event":
+            reason = (
+                "the base's #720 rule grouped an alias and its target from both sources, so "
+                "this pair was already refused (and written once when equal); the `note` "
+                "cells are the evidence"
+            )
+        elif write_half and field == "custom":
+            reason = (
+                "two spellings of an undeclared key met in the base's `metadata` bag, so an "
+                "equal pair was one key there too; the declared fields are the evidence"
+            )
+        params.append(
+            pytest.param(c, marks=pytest.mark.control(reason=reason), id=_create_cell_id(c))
+            if reason
+            else pytest.param(c, id=_create_cell_id(c))
+        )
+    return params
+
+
+@pytest.mark.parametrize("cell", _create_pair_params(write_half=False))
 def test_create_refuses_every_pair_of_spellings_of_one_field_with_different_values(
     cell: Any, tmp_path: Path
 ):
@@ -1536,9 +1566,7 @@ def test_create_refuses_every_pair_of_spellings_of_one_field_with_different_valu
     assert sorted(p.name for p in kb_path.rglob("*.md")) == before, "refused, yet a file appeared"
 
 
-@pytest.mark.parametrize(
-    "cell", [pytest.param(c, id=_create_cell_id(c)) for c in _create_pair_cells()]
-)
+@pytest.mark.parametrize("cell", _create_pair_params(write_half=True))
 def test_create_writes_a_field_named_at_two_spellings_with_one_value_once(
     cell: Any, tmp_path: Path
 ):
