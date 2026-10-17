@@ -312,7 +312,16 @@ when the file has none), and a file that spells a field twice is reported
 and refused for an update of that field. A path whose field would be
 `metadata` (`metadata` alone, `metadata.metadata.k`) is refused at any
 depth, so a key refused at the top level (`type`, `id`, `links`, `body`) is
-refused under `metadata` too. `updated_at` is
+refused under `metadata` too. A request that names one field at two
+spellings (`k` and `metadata.k`, a field and its alias, a key at the top
+level and again inside the `metadata` envelope) with different values is
+refused and writes nothing; equal values name one value (#720, extended
+from aliases to every spelling). A path is read as `.`-separated keys with
+`[i]` indexes, so a hand-written key whose own name contains a dot or a
+bracket (`v1.2: old`) cannot be addressed from a request: `{"v1.2": "new"}`
+writes `v1: {"2": new}` beside it. A key is written under the exact name
+sent, so a name with whitespace or a lookalike character (`" id"`, a
+Cyrillic `іd`) is a new key, not the field it resembles. `updated_at` is
 refreshed only where the file already carries it, in its own spelling (the
 separator, a `Z` or an offset, the fraction's digits); a timestamp the
 request sets is written as sent, and one that is no instant is refused. A

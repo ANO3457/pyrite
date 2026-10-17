@@ -735,3 +735,132 @@ def test_a_top_level_aliases_key_resolves_a_wikilink(tmp_path: Path):
     assert row is not None and row["metadata"].get("aliases") == ["Hidden moniker"]
     assert top is not None and top["id"] == "n4", top
     assert nested is not None and nested["id"] == "n5", nested
+
+
+_TWO_SPELLINGS = [
+    pytest.param({"title": "A", "metadata": {"title": "B"}}, id="title-and-envelope"),
+    pytest.param({"custom": "A", "metadata.custom": "B"}, id="custom-and-dotted"),
+    pytest.param({"assignee": "A", "metadata": {"assignee": "B"}}, id="assignee-and-envelope"),
+    pytest.param({"tags": ["x"], "metadata": {"tags": ["y"]}}, id="tags-and-envelope"),
+    pytest.param({"metadata.custom": "A", "metadata": {"custom": "B"}}, id="dotted-and-envelope"),
+]
+
+
+@pytest.mark.parametrize("surface", ["service", "rest.put", "mcp"])
+@pytest.mark.parametrize("updates", _TWO_SPELLINGS)
+def test_two_spellings_of_one_field_in_one_request_are_refused(
+    tmp_path: Path, surface: str, updates: dict[str, Any]
+):
+    """The request-level rule (#720) grouped aliases only, so a field sent at
+    two spellings in one request (`k` and `metadata.k`, at the top level or
+    through the `metadata` envelope) wrote the last one and dropped the
+    other. Under decision A the spellings are one field: differing values
+    are refused and nothing is written (#1001 round 3)."""
+    text = (
+        "---\nid: t1\ntitle: T\ntype: task\nstatus: open\nassignee: me\ncustom: c\n"
+        "tags: [a]\n---\n\nText.\n"
+    )
+    kb_path = tmp_path / "kb"
+    (kb_path / "tasks").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30)
+    path = kb_path / "tasks" / "t1.md"
+    path.write_text(text, encoding="utf-8")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+    finally:
+        db.close()
+    if surface == "rest.put" and not any(k in ("title", "tags") for k in updates):
+        pytest.skip(
+            "REST PUT carries only title/body/tags/importance at the top level; every other "
+            "key travels inside `metadata`, so these two spellings cannot both be sent"
+        )
+    before = path.read_bytes()
+    with pytest.raises(PyriteError) as info:
+        _send_request(surface, config, "t1", updates)
+    assert "two different values" in str(info.value) or "one field" in str(info.value), str(
+        info.value
+    )
+    assert path.read_bytes() == before
+
+
+@pytest.mark.control(reason="equal values at two spellings name one value (#720), as before")
+def test_two_spellings_with_one_value_write_once(tmp_path: Path):
+    text = "---\nid: t1\ntitle: T\ntype: task\nstatus: open\ncustom: c\n---\n\nText.\n"
+    kb_path = tmp_path / "kb"
+    (kb_path / "tasks").mkdir(parents=True)
+    path = kb_path / "tasks" / "t1.md"
+    path.write_text(text, encoding="utf-8")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        KBService(config, db).update("t1", KB, {"custom": "A", "metadata": {"custom": "A"}})
+    finally:
+        db.close()
+    after = path.read_text(encoding="utf-8")
+    assert "\ncustom: A\n" in after and "metadata:" not in after, after
+
+
+def _send_request(surface: str, config: PyriteConfig, entry_id: str, updates: dict[str, Any]):
+    """A whole update request (several keys) through one surface; raises
+    ``PyriteError`` on a refusal."""
+    if surface == "service":
+        db = PyriteDB(config.settings.index_path)
+        try:
+            return KBService(config, db).update(entry_id, KB, updates)
+        finally:
+            db.close()
+    if surface == "mcp":
+        from pyrite.server.mcp_server import PyriteMCPServer
+
+        server = PyriteMCPServer(config, tier="write")
+        try:
+            result = server._dispatch_tool(
+                "kb_update", {"kb_name": KB, "entry_id": entry_id, **updates}
+            )
+        finally:
+            server.close()
+        if result.get("error") or result.get("isError"):
+            raise ValidationError(str(result))
+        return result
+    pytest.importorskip("fastapi", reason="fastapi not installed")
+    from fastapi.testclient import TestClient
+
+    from pyrite.server.api import create_app, get_config, get_db, get_index_mgr
+
+    db = PyriteDB(config.settings.index_path)
+    index_mgr = IndexManager(db, config)
+    rest = create_app(config)
+    rest.dependency_overrides[get_config] = lambda: config
+    rest.dependency_overrides[get_db] = lambda: db
+    rest.dependency_overrides[get_index_mgr] = lambda: index_mgr
+    client = TestClient(rest, raise_server_exceptions=False)
+    try:
+        # REST PUT carries `title`/`tags`/`metadata`; a dotted key or `custom`
+        # travels inside `metadata`, so the two spellings meet there.
+        body: dict[str, Any] = {"kb": KB}
+        envelope: dict[str, Any] = dict(updates.get("metadata") or {})
+        for key, value in updates.items():
+            if key == "metadata":
+                continue
+            if key in ("title", "tags", "body", "importance"):
+                body[key] = value
+            else:
+                envelope[key] = value
+        body["metadata"] = envelope
+        res = client.put(f"/api/entries/{entry_id}", json=body)
+    finally:
+        client.close()
+        db.close()
+    if res.status_code != 200:
+        raise ValidationError(res.text)
+    assert res.status_code != 500, res.text
+    return res.json()

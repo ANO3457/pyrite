@@ -146,14 +146,29 @@ def refuse_conflicting_spellings(
     """
     from ..exceptions import ValidationError
 
+    # Which field each request key names: `field_at` of its path (Andon
+    # #994, decision A), so `k`, an alias of `k`, `metadata.k` at the top
+    # level and `k` inside the `metadata` envelope are one field, and
+    # `metadata.metadata.k` or an unreadable path is left to the resolver's
+    # refusal. The first source is the request's top level, the second its
+    # `metadata` envelope (#1001 round 3: the rule used to group aliases
+    # only, so `{"title": "A", "metadata": {"title": "B"}}` wrote `B`).
     aliases = class_field_aliases(entry_cls, entry_type)
-    targets = set(aliases.values())
-    given: dict[str, list[tuple[str, Any]]] = {}
-    for source in sources:
+    given: dict[tuple[str, tuple[Any, ...]], list[tuple[str, Any]]] = {}
+    for index, source in enumerate(sources):
+        prefix: tuple[str, ...] = (METADATA,) if index == 1 else ()
         for key, value in source.items():
-            if key in aliases or key in targets:
-                given.setdefault(aliases.get(key, key), []).append((key, value))
-    for target, items in given.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                path = prefix + path_segments(key)
+                field, rest = field_at(entry_cls, entry_type, path)
+            except (NotAFieldError, ValueError):
+                continue
+            # Named as sent: a key sent at the top level and again in the
+            # envelope is "one spelling, sent twice" (the message below).
+            given.setdefault((field, rest), []).append((key, value))
+    for (target, _rest), items in given.items():
         for i, (key_a, value_a) in enumerate(items):
             for key_b, value_b in items[i + 1 :]:
                 if value_a == value_b:
