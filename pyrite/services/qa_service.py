@@ -1103,6 +1103,37 @@ class QAService:
                 }
             )
 
+    @staticmethod
+    def _check_double_spellings(
+        issues: list[dict[str, Any]], kb_name: str, entry: Any, shown: Any
+    ) -> None:
+        """One issue per field the file spells twice (`k:` and `metadata.k`,
+        or a field and its alias): the reader believes the top-level spelling
+        and no update reaches the field until one spelling is removed
+        (Andon #994, decision A: `metadata.k` is a second spelling of `k`)."""
+        from ..schema.field_aliases import double_spellings
+
+        source = getattr(entry, "_source_frontmatter", None)
+        if not isinstance(source, dict):
+            return
+        for field_name, paths in double_spellings(source, type(entry), entry.entry_type).items():
+            spelled = ", ".join("`" + ".".join(p) + "`" for p in paths)
+            issues.append(
+                {
+                    "entry_id": entry.id,
+                    "kb_name": kb_name,
+                    "rule": "field_spelled_twice",
+                    "severity": "warning",
+                    "field": field_name,
+                    "path": str(shown),
+                    "message": (
+                        f"Entry '{entry.id}' spells '{field_name}' twice ({spelled}); the "
+                        "top-level spelling is read and no update reaches the field. "
+                        "Remove one spelling by hand."
+                    ),
+                }
+            )
+
     def _check_file_values(
         self, issues: list[dict[str, Any]], kb_name: str, *, entry_id: str | None = None
     ) -> dict[str, dict[str, Any]]:
@@ -1158,6 +1189,7 @@ class QAService:
                 shown = file_path
             self._check_reserved_key_collisions(issues, kb_name, entry, shown)
             self._check_task_priority(issues, kb_name, entry, shown)
+            self._check_double_spellings(issues, kb_name, entry, shown)
             if entry._source_frontmatter is not None:
                 leaked = leaked_frontmatter_line(entry._source_frontmatter, entry.body or "")
                 if leaked is not None:

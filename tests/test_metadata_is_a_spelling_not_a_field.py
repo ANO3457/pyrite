@@ -1,0 +1,538 @@
+"""`metadata` is not a field: `metadata.k` is a second spelling of field `k` (Andon #994, decision A).
+
+The maintainer's decision, 2026-10-17: ``metadata.k``, in a file or a request,
+is a second spelling of field ``k``, one level only, the same as an alias. A
+field has one spelling per file. A file that spells a field twice is reported,
+and an update of that field is refused. A path whose field would be
+``metadata`` is refused, at any depth.
+
+One enforcement point: ``field_at(type, path) -> (field, rest)`` and
+``spelling_in(file, type, field) -> path`` in ``pyrite/schema/field_aliases.py``.
+Every refusal an update makes is decided on ``field_at`` of the operation's
+output path, on every surface.
+
+The grid below is generated from the code, not hand-written: the entry
+classes the registry knows x their managed fields x the spellings
+``spellings_of`` generates (each wrapped in ``metadata.`` up to depth 3) x the
+operation classes x the surfaces. Its oracle checks the effect, not a message:
+the request is refused, or every managed field reads back unchanged in both
+the model (the file reloaded) and the index row.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from typer.testing import CliRunner
+
+from pyrite.cli import app as cli_app
+from pyrite.config import KBConfig, PyriteConfig, Settings
+from pyrite.exceptions import PyriteError, ValidationError
+from pyrite.models.core_types import ENTRY_TYPE_REGISTRY, get_entry_class
+from pyrite.services.kb_service import _MANAGED_FIELDS, KBService
+from pyrite.storage.database import PyriteDB
+from pyrite.storage.file_operations import Append, Remove, Set, Unset
+from pyrite.storage.index import IndexManager
+from pyrite.storage.repository import KBRepository
+
+KB = "grid"
+
+
+# --------------------------------------------------------------------------
+# The rule, as functions
+# --------------------------------------------------------------------------
+
+
+def test_field_at_folds_one_metadata_level_and_an_alias():
+    from pyrite.schema.field_aliases import field_at
+
+    note = get_entry_class("note")
+    assert field_at(note, "note", "evidence") == ("evidence", ())
+    assert field_at(note, "note", "metadata.evidence") == ("evidence", ())
+    assert field_at(note, "note", "links[0].relation") == ("links", (0, "relation"))
+    assert field_at(note, "note", ("metadata", "links", 0, "x")) == ("links", (0, "x"))
+    event = get_entry_class("event")
+    assert field_at(event, "event", "participants") == ("actors", ())
+    assert field_at(event, "event", "metadata.participants") == ("actors", ())
+    # a sub-key named `metadata` inside a field's value is that field's
+    assert field_at(note, "note", "extra.metadata") == ("extra", ("metadata",))
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["metadata", "metadata.metadata", "metadata.metadata.evidence", ("metadata",), ("metadata", 0)],
+)
+def test_a_path_whose_field_would_be_metadata_is_not_a_field(path: Any):
+    from pyrite.schema.field_aliases import NotAFieldError, field_at
+
+    with pytest.raises(NotAFieldError):
+        field_at(get_entry_class("note"), "note", path)
+
+
+def test_spellings_of_unfolds_what_field_at_folds():
+    from pyrite.schema.field_aliases import field_at, spellings_of
+
+    event = get_entry_class("event")
+    spellings = spellings_of(event, "event", "actors")
+    assert spellings == [
+        ("actors",),
+        ("participants",),
+        ("metadata", "actors"),
+        ("metadata", "participants"),
+    ]
+    assert all(field_at(event, "event", p) == ("actors", ()) for p in spellings)
+
+
+def test_spelling_in_is_the_files_own_spelling_or_the_fields_name():
+    from pyrite.schema.field_aliases import SpelledTwiceError, spelling_in
+
+    event = get_entry_class("event")
+    assert spelling_in({"participants": ["a"]}, event, "event", "actors") == ("participants",)
+    assert spelling_in({"metadata": {"actors": ["a"]}}, event, "event", "actors") == (
+        "metadata",
+        "actors",
+    )
+    assert spelling_in({"title": "x"}, event, "event", "actors") == ("actors",)
+    with pytest.raises(SpelledTwiceError) as info:
+        spelling_in({"actors": ["a"], "metadata": {"actors": ["b"]}}, event, "event", "actors")
+    assert info.value.spellings == [("actors",), ("metadata", "actors")]
+    with pytest.raises(SpelledTwiceError):
+        spelling_in({"actors": ["a"], "participants": ["b"]}, event, "event", "actors")
+
+
+def test_double_spellings_lists_every_field_spelled_twice():
+    from pyrite.schema.field_aliases import double_spellings
+
+    task = get_entry_class("task")
+    found = double_spellings(
+        {"evidence": ["real"], "rank": 1, "metadata": {"evidence": ["fake"], "rank": 2, "ok": 3}},
+        task,
+        "task",
+    )
+    assert found == {
+        "evidence": [("evidence",), ("metadata", "evidence")],
+        "rank": [("rank",), ("metadata", "rank")],
+    }
+
+
+# --------------------------------------------------------------------------
+# The grid: entry classes x managed fields x spellings x operations x surfaces
+# --------------------------------------------------------------------------
+
+#: A file per class, with the class's own managed fields present where it has
+#: them, so "unchanged" means something. Values are plain scalars and lists
+#: the model reads back as they are.
+_FILES: dict[str, str] = {
+    "note": "---\nid: note-1\ntitle: Note\ntype: note\nextra: 1\n---\n\nText.\n",
+    "task": (
+        "---\nid: task-1\ntitle: Task\ntype: task\nstatus: open\nevidence: [e0]\n"
+        "status_change_log:\n- status: open\n  by: me\nagent_context: {run: 1}\n"
+        "assigned_at: 2026-01-01T00:00:00Z\n---\n\nText.\n"
+    ),
+    "adr": "---\nid: adr-1\ntitle: Adr\ntype: adr\nadr_number: 7\nstatus: proposed\n---\n\nText.\n",
+}
+
+
+def _classes() -> dict[str, type]:
+    """The entry classes the grid walks: every registered class keyed by one
+    type name each (the base classes once), plus the software-kb plugin's
+    ``adr`` (its own managed field) when the plugin imports."""
+    classes: dict[str, type] = {}
+    for name, cls in ENTRY_TYPE_REGISTRY.items():
+        if cls not in classes.values():
+            classes[name] = cls
+    try:
+        from pyrite_software_kb.entry_types import ADREntry  # type: ignore[import-not-found]
+
+        classes["adr"] = ADREntry
+    except ImportError:
+        pass
+    return classes
+
+
+def _managed(cls: type) -> list[str]:
+    """``_MANAGED_FIELDS`` and the class's own, minus ``links``/``sources``
+    (a whole item may be appended to or removed from them by design; the
+    item-operation tests cover that exemption)."""
+    own = frozenset(getattr(cls, "managed_fields", frozenset()))
+    return sorted((_MANAGED_FIELDS | own) - {"links", "sources"})
+
+
+def _wrapped(path: tuple[str, ...], depth: int) -> tuple[str, ...]:
+    return ("metadata",) * depth + path
+
+
+def _cells() -> list[Any]:
+    """The grid's cells, generated: the base managed fields on one class
+    (``note``; the base rule does not depend on the class), each class's own
+    managed fields on that class; every spelling ``spellings_of`` gives,
+    wrapped in ``metadata.`` to depth 3; the four operation classes; the
+    surfaces that can send the spelling (REST PUT only the ``metadata``
+    forms, as a nested mapping; it has no other path form)."""
+    try:
+        from pyrite.schema.field_aliases import spellings_of
+    except ImportError:
+        # Before the fix the module these cells prove has no `spellings_of`;
+        # the grid is still generated, from the alias map the base already
+        # has, so the cells collect and go red for what they test (a write
+        # that reaches the file) rather than for a missing name.
+        # `test_spellings_of_unfolds_what_field_at_folds` pins that the two
+        # generators agree.
+        from pyrite.schema.field_aliases import class_field_aliases
+
+        def spellings_of(cls: type, entry_type: str, field: str) -> list[tuple[str, ...]]:
+            aliases = class_field_aliases(cls, entry_type)
+            names = [field, *(a for a, t in aliases.items() if t == field and a != field)]
+            return [(n,) for n in names] + [("metadata", n) for n in names]
+
+    cells: list[Any] = []
+    base_done = False
+    for type_name, cls in sorted(_classes().items()):
+        own = frozenset(getattr(cls, "managed_fields", frozenset()))
+        fields = [f for f in _managed(cls) if f in own]
+        if not base_done and type_name == "note":
+            fields = _managed(cls)
+            base_done = True
+        if not fields or type_name not in _FILES:
+            continue
+        for field in fields:
+            for spelling in spellings_of(cls, type_name, field):
+                for depth in range(0, 3):
+                    path = _wrapped(spelling, depth)
+                    if len(path) > 3:
+                        continue
+                    for op in (Set, Append, Remove, Unset):
+                        for surface in ("service", "mcp", "rest.patch", "cli"):
+                            cells.append((type_name, field, path, op, surface))
+                        if op is Set and path[0] == "metadata":
+                            cells.append((type_name, field, path, op, "rest.put"))
+    return cells
+
+
+def _cell_id(cell: Any) -> str:
+    type_name, _field, path, op, surface = cell
+    return f"{type_name}:{'.'.join(path)}:{op.__name__.lower()}:{surface}"
+
+
+_KBS: dict[str, tuple[PyriteConfig, Path]] = {}
+
+
+def _kb_for(type_name: str, tmp_path_factory: pytest.TempPathFactory) -> tuple[PyriteConfig, Path]:
+    """One KB per class per worker, built once; every cell snapshots the
+    file before it runs, so a cell that wrongly writes fails on its own."""
+    if type_name not in _KBS:
+        root = tmp_path_factory.mktemp(f"grid-{type_name}")
+        kb_path = root / "kb"
+        (kb_path / "entries").mkdir(parents=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30
+        )
+        path = kb_path / "entries" / f"{type_name}-1.md"
+        path.write_bytes(_FILES[type_name].encode("utf-8"))
+        kb_type = "software" if type_name == "adr" else "generic"
+        config = PyriteConfig(
+            knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type=kb_type)],
+            settings=Settings(index_path=root / "index.db", auto_embed=False),
+        )
+        if type_name == "adr":
+            from pyrite.plugins.registry import PluginRegistry
+            from pyrite_software_kb.plugin import SoftwareKBPlugin
+
+            PluginRegistry().register(SoftwareKBPlugin())
+        db = PyriteDB(config.settings.index_path)
+        try:
+            IndexManager(db, config).index_all()
+        finally:
+            db.close()
+        _KBS[type_name] = (config, path)
+    return _KBS[type_name]
+
+
+def _dotted(path: tuple[str, ...]) -> str:
+    return ".".join(path)
+
+
+def _nested(path: tuple[str, ...], value: Any) -> dict[str, Any]:
+    out: Any = value
+    for seg in reversed(path):
+        out = {seg: out}
+    return out
+
+
+def _send(
+    surface: str, config: PyriteConfig, entry_id: str, op: type, path: tuple[str, ...]
+) -> Any:
+    """One operation through one surface; raises ``PyriteError`` on a refusal."""
+    value: Any = "x"
+    dotted = _dotted(path)
+    if surface == "service":
+        db = PyriteDB(config.settings.index_path)
+        try:
+            svc = KBService(config, db)
+            if op is Set:
+                return svc.update(entry_id, KB, {dotted: value})
+            if op is Append:
+                return svc.update(entry_id, KB, {}, append={dotted: value})
+            if op is Remove:
+                return svc.update(entry_id, KB, {}, remove={dotted: value})
+            return svc.update(entry_id, KB, {}, unset=[dotted])
+        finally:
+            db.close()
+    if surface == "mcp":
+        from pyrite.server.mcp_server import PyriteMCPServer
+
+        args: dict[str, Any] = {"kb_name": KB, "entry_id": entry_id}
+        if op is Set:
+            args[dotted] = value
+        elif op is Append:
+            args["append"] = {dotted: value}
+        elif op is Remove:
+            args["remove"] = {dotted: value}
+        else:
+            args["unset"] = [dotted]
+        server = PyriteMCPServer(config, tier="write")
+        try:
+            result = server._dispatch_tool("kb_update", args)
+        finally:
+            server.close()
+        if result.get("error") or result.get("isError"):
+            raise ValidationError(str(result))
+        return result
+    if surface in ("rest.patch", "rest.put"):
+        pytest.importorskip("fastapi", reason="fastapi not installed")
+        from fastapi.testclient import TestClient
+
+        from pyrite.server.api import create_app, get_config, get_db, get_index_mgr
+
+        db = PyriteDB(config.settings.index_path)
+        index_mgr = IndexManager(db, config)
+        rest = create_app(config)
+        rest.dependency_overrides[get_config] = lambda: config
+        rest.dependency_overrides[get_db] = lambda: db
+        rest.dependency_overrides[get_index_mgr] = lambda: index_mgr
+        client = TestClient(rest, raise_server_exceptions=False)
+        try:
+            if surface == "rest.put":
+                res = client.put(
+                    f"/api/entries/{entry_id}", json={"kb": KB, **_nested(path, value)}
+                )
+            else:
+                body: dict[str, Any] = {"kb": KB, "field": dotted}
+                if op is Set:
+                    body["value"] = value
+                elif op is Append:
+                    body.update(value=value, op="append")
+                elif op is Remove:
+                    body.update(value=value, op="remove")
+                else:
+                    body["op"] = "unset"
+                res = client.patch(f"/api/entries/{entry_id}", json=body)
+        finally:
+            client.close()
+            db.close()
+        if res.status_code != 200:
+            raise ValidationError(res.text)
+        assert res.status_code != 500, res.text
+        return res.json()
+    if surface == "cli":
+        args = ["update", entry_id, "-k", KB, "--format", "json"]
+        if op is Set:
+            args += ["-f", f"{dotted}={value}"]
+        elif op is Append:
+            args += ["--append", f"{dotted}={value}"]
+        elif op is Remove:
+            args += ["--remove", f"{dotted}={value}"]
+        else:
+            args += ["--unset", dotted]
+        with (
+            patch("pyrite.cli.load_config", return_value=config),
+            patch("pyrite.cli.context.load_config", return_value=config),
+        ):
+            result = CliRunner().invoke(cli_app, args)
+        if result.exit_code != 0:
+            raise ValidationError(result.output)
+        return result.output
+    raise AssertionError(surface)
+
+
+def _managed_values(
+    config: PyriteConfig, type_name: str, entry_id: str, cls: type
+) -> dict[str, Any]:
+    """Every managed field of the entry, as the model reads the file and as
+    the index row holds it (its column, and its `metadata` JSON)."""
+    entry = KBRepository(config.knowledge_bases[0]).load(entry_id)
+    assert entry is not None, "the entry's file vanished"
+    db = PyriteDB(config.settings.index_path)
+    try:
+        row = db.get_entry(entry_id, KB) or {}
+    finally:
+        db.close()
+    out: dict[str, Any] = {}
+    row_meta = row.get("metadata") or {}
+    if isinstance(row_meta, str):
+        row_meta = json.loads(row_meta)
+    for field in _managed(cls):
+        out[f"model.{field}"] = json.dumps(getattr(entry, field, None), sort_keys=True, default=str)
+        out[f"model.metadata.{field}"] = json.dumps(
+            (entry.metadata or {}).get(field), sort_keys=True, default=str
+        )
+        out[f"row.{field}"] = json.dumps(row.get(field), sort_keys=True, default=str)
+        out[f"row.metadata.{field}"] = json.dumps(row_meta.get(field), sort_keys=True, default=str)
+    return out
+
+
+_CELLS = _cells()
+
+
+@pytest.mark.parametrize("cell", _CELLS, ids=[_cell_id(c) for c in _CELLS])
+def test_no_spelling_of_a_managed_field_reaches_the_file_or_the_index(
+    cell: Any, tmp_path_factory: pytest.TempPathFactory
+):
+    type_name, field, path, op, surface = cell
+    cls = _classes()[type_name]
+    config, file_path = _kb_for(type_name, tmp_path_factory)
+    entry_id = f"{type_name}-1"
+    before_bytes = file_path.read_bytes()
+    before = _managed_values(config, type_name, entry_id, cls)
+
+    try:
+        _send(surface, config, entry_id, op, path)
+    except PyriteError:
+        assert file_path.read_bytes() == before_bytes, "refused, yet the file changed"
+        return
+
+    # Not refused (MCP sets a bare managed key aside, #455; a remove of an
+    # absent item is a no-op): then nothing managed may have moved, in the
+    # model or in the row.
+    after = _managed_values(config, type_name, entry_id, cls)
+    assert after == before, {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+
+
+# --------------------------------------------------------------------------
+# A field spelled twice: reader agreement, the report, the refusal
+# --------------------------------------------------------------------------
+
+TWICE = (
+    "---\nid: t2\ntitle: Twice\ntype: task\nstatus: open\nevidence: [real]\n"
+    "metadata:\n  evidence: [fake]\n  rank: 2\nrank: 1\n---\n\nText.\n"
+)
+
+
+def _twice_kb(tmp_path: Path) -> tuple[PyriteConfig, Path]:
+    kb_path = tmp_path / "kb"
+    (kb_path / "tasks").mkdir(parents=True)
+    path = kb_path / "tasks" / "t2.md"
+    path.write_text(TWICE, encoding="utf-8")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+    finally:
+        db.close()
+    return config, path
+
+
+def test_the_model_and_the_index_row_agree_on_a_field_spelled_twice(tmp_path: Path):
+    """The reader must agree with itself (#994): for `evidence: [real]` and
+    `metadata: {evidence: [fake]}` the model reads `[real]`; the row said
+    `[fake]`, because the entry's metadata bag overrode the model's reading
+    in the row's `metadata` JSON. The model's reading wins in both."""
+    config, _path = _twice_kb(tmp_path)
+    entry = KBRepository(config.knowledge_bases[0]).load("t2")
+    assert entry is not None and entry.evidence == ["real"]
+    db = PyriteDB(config.settings.index_path)
+    try:
+        row = db.get_entry("t2", KB)
+    finally:
+        db.close()
+    assert row is not None
+    assert row["metadata"].get("evidence") == ["real"], row["metadata"]
+    assert row["metadata"].get("rank") == 1, row["metadata"]
+
+
+def test_a_field_spelled_twice_is_reported_by_health_and_validate(tmp_path: Path):
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.qa_service import QAService
+
+    config, _path = _twice_kb(tmp_path)
+    db = PyriteDB(config.settings.index_path)
+    try:
+        health = IndexManager(db, config).check_health(KB)
+        report = QAService(config, db).validate_kb(KB, readable_kbs=UNSCOPED)
+    finally:
+        db.close()
+    rows = sorted(health["double_spellings"], key=lambda r: r["field"])
+    assert [(r["id"], r["field"], r["spellings"]) for r in rows] == [
+        ("t2", "evidence", ["evidence", "metadata.evidence"]),
+        ("t2", "rank", ["rank", "metadata.rank"]),
+    ]
+    issues = sorted(
+        (i for i in report["issues"] if i.get("rule") == "field_spelled_twice"),
+        key=lambda i: i["field"],
+    )
+    assert [(i["entry_id"], i["field"], i["severity"]) for i in issues] == [
+        ("t2", "evidence", "warning"),
+        ("t2", "rank", "warning"),
+    ]
+
+
+@pytest.mark.parametrize("surface", ["service", "mcp", "rest.patch", "cli"])
+def test_an_update_of_a_field_spelled_twice_is_refused_on_every_surface(
+    tmp_path: Path, surface: str
+):
+    """`rank` is no managed field, so the only thing that refuses it is the
+    double spelling: the update is refused, nothing written, whichever
+    spelling the request uses."""
+    config, path = _twice_kb(tmp_path)
+    before = path.read_bytes()
+    for spelling in (("rank",), ("metadata", "rank")):
+        with pytest.raises(PyriteError, match="twice"):
+            _send(surface, config, "t2", Set, spelling)
+    assert path.read_bytes() == before
+
+
+def test_an_in_process_write_to_a_field_spelled_twice_is_refused_too(tmp_path: Path):
+    """`apply_operations` (no `restrict`) may write managed fields, but never
+    one the file spells twice: it could not know which spelling the reader
+    would believe."""
+    config, path = _twice_kb(tmp_path)
+    before = path.read_bytes()
+    db = PyriteDB(config.settings.index_path)
+    try:
+        with pytest.raises(ValidationError, match="twice"):
+            KBService(config, db).apply_operations("t2", KB, [Append("evidence", "e1")])
+    finally:
+        db.close()
+    assert path.read_bytes() == before
+
+
+def test_a_field_spelled_once_under_metadata_is_edited_there(tmp_path: Path):
+    """The other half of the rule: a file that spells `rank` only as
+    `metadata.rank` is edited at that spelling, whichever the request used,
+    and no top-level `rank:` appears."""
+    text = "---\nid: n3\ntitle: N3\ntype: note\nmetadata:\n  rank: 2\n---\n\nText.\n"
+    kb_path = tmp_path / "kb"
+    (kb_path / "notes").mkdir(parents=True)
+    path = kb_path / "notes" / "n3.md"
+    path.write_text(text, encoding="utf-8")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        KBService(config, db).update("n3", KB, {"rank": 5})
+    finally:
+        db.close()
+    after = path.read_text(encoding="utf-8")
+    assert "metadata:\n  rank: 5\n" in after, after
+    assert "\nrank:" not in after, after

@@ -132,8 +132,11 @@ class GenericEntry(Entry):
 
         # Collect unknown frontmatter keys into metadata
         extra_metadata = {k: v for k, v in meta.items() if k not in _KNOWN_KEYS}
-        # Merge: explicit metadata wins over inferred
-        kw["metadata"] = {**extra_metadata, **explicit_metadata}
+        # Merge: `metadata.k` is a second spelling of field `k` (Andon #994,
+        # decision A), so on a collision the field's own name wins, as it does
+        # for a declared field. The double spelling is reported by `index
+        # health` and `qa validate`; an update of that field is refused.
+        kw["metadata"] = {**explicit_metadata, **extra_metadata}
 
         kw["lifecycle"] = meta.get("lifecycle", "active")
         kw["_entry_type"] = meta.get("type", "note")

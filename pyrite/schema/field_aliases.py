@@ -26,6 +26,7 @@ by ``field_aliases_findings`` (``pyrite schema validate``), never a crash.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from .kb_schema import KBSchema
@@ -169,6 +170,152 @@ def refuse_conflicting_spellings(
                     f"values: they are one field ('{target}'). Send one of them, or give both "
                     "the same value."
                 )
+
+
+# --- which field a path denotes, and where a file spells it (Andon #994, decision A) ---
+
+#: The one key that is not a field: ``metadata.k`` is a second spelling of
+#: field ``k``, one level only, the same as an alias.
+METADATA = "metadata"
+
+
+class NotAFieldError(ValueError):
+    """The path's field would be ``metadata``, which is not a field: the bare
+    key, ``metadata.metadata``, or any deeper wrapping (#994)."""
+
+
+class SpelledTwiceError(ValueError):
+    """The file spells one field at two paths (``k:`` and ``metadata.k``, or a
+    field and its alias). ``spellings`` are the paths found."""
+
+    def __init__(self, field: str, spellings: list[tuple[str, ...]]):
+        self.field = field
+        self.spellings = spellings
+        shown = ", ".join("`" + ".".join(p) + "`" for p in spellings)
+        super().__init__(f"the file spells '{field}' twice: {shown}")
+
+
+def path_segments(path: Any) -> tuple[Any, ...]:
+    """A path as segments: a tuple as given, a string split on ``.`` and
+    ``[i]`` the way ``file_operations`` reads it (``links[0].relation`` ->
+    ``("links", 0, "relation")``)."""
+    if isinstance(path, tuple):
+        return path
+    if not isinstance(path, str):
+        return ()
+    segs: list[Any] = []
+    for part in path.split("."):
+        head, *indexes = part.split("[")
+        if head:
+            segs.append(head)
+        for index in indexes:
+            segs.append(int(index.rstrip("]")))
+    return tuple(segs)
+
+
+def field_at(cls: type, entry_type: str, path: Any) -> tuple[str, tuple[Any, ...]]:
+    """THE answer to "which field do these bytes read as": the field a
+    frontmatter path denotes for a type, and the rest of the path below the
+    field (``[0].relation`` of ``links[0].relation``) -- Andon #994, decision A.
+
+    ``metadata`` is not a field. ``metadata.k`` is a second spelling of field
+    ``k``, one level only, the same as an alias; so the first segment, or the
+    one after a leading ``metadata``, names the field, and an alias names its
+    target (``participants`` -> ``actors``, ``class_field_aliases``). A path
+    whose field would be ``metadata`` -- the bare key, ``metadata.metadata``,
+    ``metadata.metadata.k`` -- raises ``NotAFieldError``. A path that does not start
+    with a key (``[0]``, an empty path) raises ``ValueError``. Every refusal
+    an update makes is decided on the field this returns for the operation's
+    output path; nothing reads a path's first segment any more.
+    """
+    segs = path_segments(path)
+    if not segs or not isinstance(segs[0], str):
+        raise ValueError(f"an operation's path must start with a key, got {path!r}")
+    if segs[0] == METADATA:
+        if len(segs) == 1 or not isinstance(segs[1], str):
+            raise NotAFieldError(
+                "`metadata` is not a field: a key is spelled `k` or `metadata.k`, "
+                f"never `metadata` itself (got {path!r})"
+            )
+        key, rest = segs[1], segs[2:]
+        if key == METADATA:
+            raise NotAFieldError(
+                "`metadata` is not a field: `metadata.k` spells `k` one level only, "
+                f"so `metadata.metadata...` names nothing (got {path!r})"
+            )
+    else:
+        key, rest = segs[0], segs[1:]
+    aliases = class_field_aliases(cls, entry_type)
+    return aliases.get(key, key), tuple(rest)
+
+
+def spellings_of(cls: type, entry_type: str, field: str) -> list[tuple[str, ...]]:
+    """Every path at which a file (or a request) may spell ``field`` for a
+    type, in the order a reader prefers them: the field's own name, each
+    alias of it, then the same under ``metadata``. What ``field_at`` folds,
+    this unfolds; the grid test generates its cases from here."""
+    aliases = class_field_aliases(cls, entry_type)
+    names = [field, *(a for a, t in aliases.items() if t == field and a != field)]
+    return [(n,) for n in names] + [(METADATA, n) for n in names]
+
+
+def spelling_in(
+    file_values: Mapping[str, Any], cls: type, entry_type: str, field: str
+) -> tuple[str, ...]:
+    """The one path the file spells ``field`` at (``spellings_of`` order):
+    ``("actors",)``, ``("participants",)``, ``("metadata", "actors")``...
+    A field the file does not spell is spelled at its own top-level name (the
+    place a reader looks first). A file that spells the field twice raises
+    ``SpelledTwiceError``: an update of that field is refused and the file is
+    reported (``double_spellings``), never edited at one spelling while the
+    other stands."""
+    found = _spellings_present(file_values, cls, entry_type, field)
+    if len(found) > 1:
+        raise SpelledTwiceError(field, found)
+    return found[0] if found else (field,)
+
+
+def double_spellings(
+    file_values: Mapping[str, Any], cls: type, entry_type: str
+) -> dict[str, list[tuple[str, ...]]]:
+    """Every field the file spells more than once, with its paths: the
+    report's side of the rule (``index health``, ``qa validate``). Fields are
+    every top-level key and every key of the ``metadata`` block, folded to
+    their field by ``field_at``; a key that is no field (``metadata`` as a
+    name inside the block) is left out."""
+    out: dict[str, list[tuple[str, ...]]] = {}
+    nested = file_values.get(METADATA)
+    keys: list[Any] = [(k,) for k in file_values if k != METADATA]
+    if isinstance(nested, Mapping):
+        keys += [(METADATA, k) for k in nested]
+    seen: set[str] = set()
+    for path in keys:
+        if not isinstance(path[-1], str):
+            continue
+        try:
+            field, _rest = field_at(cls, entry_type, path)
+        except ValueError:
+            continue
+        if field in seen:
+            continue
+        seen.add(field)
+        found = _spellings_present(file_values, cls, entry_type, field)
+        if len(found) > 1:
+            out[field] = found
+    return out
+
+
+def _spellings_present(
+    file_values: Mapping[str, Any], cls: type, entry_type: str, field: str
+) -> list[tuple[str, ...]]:
+    nested = file_values.get(METADATA)
+    nested = nested if isinstance(nested, Mapping) else {}
+    found: list[tuple[str, ...]] = []
+    for path in spellings_of(cls, entry_type, field):
+        holder = nested if path[0] == METADATA else file_values
+        if path[-1] in holder:
+            found.append(path)
+    return found
 
 
 def attribute_for(entry: Any, key: str) -> str | None:

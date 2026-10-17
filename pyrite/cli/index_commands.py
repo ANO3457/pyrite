@@ -502,6 +502,7 @@ def index_health(
     duplicates = health.get("duplicates", [])
     removed_extensions = health.get("removed_extensions", [])
     unmodellable_frontmatter = health.get("unmodellable_frontmatter", [])
+    double_spellings = health.get("double_spellings", [])
     is_unhealthy = (
         health["missing_files"]
         or health["unindexed_files"]
@@ -525,6 +526,7 @@ def index_health(
         or "warning" in off_list_severities
         or bool(removed_extensions)
         or bool(unmodellable_frontmatter)
+        or bool(double_spellings)
     )
     status = "unhealthy" if is_unhealthy else ("warning" if has_warning else "healthy")
 
@@ -549,6 +551,7 @@ def index_health(
             "type_name_drift_has_more": health.get("type_name_drift_has_more", False),
             "schema_errors": health.get("schema_errors", []),
             "unmodellable_frontmatter": unmodellable_frontmatter,
+            "double_spellings": double_spellings,
             "checks": health,
         },
         output_format,
@@ -570,6 +573,7 @@ def index_health(
         duplicates=duplicates,
         removed_extensions=removed_extensions,
         unmodellable_frontmatter=unmodellable_frontmatter,
+        double_spellings=double_spellings,
         health=health,
     )
     if is_unhealthy and fail:
@@ -591,6 +595,7 @@ def _report_health(
     duplicates=(),
     removed_extensions=(),
     unmodellable_frontmatter=(),
+    double_spellings=(),
     health,
 ):
     """Print the health report. Returns nothing; the caller sets the exit code."""
@@ -682,6 +687,21 @@ def _report_health(
             console.print(f"  • {row['kb']}: {row['path']} — {row['error']}")
         if len(malformed_frontmatter) > 10:
             console.print(f"  ... and {len(malformed_frontmatter) - 10} more")
+
+    if double_spellings:
+        # Andon #994: `metadata.k` is a second spelling of `k`; a file that
+        # spells a field twice is read at one spelling and refused for update.
+        console.print(
+            f"[yellow]⚠ {len(double_spellings)} field(s) spelled twice in one file "
+            "(the top-level spelling is read; no update reaches the field until one "
+            "spelling is removed):[/yellow]"
+        )
+        for row in double_spellings[:10]:
+            console.print(
+                f"  • {row['kb']}/{row['id']}: {row['field']} as {', '.join(row['spellings'])}"
+            )
+        if len(double_spellings) > 10:
+            console.print(f"  ... and {len(double_spellings) - 10} more")
 
     if unmodellable_frontmatter:
         # #760 (b): no write reaches these files; said here, with the line,

@@ -547,10 +547,13 @@ class TaskEntry(Assignable, Temporal, Statusable, Prioritizable, Parentable, Not
         parent = meta.get("parent", "") or meta.get("parent_task", "")
         # Collect any top-level frontmatter keys this schema doesn't know
         # about into metadata, so a round-trip load->save doesn't drop them.
-        # Explicit nested `metadata:` block (rare) wins on key collision.
+        # `metadata.k` is a second spelling of field `k` (Andon #994, decision
+        # A), so on a collision the field's own name wins, as it does for a
+        # declared field; the double spelling is reported by `index health`
+        # and `qa validate`, and an update of that field is refused.
         explicit_metadata = meta.get("metadata", {}) or {}
         extra_metadata = {k: v for k, v in meta.items() if k not in _TASK_KNOWN_KEYS}
-        kwargs["metadata"] = {**extra_metadata, **explicit_metadata}
+        kwargs["metadata"] = {**explicit_metadata, **extra_metadata}
         return cls(
             **kwargs,
             status=meta.get("status", "open"),

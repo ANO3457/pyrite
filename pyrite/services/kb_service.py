@@ -1738,19 +1738,24 @@ class KBService:
         restrict: bool,
     ) -> Any:
         """THE place an operation's path is resolved onto the file and every
-        refusal is decided (#955 acceptance 1; #971 and #973 fix rounds).
+        refusal is decided (#955 acceptance 1; #971 and #973 fix rounds;
+        Andon #994, decision A).
 
-        Resolution: the path's first key is spelled as the file holds it (an
-        alias to the spelling the file uses, or to the declared target when
-        the file has neither; a key the file holds only under ``metadata:``
-        -- where create puts an undeclared key, #178, and where a read lifts
-        ``rank`` or ``kind`` from -- resolves there, so the file never holds
-        two values for one name). ``metadata.k`` names ``k`` (decision 6: an
-        update never nests a key under ``metadata:``), so ``metadata.type``,
-        ``metadata.links`` and ``metadata.body`` are their top-level
-        spellings. The rest of the path (``[0].x``) follows unchanged.
+        Which field: ``field_at`` (``schema/field_aliases``). ``metadata`` is
+        not a field: ``metadata.k`` is a second spelling of field ``k``, one
+        level only, the same as an alias, so ``metadata.type``,
+        ``metadata.evidence`` and ``metadata.links`` are those fields, an
+        alias is its target, and a path whose field would be ``metadata``
+        (the bare key, ``metadata.metadata.k``) is refused at any depth. The
+        rest of the path (``[0].x``) follows the field unchanged.
 
-        Refusals, on the resolved key, for every operation kind (set, append,
+        Where: ``spelling_in`` -- the one path the file spells the field at
+        (its own name, an alias, or either under ``metadata:``), the field's
+        own top-level name when the file has none. A file that spells the
+        field twice refuses the update (``SpelledTwiceError``): no spelling
+        is edited while another stands.
+
+        Refusals, on the field, for every operation kind (set, append,
         remove, unset, add-subkey) alike: ``type``/``entry_type`` and the
         empty key, never settable; ``body`` as a frontmatter key; under
         ``restrict`` (a surface), a field Pyrite or the type manages
@@ -1761,20 +1766,21 @@ class KBService:
         Values are validated as the field's type (``_value_for_file``) and
         written as the caller sent them, never as the model's reading.
         """
+        from ..schema.field_aliases import (
+            NotAFieldError,
+            SpelledTwiceError,
+            field_at,
+            spelling_in,
+        )
+
         if isinstance(op, ReplaceBody):
             return op
-        segs = list(_segments_of(op))
-        if not segs or not isinstance(segs[0], str):
-            raise ValidationError(
-                f"Cannot update {entry_id!r}: an operation's path must start with a key, "
-                f"got {getattr(op, 'path', None)!r}."
-            )
-        if segs[0] == "metadata" and len(segs) > 1 and isinstance(segs[1], str):
-            key, rest = segs[1], segs[2:]
-        else:
-            key, rest = segs[0], segs[1:]
-        head = self._spelling_for(entry, file_values, key)
-        field = head[-1]
+        try:
+            field, rest = field_at(type(entry), entry.entry_type, getattr(op, "path", None))
+        except NotAFieldError as e:
+            raise ValidationError(f"Cannot update {entry_id!r}: {e}") from None
+        except ValueError as e:
+            raise ValidationError(f"Cannot update {entry_id!r}: {e}") from None
 
         # `type`/`entry_type` and the empty key are never model attributes on
         # any entry (`type` is frontmatter-only; `entry_type` is a read-only
@@ -1808,6 +1814,13 @@ class KBService:
                     "own under that name, rename it in the file (for example "
                     f"`{entry.entry_type}_{field}`) and update the new name."
                 )
+        try:
+            head = spelling_in(file_values, type(entry), entry.entry_type, field)
+        except SpelledTwiceError as e:
+            raise ValidationError(
+                f"Cannot update {field} on {entry_id!r}: {e}. A field has one spelling "
+                "per file; remove one of them by hand, then update."
+            ) from None
 
         path: Any = head[0] if len(head) == 1 and not rest else (*head, *rest)
         if isinstance(op, Set):
@@ -1825,26 +1838,6 @@ class KBService:
         if isinstance(op, Unset):
             return Unset(path)
         raise ValidationError(f"Cannot update {entry_id!r}: unknown operation {op!r}.")
-
-    def _spelling_for(self, entry: Entry, file_values: dict[str, Any], key: str) -> tuple[str, ...]:
-        """The path the file holds ``key`` at: ``(key,)`` or ``("metadata", key)``."""
-        from ..schema.field_aliases import class_field_aliases
-
-        aliases = class_field_aliases(type(entry), entry.entry_type)
-        targets = set(aliases.values())
-        spelled = key
-        if key in aliases or key in targets:
-            target = aliases.get(key, key)
-            for candidate in (key, target, *(a for a, t in aliases.items() if t == target)):
-                if candidate in file_values:
-                    spelled = candidate
-                    break
-            else:
-                spelled = target
-        nested = file_values.get("metadata")
-        if isinstance(nested, dict) and spelled in nested and spelled not in file_values:
-            return ("metadata", spelled)
-        return (spelled,)
 
     @staticmethod
     def _value_for_file(entry: Entry, key: str, value: Any) -> Any:
@@ -3496,24 +3489,6 @@ def _checked_item(entry: Entry, field: str, value: Any) -> Any:
     if field == "links":
         check_link_target(item.to_dict())
     return value
-
-
-def _segments_of(op: Any) -> tuple[Any, ...]:
-    """An operation's path as segments: a tuple as given, a string split on
-    ``.`` and ``[i]`` the way ``file_operations`` reads it."""
-    path = getattr(op, "path", None)
-    if isinstance(path, tuple):
-        return path
-    if not isinstance(path, str):
-        return ()
-    segs: list[Any] = []
-    for part in path.split("."):
-        head, *indexes = part.split("[")
-        if head:
-            segs.append(head)
-        for index in indexes:
-            segs.append(int(index.rstrip("]")))
-    return tuple(segs)
 
 
 def _frontmatter_span(text: str) -> FrontmatterSpan:

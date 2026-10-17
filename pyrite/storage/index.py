@@ -533,10 +533,16 @@ class IndexManager:
         stored_keys = db_column_keys | set(data.keys())
         try:
             fm = entry.to_frontmatter()
-            ext_fields = {k: v for k, v in fm.items() if k not in stored_keys}
-            # Merge in the explicit metadata dict if present
-            if hasattr(entry, "metadata") and entry.metadata:
+            # The bag of keys the model does not declare first, the model's
+            # own reading of every field over it: `metadata.k` is a second
+            # spelling of field `k` (Andon #994, decision A), and the reader
+            # must agree with itself, so a file holding `evidence: [real]` and
+            # `metadata: {evidence: [fake]}` indexes `[real]`, as the model
+            # reads it. The bag used to be merged last and override the model.
+            ext_fields: dict[str, Any] = {}
+            if hasattr(entry, "metadata") and isinstance(entry.metadata, dict):
                 ext_fields.update(entry.metadata)
+            ext_fields.update({k: v for k, v in fm.items() if k not in stored_keys})
             if ext_fields:
                 data["metadata"] = ext_fields  # stored as dict; upsert_entry JSON-encodes
         except Exception:
@@ -1314,6 +1320,10 @@ class IndexManager:
             # tagged, complex or duplicate key. No write reaches them, so
             # they are listed with the line, never left invisible.
             "unmodellable_frontmatter": [],
+            # A field one file spells twice (`k:` and `metadata.k`, or a field
+            # and its alias): the reader believes one spelling, no update
+            # reaches the field until the file is fixed (Andon #994).
+            "double_spellings": [],
         }
 
         # The file's own value of each protocol column, per (kb, id), read
@@ -1393,10 +1403,24 @@ class IndexManager:
                 health["malformed_frontmatter"].append({"kb": kb.name, **bad})
             health["unmodellable_frontmatter"].extend(unmodellable_files(kb))
 
+            from ..schema.field_aliases import double_spellings
+
             for entry_id, claim in sorted(plan.winners.items()):
                 file_path = claim.path
                 entry = claim.entry
                 source = getattr(entry, "_source_frontmatter", None) or {}
+                if entry is not None and isinstance(source, dict):
+                    for field_name, paths in double_spellings(
+                        source, type(entry), entry.entry_type
+                    ).items():
+                        health["double_spellings"].append(
+                            {
+                                "kb": kb.name,
+                                "id": entry_id,
+                                "field": field_name,
+                                "spellings": [".".join(p) for p in paths],
+                            }
+                        )
                 file_values[(kb.name, entry_id)] = {
                     k: source[k] for k in PROTOCOL_COLUMN_KEYS if source.get(k) is not None
                 }

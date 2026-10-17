@@ -503,9 +503,6 @@ def test_update_task_appends_the_audit_entry(tmp_path: Path):
 GUARDED = NOTE.replace("type: note", "type: task\nstatus: open\nevidence: [e0]")
 
 OPS = ["set", "append", "remove", "unset"]
-#: The forms a path reaches the service in: the key, the key under
-#: `metadata` (decision 6 maps it to the top level), a sub-key of an item.
-PATH_FORMS = {"k": "{k}", "metadata.k": "metadata.{k}", "k[0].x": "{k}[0].x"}
 
 
 def _send(surface: str, config, op: str, path: str, value: Any = "x") -> Any:
@@ -519,47 +516,15 @@ def _send(surface: str, config, op: str, path: str, value: Any = "x") -> Any:
     return fn(config, unset=[path])
 
 
+# The grid over operation kind x path form x surface for every managed field
+# is generated from the code in tests/test_metadata_is_a_spelling_not_a_field.py
+# (Andon #994); the hand-written path forms that lived here are gone with it.
+# What stays below are the `links` item rules and the MCP argument shapes.
+
 _FIRST_SEGMENT_CAUGHT = pytest.mark.control(
-    reason="the first-segment check refused these before the round; the grid states the "
-    "invariant for every cell, the `metadata.k` column is the one that was open"
+    reason="the first-segment check refused these before #973 round 1; the test states "
+    "the rule for every operation kind"
 )
-
-
-@pytest.mark.parametrize("surface", sorted(SURFACES))
-@pytest.mark.parametrize(
-    "form",
-    [
-        pytest.param("k", marks=_FIRST_SEGMENT_CAUGHT),
-        "metadata.k",
-        pytest.param("k[0].x", marks=_FIRST_SEGMENT_CAUGHT),
-    ],
-)
-@pytest.mark.parametrize("op", OPS)
-@pytest.mark.parametrize("key", ["evidence", "type", "id"])
-def test_a_refusal_holds_for_every_operation_kind_path_form_and_surface(
-    tmp_path: Path, surface: str, form: str, op: str, key: str
-):
-    """A managed field (`evidence`), the type and the id are refused whatever
-    the operation (set, append, remove, unset), however the path is spelled
-    (`k`, `metadata.k`, `k[0].x`) and whichever surface sends it; the file is
-    not touched. Review of #973: `append metadata.evidence` and
-    `unset metadata.evidence` were written, and `append evidence[0].x`
-    reached the file."""
-    config, path = _build(tmp_path, GUARDED)
-    before = path.read_bytes()
-
-    try:
-        result = _send(surface, config, op, PATH_FORMS[form].format(k=key))
-    except ValidationError:
-        pass
-    else:
-        # MCP's one exception, #455's rule: a bare managed key *set* in an
-        # echoed read result is set aside and named in `ignored`, not
-        # refused. Nothing else may pass.
-        assert (surface, op, form) == ("mcp", "set", "k"), (surface, op, form, result)
-        assert key in result.get("ignored", []), result
-
-    assert path.read_bytes() == before
 
 
 LINK = {"target": "bar", "relation": "related"}
@@ -567,24 +532,27 @@ LINK = {"target": "bar", "relation": "related"}
 
 @pytest.mark.parametrize("surface", sorted(SURFACES))
 @pytest.mark.parametrize(
-    "form",
+    "spelling",
     [
-        pytest.param("k", marks=pytest.mark.control(reason="the item exemption held for `links`")),
-        "metadata.k",
+        pytest.param(
+            "links", marks=pytest.mark.control(reason="the item exemption held for `links`")
+        ),
+        "metadata.links",
     ],
 )
 @pytest.mark.parametrize("op", ["append", "remove"])
 def test_an_item_operation_on_links_lands_on_the_list_itself(
-    tmp_path: Path, surface: str, form: str, op: str
+    tmp_path: Path, surface: str, spelling: str, op: str
 ):
-    """`append links` and `append metadata.links` are one request (decision
-    6: an update never nests a key under `metadata:`): the item goes to the
-    top-level `links`, checked as a link; nothing called `metadata:` appears.
-    Review of #973: `append metadata.links` wrote a nested `metadata:`."""
+    """`append links` and `append metadata.links` are one request:
+    `metadata.links` is a second spelling of the field `links` (Andon #994,
+    decision A), which this file spells at the top level, so the item goes
+    there, checked as a link; nothing called `metadata:` appears. Review of
+    #973: `append metadata.links` wrote a nested `metadata:`."""
     text = GUARDED.replace("  since: 2020\n", "  since: 2020\n- target: bar\n  relation: related\n")
     config, path = _build(tmp_path, text if op == "remove" else GUARDED)
 
-    _send(surface, config, op, PATH_FORMS[form].format(k="links"), LINK)
+    _send(surface, config, op, spelling, LINK)
 
     after = _text(path)
     assert "metadata" not in after, after
