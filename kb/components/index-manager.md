@@ -50,11 +50,14 @@ it is (#952, #979). The prefix as written is kept beside it in
 a row can always be checked against what the file wrote (#980). Backlinks, the
 graph, `check_health`'s `broken_links` and `qa check-links` therefore agree
 with `WikilinkService.resolve_entry` on whether a `[[short:id]]` link
-resolves. `check_health` reports two kinds of row the index cannot stand
-behind, both warnings in `index health`: `links_to_unknown_kb` (the KB is not a
-KB name: indexed before the full name was stored) and `links_stale_prefix` (the
-written prefix no longer names that KB: a shortname renamed in config since
-the file was indexed, which no sync re-reads because the file's hash did not
-change). `pyrite index rebuild` rewrites both from the files.
-`tests/test_cross_kb_links.py` pins all of it, the renamed-shortname probe
-included.
+resolves. `check_health`'s `links_stale_kb` counts the rows a rebuild would
+point at a different KB: the written prefix (for a row from before v28, its
+`target_kb`, which was the prefix as written) resolved now is not the stored
+KB. That catches a shortname renamed or added in config since the file was
+indexed, which no sync re-reads because the file's hash did not change, and a
+row stored before the full name was. It does not count a link whose prefix
+names no KB: that is a broken link (`broken_links`), and a rebuild writes the
+same row. `index health` warns on it and names `pyrite index build`, which
+re-reads every file and so clears the count. `tests/test_cross_kb_links.py`
+pins all of it, the renamed-shortname probe through a real `config.yaml` and
+the CLI included.

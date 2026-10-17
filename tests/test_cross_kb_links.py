@@ -461,8 +461,9 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
         """The review's probe: rename the shortname `ops` to `o` and sync. The
         file's hash is unchanged, so the row keeps `ops-kb` while
         `resolve_entry` now misses the link; `index health` says so
-        (`links_stale_prefix`), and a rebuild rewrites the row from the file,
-        after which the link is broken, which it now is."""
+        (`links_stale_kb`). A rebuild rewrites the row from the file, after
+        which the link is broken, which it now is, and nothing is stale: a
+        rebuild clears what the counter counts, by definition."""
         from pyrite.config import KBConfig, PyriteConfig, Settings
         from pyrite.storage.index import IndexManager
 
@@ -480,8 +481,7 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
         rows = db.execute_sql("SELECT target_kb FROM link WHERE source_id = 'note'", {})
         assert [r["target_kb"] for r in rows] == ["ops-kb"]  # the unchanged file was not re-read
         health = after_sync.check_health()
-        assert health["links_stale_prefix"] == 1
-        assert health["links_to_unknown_kb"] == 0
+        assert health["links_stale_kb"] == 1
         assert health["broken_links"] == 0
 
         after_sync.reconcile_kb(renamed.knowledge_bases[0], force=True)
@@ -490,28 +490,62 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
         )
         assert [(r["target_prefix"], r["target_kb"]) for r in rows] == [("ops", "ops")]
         health = after_sync.check_health()
-        assert health["links_stale_prefix"] == 0
-        assert health["links_to_unknown_kb"] == 1
+        assert health["links_stale_kb"] == 0
         assert health["broken_links"] == 1
 
+    def test_a_link_to_no_kb_is_broken_not_stale(self, tmp_path):
+        """`[[nowhere:x]]` names no KB: it is a broken link, and a rebuild
+        would write the same row, so it is not stale. Once a KB takes the
+        shortname `nowhere`, a rebuild would point the row at that KB, and
+        until then it is stale."""
+        from pyrite.config import KBConfig, PyriteConfig, Settings
+        from pyrite.models import NoteEntry
+        from pyrite.storage.database import PyriteDB
+        from pyrite.storage.index import IndexManager
+        from pyrite.storage.repository import KBRepository
+
+        config = self._config(tmp_path)
+        dev, ops = config.knowledge_bases
+        KBRepository(dev).save(NoteEntry(id="dangling", title="D", body="[[nowhere:x]]"))
+        db = PyriteDB(config.settings.index_path)
+        try:
+            IndexManager(db, config).sync_kb(dev)
+            health = IndexManager(db, config).check_health()
+            assert health["links_stale_kb"] == 0
+            assert health["broken_links"] == 1
+
+            named = PyriteConfig(
+                knowledge_bases=[
+                    KBConfig(name=dev.name, path=dev.path, shortname=dev.shortname),
+                    KBConfig(name=ops.name, path=ops.path, shortname="nowhere"),
+                ],
+                settings=Settings(index_path=config.settings.index_path),
+            )
+            assert IndexManager(db, named).check_health()["links_stale_kb"] == 1
+        finally:
+            db.close()
+
     def test_a_row_indexed_before_the_prefix_was_kept_is_still_reported(self, indexed):
-        """A row from before this change (no `target_prefix`, the shortname as
-        `target_kb`) is counted in `links_to_unknown_kb` until a rebuild; the
-        raw insert is the only way to make such a row from this code."""
+        """A row from before this change has no `target_prefix`; its
+        `target_kb` is the prefix the file wrote (the old rule). Counted in
+        `links_stale_kb` when that prefix now resolves to another KB (a
+        shortname), not when it names no KB (a rebuild writes the same row).
+        The raw insert is the only way to make such a row from this code."""
         from pyrite.storage.index import IndexManager
 
         config, db = indexed
-        assert IndexManager(db, config).check_health()["links_to_unknown_kb"] == 0
-        db._raw_conn.execute(
-            "INSERT INTO link (source_id, source_kb, target_id, target_kb, relation, "
-            "inverse_relation, note) VALUES ('note', 'dev-kb', 'other', 'ops', 'wikilink', "
-            "'wikilink', '')"
-        )
+        assert IndexManager(db, config).check_health()["links_stale_kb"] == 0
+        for target_kb in ("ops", "nowhere"):
+            db._raw_conn.execute(
+                "INSERT INTO link (source_id, source_kb, target_id, target_kb, relation, "
+                "inverse_relation, note) VALUES ('note', 'dev-kb', 'other', :kb, 'wikilink', "
+                "'wikilink', '')",
+                {"kb": target_kb},
+            )
         db._raw_conn.commit()
         health = IndexManager(db, config).check_health()
-        assert health["links_to_unknown_kb"] == 1
-        assert health["links_stale_prefix"] == 0
-        assert health["broken_links"] == 1  # counted there as well
+        assert health["links_stale_kb"] == 1
+        assert health["broken_links"] == 2  # both are broken
 
     def test_duplicate_shortnames_take_the_first_kb_in_config(self, tmp_path):
         """Two KBs sharing a shortname (config.validate warns): the indexer,
@@ -540,5 +574,80 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
             rows = db.execute_sql("SELECT target_kb FROM link WHERE source_id = 'n'", {})
             assert [r["target_kb"] for r in rows] == ["first"]
             assert config.readable_kb_named("s", readable_kbs=None).name == "first"
+            # Pinned, not refused: config load warns about the pair.
+            assert any("share shortname 's'" in m for m in config.validate()["shortnames"])
         finally:
             db.close()
+
+
+def test_index_health_reports_a_renamed_shortname_and_names_the_command_that_clears_it(
+    tmp_path, monkeypatch
+):
+    """The probe through the real CLI and a real config.yaml (#980): index,
+    rename the shortname `ops` to `o` in the file, sync. `index health` warns
+    with `links_stale_kb` 1 and names a command; running that command clears
+    the warning. The command is taken from the warning itself, so a message
+    naming a command that does not exist fails here."""
+    import json
+    import re
+    import shlex
+
+    from click import unstyle
+    from typer.testing import CliRunner
+
+    import pyrite.config as config_module
+    from pyrite.cli import app
+    from pyrite.config import KBConfig, PyriteConfig, Settings
+    from pyrite.models import NoteEntry
+    from pyrite.storage.repository import KBRepository
+    from pyrite.utils.yaml import dump_yaml_file, load_yaml_file
+
+    dev = KBConfig(name="dev-kb", path=tmp_path / "kb1", shortname="dev")
+    ops = KBConfig(name="ops-kb", path=tmp_path / "kb2", shortname="ops")
+    for kb in (dev, ops):
+        kb.path.mkdir()
+    KBRepository(ops).save(NoteEntry(id="runbook", title="Runbook", body="ops body"))
+    KBRepository(dev).save(NoteEntry(id="note", title="Note", body="See [[ops:runbook]]."))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config = PyriteConfig(knowledge_bases=[dev, ops], settings=Settings(auto_embed=False))
+    dump_yaml_file(config.to_dict(), config_file)
+    monkeypatch.setenv("PYRITE_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("PYRITE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config_module, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(config_module, "CONFIG_FILE", config_file)
+    runner = CliRunner()
+
+    def run(*args):
+        result = runner.invoke(app, list(args))
+        assert result.exception is None or isinstance(result.exception, SystemExit), result.output
+        return result
+
+    def health_json():
+        return json.loads(run("index", "health", "--format", "json").output)
+
+    assert run("index", "build", "--no-embed").exit_code == 0
+    assert health_json()["checks"]["links_stale_kb"] == 0
+
+    data = load_yaml_file(config_file)
+    for kb in data["knowledge_bases"]:
+        if kb["name"] == "ops-kb":
+            kb["shortname"] = "o"
+    dump_yaml_file(data, config_file)
+    assert run("index", "sync", "--no-embed").exit_code == 0
+
+    report = health_json()
+    assert report["checks"]["links_stale_kb"] == 1
+    assert report["status"] == "warning", report
+
+    rich = " ".join(unstyle(run("index", "health", "--format", "rich").output).split())
+    named = re.search(r"Run '(pyrite [^']+)'", rich[rich.index("link row") :])
+    assert named, rich
+    argv = shlex.split(named.group(1))[1:]
+    assert run(*argv, "--no-embed").exit_code == 0, f"{named.group(1)} failed"
+
+    assert health_json()["checks"]["links_stale_kb"] == 0
+    assert "link row" not in " ".join(
+        unstyle(run("index", "health", "--format", "rich").output).split()
+    )

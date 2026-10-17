@@ -527,7 +527,7 @@ MIGRATIONS: list[Migration] = [
         description="Add link.target_prefix: a link's kb: prefix as written, beside the resolved KB (#980)",
         # ALTER handled conditionally in _apply_v28() since the column may
         # already exist from ORM create_all. Rows indexed before this carry
-        # NULL until the file is reindexed (`pyrite index rebuild`).
+        # NULL until the file is reindexed (`pyrite index build`).
         up="",
         down="""
         -- SQLite < 3.35 does not support DROP COLUMN; column remains but is unused.

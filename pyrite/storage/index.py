@@ -1330,8 +1330,7 @@ class IndexManager:
             "stale_entries": [],
             "content_changed": [],
             "broken_links": 0,
-            "links_to_unknown_kb": 0,
-            "links_stale_prefix": 0,
+            "links_stale_kb": 0,
             "undeclared_types": [],
             "missing_required_fields": [],
             "subdirectory_mismatches": [],
@@ -1480,45 +1479,30 @@ class IndexManager:
         if rows:
             health["broken_links"] = rows[0]["cnt"]
 
-        # Link rows whose KB is not a KB name (ADR-0049 Q3): the index stores
-        # the full name a `kb:` prefix resolves to, so a row naming a
-        # shortname is one indexed before that rule, or after a shortname
-        # was renamed in config; a reindex of the source KB rewrites it.
-        # Counted apart from a missing entry (it is in `broken_links` too).
-        kb_names = sorted({kb.name for kb in self.config.all_kbs()})
-        unknown_sql = "SELECT COUNT(*) AS cnt FROM link l WHERE 1 = 1"
-        unknown_params: dict[str, Any] = {}
-        if kb_names:
-            placeholders = ",".join(f":n{i}" for i in range(len(kb_names)))
-            unknown_sql += f" AND l.target_kb NOT IN ({placeholders})"
-            unknown_params.update({f"n{i}": n for i, n in enumerate(kb_names)})
-        if kb_name is not None:
-            unknown_sql += " AND l.source_kb = :kb_name"
-            unknown_params["kb_name"] = kb_name
-        rows = self.db.execute_sql(unknown_sql, unknown_params)
-        if rows:
-            health["links_to_unknown_kb"] = rows[0]["cnt"]
-
-        # Rows whose written prefix no longer names the KB they resolved to
-        # (a shortname renamed in config since the file was indexed; the
-        # file's hash did not change, so no sync re-read it): the file's link
-        # now resolves elsewhere or nowhere while the row still points at the
-        # old KB. `pyrite index rebuild` rewrites them from the files.
-        pair_sql = (
-            "SELECT l.target_prefix, l.target_kb, COUNT(*) AS cnt FROM link l "
-            "WHERE l.target_prefix IS NOT NULL"
+        # Link rows a rebuild would point at a different KB (ADR-0049 Q3,
+        # #980): the prefix the file wrote, resolved now, is not the stored
+        # KB. A row from before v28 has no `target_prefix`, but its
+        # `target_kb` is the prefix as written (the old rule), so it is
+        # checked the same way. Causes: a shortname renamed or added in
+        # config since the file was indexed (an unchanged file's hash keeps
+        # `sync` from re-reading it), or a row stored before the full name
+        # was. A link whose prefix names no KB is not counted: a rebuild
+        # writes the same row, and `broken_links` counts it. `pyrite index
+        # build` re-reads every file, which clears this count by definition.
+        stale_sql = (
+            "SELECT COALESCE(l.target_prefix, l.target_kb) AS written, l.target_kb, "
+            "COUNT(*) AS cnt FROM link l"
         )
-        pair_params: dict[str, Any] = {}
+        stale_params: dict[str, Any] = {}
         if kb_name is not None:
-            pair_sql += " AND l.source_kb = :kb_name"
-            pair_params["kb_name"] = kb_name
-        pair_sql += " GROUP BY l.target_prefix, l.target_kb"
-        stale = 0
-        for row in self.db.execute_sql(pair_sql, pair_params):
-            now = self._link_kb(row["target_prefix"], row["target_kb"])
-            if now != row["target_kb"]:
-                stale += row["cnt"]
-        health["links_stale_prefix"] = stale
+            stale_sql += " WHERE l.source_kb = :kb_name"
+            stale_params["kb_name"] = kb_name
+        stale_sql += " GROUP BY written, l.target_kb"
+        health["links_stale_kb"] = sum(
+            row["cnt"]
+            for row in self.db.execute_sql(stale_sql, stale_params)
+            if self._link_kb(row["written"], row["target_kb"]) != row["target_kb"]
+        )
 
         # Each kb.yaml is loaded once here, never again below: a schema that
         # fails to load is reported in `schema_errors` and its KB counts as
