@@ -987,10 +987,19 @@ def test_qa_fix_leaves_a_disagreeing_double_spelling_to_a_hand_fix(tmp_path: Pat
         pytest.param(
             "---\nid: g1\ntitle: G\ntype: widget\nrank: 1\nmetadata:\n  rank: 2\n---\n\nText.\n",
             id="generic",
+            marks=pytest.mark.control(
+                reason="on 939910c the nested value won and `extra_frontmatter` carried the "
+                "top-level one, so both came back; the loss appeared with this PR's own "
+                "precedence flip (be6bd08, decision 3) and is fixed here (`_shadowed_nested`)"
+            ),
         ),
         pytest.param(
             "---\nid: g3\ntitle: G\ntype: note\nrank: 1\nmetadata:\n  rank: 2\n---\n\nText.\n",
             id="note",
+            marks=pytest.mark.control(
+                reason="a core type keeps the top-level value in `extra_frontmatter` and the "
+                "nested one in its bag; pinned so the statement holds for every class"
+            ),
         ),
         pytest.param(
             "---\nid: g2\ntitle: G\ntype: task\nstatus: open\nrank: 1\nmetadata:\n  rank: 2\n"
@@ -1057,7 +1066,17 @@ def _create_cells() -> list[Any]:
     try:
         from pyrite.schema.field_aliases import spellings_of
     except ImportError:
-        return []
+        # Before the fix (see `_cells`): generated from the alias map the
+        # base already has, so the cells collect and go red for what they
+        # test (a managed field written by a create) rather than for a
+        # missing name.
+        from pyrite.schema.field_aliases import class_field_aliases
+
+        def spellings_of(cls: type, entry_type: str, field: str) -> list[tuple[str, ...]]:
+            aliases = class_field_aliases(cls, entry_type)
+            names = [field, *(a for a, t in aliases.items() if t == field and a != field)]
+            return [(n,) for n in names] + [("metadata", n) for n in names]
+
     cells: list[Any] = []
     base_done = False
     for type_name, cls in sorted(_classes().items()):
