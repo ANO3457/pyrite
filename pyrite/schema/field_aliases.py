@@ -196,21 +196,23 @@ class SpelledTwiceError(ValueError):
 
 
 def path_segments(path: Any) -> tuple[Any, ...]:
-    """A path as segments: a tuple as given, a string split on ``.`` and
-    ``[i]`` the way ``file_operations`` reads it (``links[0].relation`` ->
-    ``("links", 0, "relation")``)."""
-    if isinstance(path, tuple):
-        return path
+    """A path as segments, parsed ONCE: a tuple or list is already parsed
+    and is returned as given (a string segment in it is a literal key); a
+    string is read by ``file_operations``' own parser (``.`` and ``[i]``:
+    ``links[0].relation`` -> ``("links", 0, "relation")``), so the request
+    boundary, ``field_at`` and ``apply()`` share one reading of a path. A
+    string no parser can read raises ``ValueError`` (the surfaces answer
+    ``VALIDATION_FAILED``). Anything else is the empty path."""
+    if isinstance(path, tuple | list):
+        return tuple(path)
     if not isinstance(path, str):
         return ()
-    segs: list[Any] = []
-    for part in path.split("."):
-        head, *indexes = part.split("[")
-        if head:
-            segs.append(head)
-        for index in indexes:
-            segs.append(int(index.rstrip("]")))
-    return tuple(segs)
+    from ..storage.file_operations import OperationRefusedError, parse_path
+
+    try:
+        return tuple(parse_path(path))
+    except OperationRefusedError as e:
+        raise ValueError(str(e)) from None
 
 
 def field_at(cls: type, entry_type: str, path: Any) -> tuple[str, tuple[Any, ...]]:

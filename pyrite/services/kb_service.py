@@ -1822,7 +1822,11 @@ class KBService:
                 "per file; remove one of them by hand, then update."
             ) from None
 
-        path: Any = head[0] if len(head) == 1 and not rest else (*head, *rest)
+        # The output path is the tuple `field_at` decided on, with the file's
+        # spelling in place of the field: never re-joined into a string that
+        # `apply()` would parse again (#1001 review: a one-segment head
+        # `status_change_log[0]` re-read as a list index).
+        path: tuple[Any, ...] = (*head, *rest)
         if isinstance(op, Set):
             value = (
                 self._value_for_file(entry, field, op.value) if not rest else _plain_value(op.value)
@@ -3421,14 +3425,24 @@ def _request_operations(updates: dict[str, Any]) -> list[Any]:
     ``ReplaceBody``, ``metadata: {k: v}`` one ``Set(("metadata", k))`` per
     key, every other key a ``Set(key)``. ``_resolve_operation`` spells the
     paths onto the file and decides the refusals."""
+    # A request path is parsed into segments once, here, at the boundary
+    # (`path_segments`: `.` and `[i]`, the one parser `apply()` uses). From
+    # here on a path is a tuple and no segment is read again, so an envelope
+    # key `status_change_log[0]` or `metadata.id` is the field it names, not
+    # a literal key the refusal never saw (#1001 review).
+    from ..schema.field_aliases import path_segments
+
     ops: list[Any] = []
-    for key, value in updates.items():
-        if key == "body":
-            ops.append(ReplaceBody(value if isinstance(value, str) else str(value)))
-        elif key == "metadata" and isinstance(value, dict):
-            ops += [Set(("metadata", mk), mv) for mk, mv in value.items()]
-        else:
-            ops.append(Set(key, value))
+    try:
+        for key, value in updates.items():
+            if key == "body":
+                ops.append(ReplaceBody(value if isinstance(value, str) else str(value)))
+            elif key == "metadata" and isinstance(value, dict):
+                ops += [Set(("metadata", *path_segments(mk)), mv) for mk, mv in value.items()]
+            else:
+                ops.append(Set(path_segments(key), value))
+    except ValueError as e:
+        raise ValidationError(f"Cannot read a field path in the update: {e}") from None
     return ops
 
 
@@ -3457,13 +3471,24 @@ def _item_operations(
         raise ValidationError(
             f'`unset` must be a list of field names, e.g. ["tags"], got {unset!r}.'
         )
+    from ..schema.field_aliases import path_segments
+
     ops: list[Any] = []
-    for key, value in mapping("append", append).items():
-        ops += [Append(key, item) for item in (value if isinstance(value, list) else [value])]
-    for key, value in mapping("remove", remove).items():
-        ops += [Remove(key, item) for item in (value if isinstance(value, list) else [value])]
-    for key in unset or []:
-        ops.append(Unset(key))
+    try:
+        for key, value in mapping("append", append).items():
+            ops += [
+                Append(path_segments(key), item)
+                for item in (value if isinstance(value, list) else [value])
+            ]
+        for key, value in mapping("remove", remove).items():
+            ops += [
+                Remove(path_segments(key), item)
+                for item in (value if isinstance(value, list) else [value])
+            ]
+        for key in unset or []:
+            ops.append(Unset(path_segments(key)))
+    except ValueError as e:
+        raise ValidationError(f"Cannot read a field path in the operation: {e}") from None
     return ops
 
 

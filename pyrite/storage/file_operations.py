@@ -1009,6 +1009,17 @@ def _item_cols(doc: _Doc, seq: SequenceNode, i: int) -> tuple[int, int]:
 # --- paths ------------------------------------------------------------------
 
 
+def parse_path(path: Any, op: Any = None) -> list[str | int]:
+    """THE parser of a path string: ``.`` between keys, ``[i]`` an index
+    (``links[0].relation`` -> ``["links", 0, "relation"]``). A tuple or list
+    is already parsed and is checked, not re-read: a string segment in it is
+    a literal key. The request boundary (``KBService._request_operations``,
+    ``_item_operations``), ``schema.field_aliases.path_segments`` and
+    ``apply()`` all read a path through here, once, so the path a refusal is
+    decided on is the path that is written (#1001 review)."""
+    return _segments(path, op)
+
+
 def _segments(path: Any, op: Any = None) -> list[str | int]:
     """A path as segments: strings name keys, ints index lists. Refused when
     it cannot be read: an empty path or segment (``a..b``), a bracket that is

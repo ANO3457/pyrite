@@ -214,6 +214,26 @@ def _cells() -> list[Any]:
                             cells.append((type_name, field, path, op, surface))
                         if op is Set and path[0] == "metadata":
                             cells.append((type_name, field, path, op, "rest.put"))
+            # The `metadata` envelope (`metadata: {key: value}` on the
+            # service, REST PUT and MCP) with the whole spelling inside ONE
+            # key: `k`, `k[0]`, `k[0].x`, `metadata.k`, `metadata.metadata.k`
+            # (#1001 review: the key was read as a literal field name by the
+            # refusal and as a path by `apply()`). A cell's path is the
+            # one-element tuple holding that key.
+            for spelling in spellings_of(cls, type_name, field):
+                base_key = _dotted(spelling)
+                for key in (
+                    base_key,
+                    f"{base_key}[0]",
+                    f"{base_key}[0].x",
+                    f"metadata.{base_key}",
+                    f"metadata.metadata.{base_key}",
+                ):
+                    if (type_name, ("envelope", key)) in seen:
+                        continue
+                    seen.add((type_name, ("envelope", key)))
+                    for surface in ("service.envelope", "rest.put.envelope", "mcp.envelope"):
+                        cells.append((type_name, field, (key,), Set, surface))
     return cells
 
 
@@ -273,6 +293,29 @@ def _send(
     """One operation through one surface; raises ``PyriteError`` on a refusal."""
     value: Any = "x"
     dotted = _dotted(path)
+    if surface.endswith(".envelope"):
+        # `metadata: {key: value}`, the key carrying the whole spelling.
+        envelope = {"metadata": {path[0]: value}}
+        if surface == "service.envelope":
+            db = PyriteDB(config.settings.index_path)
+            try:
+                return KBService(config, db).update(entry_id, KB, envelope)
+            finally:
+                db.close()
+        if surface == "mcp.envelope":
+            from pyrite.server.mcp_server import PyriteMCPServer
+
+            server = PyriteMCPServer(config, tier="write")
+            try:
+                result = server._dispatch_tool(
+                    "kb_update", {"kb_name": KB, "entry_id": entry_id, **envelope}
+                )
+            finally:
+                server.close()
+            if result.get("error") or result.get("isError"):
+                raise ValidationError(str(result))
+            return result
+        surface, path = "rest.put", ("metadata", path[0])
     if surface == "service":
         db = PyriteDB(config.settings.index_path)
         try:
@@ -395,7 +438,15 @@ def _control_reason(cell: Any) -> str | None:
     and most spellings were already refused there. ``None`` is a cell that
     wrote on 939910c (the `metadata.metadata.k` form, set or append: the
     one-level strip left a nested key the refusal never saw)."""
-    _type_name, _field, path, op, _surface = cell
+    _type_name, _field, path, op, surface = cell
+    if surface.endswith(".envelope"):
+        if "." not in path[0] and "[" not in path[0]:
+            return (
+                "a plain field name inside the `metadata` envelope was refused on be6bd08 "
+                "and 939910c (the one-level fold); the keys carrying `.` or `[i]` are the "
+                "evidence (#1001 review)"
+            )
+        return None
     depth = 0
     while depth < len(path) and path[depth] == "metadata":
         depth += 1

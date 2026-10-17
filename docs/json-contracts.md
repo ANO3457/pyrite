@@ -329,9 +329,13 @@ without a lock and the result says `"locked": false`. An item operation
 their bytes, and `links`/`sources` take item operations on every surface
 though a set of the whole list is still refused; an appended link is
 checked as a link. Every operation (`set`, `append`, `remove`, `unset`)
-is first resolved to its field (`field_at`: the key, an alias folded to its
-target, `metadata.k` folded to `k`) and to the one path the file spells
-that field at (`spelling_in`), and every refusal is decided on that field,
+is first parsed into segments once, at the request boundary (`.` between
+keys, `[i]` an index; a key inside the `metadata` envelope such as
+`status_change_log[0]` or `metadata.id` is read the same way, and a path no
+parser can read is refused), then resolved to its field (`field_at`: the
+key, an alias folded to its target, `metadata.k` folded to `k`) and to the
+one path the file spells that field at (`spelling_in`); every refusal is
+decided on that field, and the path written is the path decided on,
 in one place, whatever the path form (`k`, `metadata.k`, an alias,
 `k[0].x`) or surface: a managed field, `type`, `id` and `body` as a key are
 refused for every operation; `links` and `sources` take an item appended or
