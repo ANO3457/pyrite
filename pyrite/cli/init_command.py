@@ -4,12 +4,14 @@ Headless KB init command.
 Creates a new knowledge base from a template with zero prompts.
 """
 
+import copy
 import logging
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
+from ..models.task import TASK_KB_PRESET
 from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
@@ -165,6 +167,9 @@ BUILTIN_TEMPLATES = {
                     }
                 },
             },
+            # #860: every template that ships task tooling must declare the
+            # `task` type so `pyrite task create` works out of the box.
+            "task": copy.deepcopy(TASK_KB_PRESET["types"]["task"]),
         },
         "policies": {"team_owned": True, "require_adr_number": True},
         # No rule enum on `status`: a rule applies to every type with the
@@ -176,7 +181,15 @@ BUILTIN_TEMPLATES = {
             "enforce": True,
             "rules": [],
         },
-        "directories": ["adrs", "designs", "standards", "components", "backlog", "runbooks"],
+        "directories": [
+            "adrs",
+            "designs",
+            "standards",
+            "components",
+            "backlog",
+            "runbooks",
+            "tasks",
+        ],
     },
     "zettelkasten": {
         "name": "my-zettelkasten",
@@ -194,6 +207,9 @@ BUILTIN_TEMPLATES = {
                 "optional": ["author", "page_refs"],
                 "subdirectory": "literature/",
             },
+            # #860: same rule as the software template — declare the `task`
+            # type so `pyrite task create` works in a fresh zettelkasten KB.
+            "task": copy.deepcopy(TASK_KB_PRESET["types"]["task"]),
         },
         "policies": {"private": True, "single_author": True},
         "validation": {
@@ -207,7 +223,7 @@ BUILTIN_TEMPLATES = {
                 },
             ],
         },
-        "directories": ["zettels", "literature"],
+        "directories": ["zettels", "literature", "tasks"],
     },
     "research": {
         "name": "my-research",
