@@ -646,6 +646,7 @@
   "kb_batch_read | global_user | no-default-role-kb": {
     "entries": [
       {
+        "aliases": [],
         "assigned_at": null,
         "assignee": null,
         "body": "a zebra of no fixed abode",
@@ -692,6 +693,7 @@
   "kb_batch_read | global_user | readable-kb": {
     "entries": [
       {
+        "aliases": [],
         "assigned_at": null,
         "assignee": null,
         "body": "a zebra in the open",
@@ -997,6 +999,7 @@
   },
   "kb_get | global_user | no-default-role-kb": {
     "entry": {
+      "aliases": [],
       "assigned_at": null,
       "assignee": null,
       "backlinks": [],
@@ -1040,6 +1043,7 @@
   },
   "kb_get | global_user | readable-kb": {
     "entry": {
+      "aliases": [],
       "assigned_at": null,
       "assignee": null,
       "backlinks": [],

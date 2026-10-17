@@ -656,6 +656,7 @@
   "kb_batch_read | granted_user | private-kb": {
     "entries": [
       {
+        "aliases": [],
         "assigned_at": null,
         "assignee": null,
         "body": "a zebra behind the wall",
@@ -692,6 +693,7 @@
   "kb_batch_read | granted_user | readable-kb": {
     "entries": [
       {
+        "aliases": [],
         "assigned_at": null,
         "assignee": null,
         "body": "a zebra in the open",
@@ -1005,6 +1007,7 @@
   },
   "kb_get | granted_user | private-kb": {
     "entry": {
+      "aliases": [],
       "assigned_at": null,
       "assignee": null,
       "backlinks": [],
@@ -1040,6 +1043,7 @@
   },
   "kb_get | granted_user | readable-kb": {
     "entry": {
+      "aliases": [],
       "assigned_at": null,
       "assignee": null,
       "backlinks": [],
