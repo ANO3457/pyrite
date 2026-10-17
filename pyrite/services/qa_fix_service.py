@@ -158,15 +158,15 @@ class QAFixService:
                     # Andon #994 / #1001 decision 2: an *equal* pair merges
                     # into the field's own top-level spelling, losing
                     # nothing; a pair that disagrees stays a hand fix.
-                    fix = self._fix_double_spelling(issue, kb_name)
-                    if isinstance(fix, str):
-                        manual.append({**issue, "reason": fix})
-                    elif fix is None:
+                    merge = self._fix_double_spelling(issue, kb_name)
+                    if isinstance(merge, str):
+                        manual.append({**issue, "reason": merge})
+                    elif merge is None:
                         manual.append({**issue, "reason": "spellings_disagree"})
                     else:
                         attempt(
-                            [fix],
-                            lambda f=fix, eid=entry_id: self._apply_double_spelling_merge(
+                            [merge],
+                            lambda f=merge, eid=entry_id: self._apply_double_spelling_merge(
                                 eid, kb_name, f, kb_svc
                             ),
                         )
