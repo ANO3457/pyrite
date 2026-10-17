@@ -525,6 +525,11 @@ def index_health(
         or "warning" in off_list_severities
         or bool(removed_extensions)
         or bool(unmodellable_frontmatter)
+        # A link row the index can no longer stand behind: its KB is not a
+        # KB name (indexed before #980), or its written prefix no longer
+        # names that KB (a shortname renamed since). A rebuild fixes both.
+        or bool(health.get("links_to_unknown_kb"))
+        or bool(health.get("links_stale_prefix"))
     )
     status = "unhealthy" if is_unhealthy else ("warning" if has_warning else "healthy")
 
@@ -536,6 +541,8 @@ def index_health(
             "stale_entries": len(health["stale_entries"]),
             "content_changed": len(health.get("content_changed", [])),
             "broken_links": broken_links,
+            "links_to_unknown_kb": health.get("links_to_unknown_kb", 0),
+            "links_stale_prefix": health.get("links_stale_prefix", 0),
             "undeclared_types": undeclared_types,
             "missing_required_fields": missing_required,
             "subdirectory_mismatches": subdirectory_mismatches,
@@ -611,6 +618,14 @@ def _report_health(
         console.print(
             f"[yellow]⚠ {broken_links} broken link(s) found.[/yellow]"
             " Run 'pyrite links check' for details."
+        )
+
+    stale_rows = (health.get("links_to_unknown_kb") or 0) + (health.get("links_stale_prefix") or 0)
+    if stale_rows:
+        console.print(
+            f"[yellow]⚠ {stale_rows} link row(s) name a KB the index cannot stand behind"
+            " (a shortname renamed, or indexed before the full name was stored).[/yellow]"
+            " Run 'pyrite index rebuild' to rewrite them from the files."
         )
 
     if removed_extensions:

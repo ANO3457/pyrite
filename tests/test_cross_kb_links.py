@@ -407,16 +407,101 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
         finally:
             db.close()
 
-    def test_index_health_reports_link_rows_whose_kb_is_not_a_kb_name(self, indexed):
-        """ADR-0049 Q3: a shortname change in config needs a reindex, and
-        `index health` reports the rows that still name the old prefix. A
-        stale row (the prefix as the index stored it before this change, or
-        after a renamed shortname) is counted apart from a missing entry."""
+    def test_the_written_prefix_is_stored_beside_the_full_name(self, indexed):
+        """ADR-0049 / #980 review item 1: a stored link row can always be
+        checked against what the file wrote, so the prefix as written sits
+        beside the KB name it resolved to."""
+        _, db = indexed
+        rows = db.execute_sql(
+            "SELECT target_prefix, target_kb FROM link WHERE source_id = 'note'", {}
+        )
+        assert {(r["target_prefix"], r["target_kb"]) for r in rows} == {("ops", "ops-kb")}
+
+    def test_a_frontmatter_link_kb_is_resolved_and_kept(self, tmp_path):
+        """`links: [{target, kb: ops}]` in frontmatter is a KB field in link
+        position (#980 review item 2): the shortname resolves to the full
+        name as a `[[ops:id]]` does, and the written value is kept."""
+        from pyrite.models import NoteEntry
+        from pyrite.schema.provenance import Link
+        from pyrite.storage.database import PyriteDB
+        from pyrite.storage.index import IndexManager
+        from pyrite.storage.repository import KBRepository
+
+        config = self._config(tmp_path)
+        dev, ops = config.knowledge_bases
+        KBRepository(ops).save(NoteEntry(id="runbook", title="Runbook", body="ops body"))
+        KBRepository(dev).save(
+            NoteEntry(
+                id="fm",
+                title="FM",
+                body="no wikilinks",
+                links=[
+                    Link(target="runbook", relation="related", kb="ops"),
+                    Link(target="runbook", relation="depends_on", kb="ops-kb"),
+                ],
+            )
+        )
+        db = PyriteDB(config.settings.index_path)
+        try:
+            for kb in (ops, dev):
+                IndexManager(db, config).sync_kb(kb)
+            rows = db.execute_sql(
+                "SELECT relation, target_prefix, target_kb FROM link WHERE source_id = 'fm' "
+                "ORDER BY relation",
+                {},
+            )
+            assert [(r["relation"], r["target_prefix"], r["target_kb"]) for r in rows] == [
+                ("depends_on", "ops-kb", "ops-kb"),
+                ("related", "ops", "ops-kb"),
+            ]
+        finally:
+            db.close()
+
+    def test_a_renamed_shortname_is_reported_until_a_rebuild(self, indexed):
+        """The review's probe: rename the shortname `ops` to `o` and sync. The
+        file's hash is unchanged, so the row keeps `ops-kb` while
+        `resolve_entry` now misses the link; `index health` says so
+        (`links_stale_prefix`), and a rebuild rewrites the row from the file,
+        after which the link is broken, which it now is."""
+        from pyrite.config import KBConfig, PyriteConfig, Settings
         from pyrite.storage.index import IndexManager
 
         config, db = indexed
-        health = IndexManager(db, config).check_health()
+        dev, ops = config.knowledge_bases
+        renamed = PyriteConfig(
+            knowledge_bases=[
+                KBConfig(name=dev.name, path=dev.path, shortname=dev.shortname),
+                KBConfig(name=ops.name, path=ops.path, shortname="o"),
+            ],
+            settings=Settings(index_path=config.settings.index_path),
+        )
+        after_sync = IndexManager(db, renamed)
+        after_sync.sync_kb(renamed.knowledge_bases[0])
+        rows = db.execute_sql("SELECT target_kb FROM link WHERE source_id = 'note'", {})
+        assert [r["target_kb"] for r in rows] == ["ops-kb"]  # the unchanged file was not re-read
+        health = after_sync.check_health()
+        assert health["links_stale_prefix"] == 1
         assert health["links_to_unknown_kb"] == 0
+        assert health["broken_links"] == 0
+
+        after_sync.reconcile_kb(renamed.knowledge_bases[0], force=True)
+        rows = db.execute_sql(
+            "SELECT target_prefix, target_kb FROM link WHERE source_id = 'note'", {}
+        )
+        assert [(r["target_prefix"], r["target_kb"]) for r in rows] == [("ops", "ops")]
+        health = after_sync.check_health()
+        assert health["links_stale_prefix"] == 0
+        assert health["links_to_unknown_kb"] == 1
+        assert health["broken_links"] == 1
+
+    def test_a_row_indexed_before_the_prefix_was_kept_is_still_reported(self, indexed):
+        """A row from before this change (no `target_prefix`, the shortname as
+        `target_kb`) is counted in `links_to_unknown_kb` until a rebuild; the
+        raw insert is the only way to make such a row from this code."""
+        from pyrite.storage.index import IndexManager
+
+        config, db = indexed
+        assert IndexManager(db, config).check_health()["links_to_unknown_kb"] == 0
         db._raw_conn.execute(
             "INSERT INTO link (source_id, source_kb, target_id, target_kb, relation, "
             "inverse_relation, note) VALUES ('note', 'dev-kb', 'other', 'ops', 'wikilink', "
@@ -425,4 +510,35 @@ class TestAShortnameLinkIsIndexedUnderTheFullName:
         db._raw_conn.commit()
         health = IndexManager(db, config).check_health()
         assert health["links_to_unknown_kb"] == 1
+        assert health["links_stale_prefix"] == 0
         assert health["broken_links"] == 1  # counted there as well
+
+    def test_duplicate_shortnames_take_the_first_kb_in_config(self, tmp_path):
+        """Two KBs sharing a shortname (config.validate warns): the indexer,
+        unscoped, takes the first in config order, the same KB
+        `PyriteConfig.readable_kb_named` gives an unscoped caller."""
+        from pyrite.config import KBConfig, PyriteConfig, Settings
+        from pyrite.models import NoteEntry
+        from pyrite.storage.database import PyriteDB
+        from pyrite.storage.index import IndexManager
+        from pyrite.storage.repository import KBRepository
+
+        for name in ("first", "second", "src"):
+            (tmp_path / name).mkdir()
+        config = PyriteConfig(
+            knowledge_bases=[
+                KBConfig(name="first", path=tmp_path / "first", shortname="s"),
+                KBConfig(name="second", path=tmp_path / "second", shortname="s"),
+                KBConfig(name="src", path=tmp_path / "src"),
+            ],
+            settings=Settings(index_path=tmp_path / "index.db"),
+        )
+        KBRepository(config.knowledge_bases[2]).save(NoteEntry(id="n", title="N", body="[[s:x]]"))
+        db = PyriteDB(config.settings.index_path)
+        try:
+            IndexManager(db, config).sync_kb(config.knowledge_bases[2])
+            rows = db.execute_sql("SELECT target_kb FROM link WHERE source_id = 'n'", {})
+            assert [r["target_kb"] for r in rows] == ["first"]
+            assert config.readable_kb_named("s", readable_kbs=None).name == "first"
+        finally:
+            db.close()

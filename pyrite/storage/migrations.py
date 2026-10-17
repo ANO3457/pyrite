@@ -16,7 +16,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Current schema version
-CURRENT_VERSION = 27
+CURRENT_VERSION = 28
 
 
 @dataclass
@@ -522,6 +522,17 @@ MIGRATIONS: list[Migration] = [
         -- SQLite < 3.35 does not support DROP COLUMN; columns remain but are unused.
         """,
     ),
+    Migration(
+        version=28,
+        description="Add link.target_prefix: a link's kb: prefix as written, beside the resolved KB (#980)",
+        # ALTER handled conditionally in _apply_v28() since the column may
+        # already exist from ORM create_all. Rows indexed before this carry
+        # NULL until the file is reindexed (`pyrite index rebuild`).
+        up="",
+        down="""
+        -- SQLite < 3.35 does not support DROP COLUMN; column remains but is unused.
+        """,
+    ),
 ]
 
 
@@ -767,6 +778,18 @@ class MigrationManager:
         # scoping and keeps what its global role gave it. New rows default to
         # 0: an insert that omits the column grants nothing.
         self.conn.execute("UPDATE local_user SET global_access = 1")
+        self.conn.commit()
+
+    def _apply_v28(self) -> None:
+        """Conditionally add the written ``kb:`` prefix to link rows (#980)."""
+        table_exists = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='link'"
+        ).fetchone()
+        if not table_exists:
+            return
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(link)").fetchall()}
+        if "target_prefix" not in existing:
+            self.conn.execute("ALTER TABLE link ADD COLUMN target_prefix TEXT")
         self.conn.commit()
 
     def _apply_v27(self) -> None:

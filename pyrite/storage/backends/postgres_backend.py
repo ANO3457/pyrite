@@ -326,6 +326,7 @@ class PostgresBackend(BaseBackend):
                     relation=relation,
                     inverse_relation=inverse,
                     note=link.get("note", ""),
+                    target_prefix=link.get("prefix"),
                 )
             )
 

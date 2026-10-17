@@ -405,6 +405,16 @@ class IndexManager:
         kb = self.config.readable_kb_named(prefix, readable_kbs=None)
         return kb.name if kb is not None else prefix
 
+    def _frontmatter_link(self, link: dict[str, Any], kb_name: str) -> dict[str, Any]:
+        """A frontmatter ``links:`` item as the index stores it: its ``kb`` is
+        a KB field in link position (a name or a shortname, like a ``[[kb:id]]``
+        prefix), so it resolves the same way and the written value is kept
+        beside it (#980 review item 2)."""
+        written = link.get("kb")
+        if not written:
+            return link
+        return {**link, "kb": self._link_kb(written, kb_name), "prefix": written}
+
     def _entry_to_dict(
         self,
         entry: Entry,
@@ -442,7 +452,7 @@ class IndexManager:
             "tags": [_as_text(t) for t in entry.tags],
             "aliases": entry.aliases,
             "sources": [s.to_dict() for s in entry.sources],
-            "links": [l.to_dict() for l in entry.links],
+            "links": [self._frontmatter_link(l.to_dict(), kb_name) for l in entry.links],
             "lifecycle": getattr(entry, "lifecycle", "active"),
             "created_at": entry.created_at.isoformat() if entry.created_at else None,
             "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
@@ -585,6 +595,7 @@ class IndexManager:
                         {
                             "target": target,
                             "kb": self._link_kb(kb_prefix, kb_name),
+                            "prefix": kb_prefix or None,
                             "relation": "wikilink",
                             "note": note,
                         }
@@ -627,6 +638,7 @@ class IndexManager:
                 ref_str = str(ref).strip()
                 if not ref_str:
                     continue
+                ref_prefix: str | None = None
                 if ":" in ref_str and not ref_str.startswith("http"):
                     ref_prefix, ref_id = ref_str.split(":", 1)
                     ref_kb = self._link_kb(ref_prefix, kb_name)
@@ -637,6 +649,7 @@ class IndexManager:
                         {
                             "target": ref_id,
                             "kb": ref_kb,
+                            "prefix": ref_prefix,
                             "relation": "references",
                             "note": "",
                         }
@@ -665,6 +678,7 @@ class IndexManager:
                         {
                             "target": target,
                             "kb": self._link_kb(kb_prefix, kb_name),
+                            "prefix": kb_prefix or None,
                             "relation": "transclusion",
                             "note": note,
                         }
@@ -1317,6 +1331,7 @@ class IndexManager:
             "content_changed": [],
             "broken_links": 0,
             "links_to_unknown_kb": 0,
+            "links_stale_prefix": 0,
             "undeclared_types": [],
             "missing_required_fields": [],
             "subdirectory_mismatches": [],
@@ -1483,6 +1498,27 @@ class IndexManager:
         rows = self.db.execute_sql(unknown_sql, unknown_params)
         if rows:
             health["links_to_unknown_kb"] = rows[0]["cnt"]
+
+        # Rows whose written prefix no longer names the KB they resolved to
+        # (a shortname renamed in config since the file was indexed; the
+        # file's hash did not change, so no sync re-read it): the file's link
+        # now resolves elsewhere or nowhere while the row still points at the
+        # old KB. `pyrite index rebuild` rewrites them from the files.
+        pair_sql = (
+            "SELECT l.target_prefix, l.target_kb, COUNT(*) AS cnt FROM link l "
+            "WHERE l.target_prefix IS NOT NULL"
+        )
+        pair_params: dict[str, Any] = {}
+        if kb_name is not None:
+            pair_sql += " AND l.source_kb = :kb_name"
+            pair_params["kb_name"] = kb_name
+        pair_sql += " GROUP BY l.target_prefix, l.target_kb"
+        stale = 0
+        for row in self.db.execute_sql(pair_sql, pair_params):
+            now = self._link_kb(row["target_prefix"], row["target_kb"])
+            if now != row["target_kb"]:
+                stale += row["cnt"]
+        health["links_stale_prefix"] = stale
 
         # Each kb.yaml is loaded once here, never again below: a schema that
         # fails to load is reported in `schema_errors` and its KB counts as
