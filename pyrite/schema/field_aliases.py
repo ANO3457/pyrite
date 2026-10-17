@@ -289,6 +289,21 @@ def spelling_in(
     return found[0] if found else (field,)
 
 
+def values_identical(a: Any, b: Any) -> bool:
+    """The same YAML value, type included: ``True`` is not ``1`` and ``1`` is
+    not ``1.0`` (Python's ``==`` says they are), a list or a mapping compares
+    item by item the same way. What "an equal pair" means for the merge of
+    a doubly spelled field (#1001 round 4, item 1): a spelling is removed
+    only when nothing the author wrote is lost."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(values_identical(a[k], b[k]) for k in a)
+    if isinstance(a, list | tuple):
+        return len(a) == len(b) and all(values_identical(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
 def double_spellings(
     file_values: Mapping[str, Any], cls: type, entry_type: str
 ) -> dict[str, list[tuple[str, ...]]]:

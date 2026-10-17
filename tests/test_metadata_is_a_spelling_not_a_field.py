@@ -1197,3 +1197,141 @@ def test_a_top_level_alias_in_an_unreadable_kb_does_not_resolve_for_a_scoped_cal
         assert svc.resolve_entry("Hidden priv", readable_kbs=UNSCOPED)["id"] == "priv-1"
     finally:
         db.close()
+
+
+# --------------------------------------------------------------------------
+# Round 4 delta review (#1001): the merge is type-strict and the fix's own;
+# create names a field once; an emptied block goes; `type` is a hand fix
+# --------------------------------------------------------------------------
+
+
+def _fix_double_spellings(config: PyriteConfig) -> dict[str, Any]:
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.qa_fix_service import QAFixService
+    from pyrite.services.qa_service import QAService
+
+    db = PyriteDB(config.settings.index_path)
+    try:
+        qa = QAService(config, db)
+        return QAFixService(config, db).fix_kb(
+            KB,
+            dry_run=False,
+            fix_rules=["field_spelled_twice"],
+            validate_kb_fn=lambda kb: qa.validate_kb(kb, readable_kbs=UNSCOPED),
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("top", "nested"),
+    [
+        pytest.param("true", "1", id="bool-vs-int"),
+        pytest.param("1", "1.0", id="int-vs-float"),
+        pytest.param("[1, 2]", "[1, 2.0]", id="list-item-type"),
+    ],
+)
+def test_qa_fix_keeps_a_pair_whose_values_differ_in_type(tmp_path: Path, top: str, nested: str):
+    """Item 1: Python's `==` calls `True` and `1`, `1` and `1.0` equal; the
+    merge must not. A pair that is not the same YAML value, type included,
+    is a hand fix and the file keeps both."""
+    text = f"---\nid: n8\ntitle: N8\ntype: note\nflag: {top}\nmetadata:\n  flag: {nested}\n---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, "notes", "n8", text)
+    before = path.read_bytes()
+    report = _fix_double_spellings(config)
+    assert report["fixed"] == [], report
+    assert [m["reason"] for m in report["manual"]] == ["spellings_disagree"], report
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("surface", ["service.create", "rest.post", "mcp.create"])
+def test_create_refuses_two_spellings_of_one_field_with_different_values(
+    surface: str, tmp_path_factory: pytest.TempPathFactory
+):
+    """Item 2: create applies decision 1 as update does: `title: A` with
+    `metadata: {title: B}` is refused and no file appears; equal values
+    write the field once."""
+    config, _path = _kb_for("note", tmp_path_factory)
+    kb_path = config.knowledge_bases[0].path
+    before = sorted(p.name for p in kb_path.rglob("*.md"))
+    with pytest.raises(PyriteError) as info:
+        _create(surface, config, "note", "two-titles", {"metadata": {"title": "B"}})
+    assert "two different values" in str(info.value) or "one field" in str(info.value), str(
+        info.value
+    )
+    assert sorted(p.name for p in kb_path.rglob("*.md")) == before, "refused, yet a file appeared"
+
+
+@pytest.mark.control(reason="equal values at two spellings write the field once (#720)")
+def test_create_writes_a_field_named_twice_with_one_value_once(tmp_path: Path):
+    kb_path = tmp_path / "kb"
+    (kb_path / "notes").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30)
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        KBService(config, db).create(
+            KB,
+            {"entry_type": "note", "title": "Same", "id": "same", "metadata": {"custom": "x"}},
+        )
+        KBService(config, db).create(
+            KB,
+            {
+                "entry_type": "note",
+                "title": "Twice",
+                "id": "twice",
+                "custom": "x",
+                "metadata": {"custom": "x"},
+            },
+        )
+    finally:
+        db.close()
+    text = next(kb_path.rglob("twice.md")).read_text(encoding="utf-8")
+    assert text.count("custom: x") == 1, text
+
+
+def test_the_spelling_merge_is_not_open_to_an_update(tmp_path: Path):
+    """Item 3: decision 2 says an update of a doubly spelled field is
+    refused, equal values or not; only `qa fix`'s own call may remove a
+    spelling. `unset: ["metadata.custom"]` through the service is refused."""
+    text = "---\nid: n9\ntitle: N9\ntype: note\ncustom: x\nmetadata:\n  custom: x\n---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, "notes", "n9", text)
+    before = path.read_bytes()
+    db = PyriteDB(config.settings.index_path)
+    try:
+        svc = KBService(config, db)
+        with pytest.raises(ValidationError):
+            svc.update("n9", KB, {}, unset=["metadata.custom"])
+        with pytest.raises(ValidationError):
+            svc.apply_operations("n9", KB, [Unset(("metadata", "custom"))])
+    finally:
+        db.close()
+    assert path.read_bytes() == before
+
+
+def test_the_merge_removes_an_emptied_metadata_block(tmp_path: Path):
+    """Item 4: when the merge removes the last nested key, no `metadata: {}`
+    is left behind: bytes the author never wrote do not appear."""
+    text = "---\nid: n10\ntitle: N10\ntype: note\ncustom: x\nmetadata:\n  custom: x\n---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, "notes", "n10", text)
+    report = _fix_double_spellings(config)
+    assert [f["field"] for f in report["fixed"]] == ["custom"], report
+    after = path.read_text(encoding="utf-8")
+    assert "metadata" not in after, after
+    assert "\ncustom: x\n" in after, after
+
+
+def test_qa_fix_leaves_a_doubly_spelled_type_to_a_hand_fix(tmp_path: Path):
+    """Item 5: `type` spelled twice with equal values is not `failed` ("type
+    is fixed once created"); it is listed as a hand fix."""
+    text = "---\nid: n11\ntitle: N11\ntype: note\nmetadata:\n  type: note\n---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, "notes", "n11", text)
+    before = path.read_bytes()
+    report = _fix_double_spellings(config)
+    assert report["failed"] == [], report
+    assert [m["reason"] for m in report["manual"]] == ["field_fixed_once_created"], report
+    assert path.read_bytes() == before

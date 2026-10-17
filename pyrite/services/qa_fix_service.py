@@ -159,7 +159,9 @@ class QAFixService:
                     # into the field's own top-level spelling, losing
                     # nothing; a pair that disagrees stays a hand fix.
                     fix = self._fix_double_spelling(issue, kb_name)
-                    if fix is None:
+                    if isinstance(fix, str):
+                        manual.append({**issue, "reason": fix})
+                    elif fix is None:
                         manual.append({**issue, "reason": "spellings_disagree"})
                     else:
                         attempt(
@@ -455,13 +457,17 @@ class QAFixService:
         kb_svc.apply_operations(entry_id, kb_name, ops)
         return None
 
-    def _fix_double_spelling(self, issue: dict[str, Any], kb_name: str) -> dict[str, Any] | None:
+    def _fix_double_spelling(
+        self, issue: dict[str, Any], kb_name: str
+    ) -> dict[str, Any] | str | None:
         """The merge of a field one file spells twice: when every spelling
-        holds the same value, the spellings other than the field's own name
-        are removed (``Unset``), so the file loses nothing; None when the
-        spellings disagree (a hand fix, listed by ``index health`` and
-        ``qa validate``)."""
-        from ..schema.field_aliases import spellings_of
+        holds the same YAML value, type included (``values_identical``:
+        `true` is not `1`, `1` is not `1.0`), the spellings other than the
+        field's own name are removed (``Unset``), so the file loses nothing.
+        A string is the reason the pair is a hand fix instead (the spellings
+        disagree; `type`, which no write may touch); None when the file
+        cannot be read."""
+        from ..schema.field_aliases import spellings_of, values_identical
         from ..storage.repository import KBRepository
 
         entry_id = issue.get("entry_id", "")
@@ -469,6 +475,8 @@ class QAFixService:
         kb_config = self.config.get_kb(kb_name)
         if not kb_config or not entry_id or not field_name:
             return None
+        if field_name in ("type", "entry_type"):
+            return "field_fixed_once_created"
         entry = KBRepository(kb_config).load(entry_id)
         source = getattr(entry, "_source_frontmatter", None)
         if entry is None or not isinstance(source, dict):
@@ -482,8 +490,17 @@ class QAFixService:
             if path[-1] in holder:
                 present.append(path)
                 values.append(holder[path[-1]])
-        if len(present) < 2 or any(v != values[0] for v in values):
+        if len(present) < 2:
             return None
+        if any(not values_identical(v, values[0]) for v in values):
+            return "spellings_disagree"
+        removed = present[1:]
+        # The block the merge empties goes whole: no `metadata: {}` the
+        # author never wrote is left behind (round 4, item 4). Decided here
+        # on this field alone; the resolver re-checks the whole block.
+        nested_removed = {p[-1] for p in removed if p[0] == "metadata"}
+        if nested and nested_removed and set(nested) == nested_removed:
+            removed = [p for p in removed if p[0] != "metadata"] + [("metadata",)]
         return {
             "entry_id": entry_id,
             "kb_name": kb_name,
@@ -491,7 +508,7 @@ class QAFixService:
             "field": field_name,
             "kept": ".".join(present[0]),
             "removed": [".".join(p) for p in present[1:]],
-            "paths": present[1:],
+            "paths": removed,
         }
 
     @staticmethod
@@ -499,11 +516,14 @@ class QAFixService:
         entry_id: str, kb_name: str, fix: dict[str, Any], kb_svc
     ) -> str | None:
         """Remove the extra spellings of an equal pair; the resolver lets an
-        ``Unset`` of a non-canonical spelling through when every spelling
-        holds one value (``KBService._resolve_operation``)."""
+        ``Unset`` of a non-canonical spelling through for this call alone
+        (``merge_spellings``), when every spelling holds one value
+        (``KBService._resolve_operation``)."""
         from ..storage.file_operations import Unset
 
-        kb_svc.apply_operations(entry_id, kb_name, [Unset(tuple(p)) for p in fix["paths"]])
+        kb_svc.apply_operations(
+            entry_id, kb_name, [Unset(tuple(p)) for p in fix["paths"]], merge_spellings=True
+        )
         return None
 
     def _file_value(self, entry_id: str, kb_name: str, key: str) -> tuple[bool, Any] | None:

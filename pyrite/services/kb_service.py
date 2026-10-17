@@ -1033,6 +1033,15 @@ class KBService:
         # A None value means "not given", so the model's default applies.
         fields = {k: v for k, v in spec.items() if k not in MARKER_KEYS and v is not None}
 
+        # A create names a field once, as an update does (#720; #1001
+        # decision 1 and round 4 item 2): `title: A` with
+        # `metadata: {title: B}` is refused, equal values write once.
+        # Decided on the named type's class before anything is popped, so
+        # `title`, `id` and `body` count as fields here too.
+        self._refuse_conflicting_create_spellings(
+            fields.get("entry_type") or fields.get("type") or "note", fields
+        )
+
         named_type = fields.pop("entry_type", None)
         file_type = fields.pop("type", None)
         entry_type = named_type or file_type or "note"
@@ -1534,7 +1543,9 @@ class KBService:
             restrict=True,
         )
 
-    def apply_operations(self, entry_id: str, kb_name: str, ops: list[Any]) -> WriteResult:
+    def apply_operations(
+        self, entry_id: str, kb_name: str, ops: list[Any], *, merge_spellings: bool = False
+    ) -> WriteResult:
         """The in-process form of an operation write: ``ops`` are
         ``file_operations`` operations (``Set``, ``Append``, ``Remove``,
         ``Unset``, ``AddSubkey``, ``ReplaceBody``) whose paths name the
@@ -1542,8 +1553,12 @@ class KBService:
         under ``metadata:`` resolve as for a field update. The services that
         own a type's managed fields (a task's audit trail and evidence, qa
         fix's link and tag repairs) write one item here instead of a list
-        read through the model (#955, B6 P3b)."""
-        return self._update(entry_id, kb_name, {}, ops=list(ops), restrict=False)
+        read through the model (#955, B6 P3b). ``merge_spellings`` is `qa
+        fix`'s own: the one write a doubly spelled field takes (removing a
+        spelling of an equal pair); no surface passes it (#1001 round 4)."""
+        return self._update(
+            entry_id, kb_name, {}, ops=list(ops), restrict=False, merge_spellings=merge_spellings
+        )
 
     def _update(
         self,
@@ -1553,6 +1568,7 @@ class KBService:
         *,
         restrict: bool,
         ops: list[Any] | None = None,
+        merge_spellings: bool = False,
     ) -> WriteResult:
         """The one update: the request as operations applied to the file's own
         bytes (ADR-0042; #955, B6 P3a).
@@ -1616,7 +1632,7 @@ class KBService:
             placed: dict[Any, Any] = {}
             for op in [*_request_operations(updates), *(ops or [])]:
                 resolved = self._resolve_operation(
-                    entry, entry_id, kb_config, file_values, op, restrict
+                    entry, entry_id, kb_config, file_values, op, restrict, merge_spellings
                 )
                 if isinstance(resolved, Set):
                     if resolved.path in placed and placed[resolved.path] == resolved.value:
@@ -1729,6 +1745,23 @@ class KBService:
             updates["metadata"] if isinstance(updates.get("metadata"), dict) else {},
         )
 
+    @staticmethod
+    def _refuse_conflicting_create_spellings(entry_type: str, fields: dict[str, Any]) -> None:
+        """One name per field on create (#720; #1001 round 4 item 2)."""
+        from ..models.core_types import get_entry_class
+        from ..schema.field_aliases import refuse_conflicting_spellings
+
+        try:
+            cls = get_entry_class(entry_type)
+        except Exception:  # an unknown type is refused later, by name
+            return
+        refuse_conflicting_spellings(
+            cls,
+            entry_type,
+            {k: v for k, v in fields.items() if k != "metadata"},
+            fields["metadata"] if isinstance(fields.get("metadata"), dict) else {},
+        )
+
     def _refuse_managed_in_envelope(
         self, entry_type: str, kb_config: KBConfig, fields: dict[str, Any]
     ) -> None:
@@ -1769,6 +1802,7 @@ class KBService:
         file_values: dict[str, Any],
         op: Any,
         restrict: bool,
+        merge_spellings: bool = False,
     ) -> Any:
         """THE place an operation's path is resolved onto the file and every
         refusal is decided (#955 acceptance 1; #971 and #973 fix rounds;
@@ -1804,10 +1838,21 @@ class KBService:
             SpelledTwiceError,
             field_at,
             spelling_in,
+            values_identical,
         )
 
         if isinstance(op, ReplaceBody):
             return op
+        if (
+            merge_spellings
+            and isinstance(op, Unset)
+            and tuple(getattr(op, "path", ()) or ()) == ("metadata",)
+            and _nested_block_is_all_equal_pairs(entry, file_values)
+        ):
+            # `qa fix`'s merge removing the last nested spelling(s): the
+            # emptied `metadata:` block goes with them, so no `metadata: {}`
+            # the author never wrote appears (#1001 round 4, item 4).
+            return Unset(("metadata",))
         try:
             field, rest = field_at(type(entry), entry.entry_type, getattr(op, "path", None))
         except NotAFieldError as e:
@@ -1850,18 +1895,21 @@ class KBService:
         try:
             head = spelling_in(file_values, type(entry), entry.entry_type, field)
         except SpelledTwiceError as e:
-            # The one write a doubly spelled field takes: unsetting one of
-            # its spellings when every spelling holds the same value, which
-            # loses nothing and is how `qa fix` merges the pair into the
-            # field's own name (#1001, decision 2). The field's own name
-            # (the first spelling) is never the one removed.
+            # The one write a doubly spelled field takes, and only from `qa
+            # fix`'s own call (`merge_spellings`, #1001 round 4 item 3):
+            # unsetting one of its spellings when every spelling holds the
+            # same YAML value, type included (`values_identical`: `true` is
+            # not `1`, item 1), which loses nothing and is how the pair is
+            # merged into the field's own name (decision 2). The field's own
+            # name (the first spelling) is never the one removed.
             path_sent = tuple(getattr(op, "path", ()) or ())
             values = [_value_at(file_values, p) for p in e.spellings]
             if (
-                isinstance(op, Unset)
+                merge_spellings
+                and isinstance(op, Unset)
                 and not rest
                 and path_sent in e.spellings[1:]
-                and all(v == values[0] for v in values)
+                and all(values_identical(v, values[0]) for v in values)
             ):
                 return Unset(path_sent)
             raise ValidationError(
@@ -3568,6 +3616,29 @@ def _frontmatter_span(text: str) -> FrontmatterSpan:
     split = split_frontmatter(text)
     assert isinstance(split, Frontmatter), split  # apply() just produced it
     return FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+
+
+def _nested_block_is_all_equal_pairs(entry: Entry, file_values: dict[str, Any]) -> bool:
+    """True when the file's ``metadata:`` block holds only second spellings
+    of fields whose every spelling is the same YAML value: the block the
+    merge empties, which may then go whole (#1001 round 4, item 4)."""
+    from ..schema.field_aliases import double_spellings, values_identical
+
+    nested = file_values.get("metadata")
+    if not isinstance(nested, dict) or not nested:
+        return False
+    doubled = double_spellings(file_values, type(entry), entry.entry_type)
+    nested_fields = {field for field, paths in doubled.items() for p in paths if p[0] == "metadata"}
+    for key in nested:
+        if key not in nested_fields and not any(
+            p == ("metadata", key) for paths in doubled.values() for p in paths
+        ):
+            return False
+    for paths in doubled.values():
+        values = [_value_at(file_values, p) for p in paths]
+        if not all(values_identical(v, values[0]) for v in values):
+            return False
+    return True
 
 
 def _value_at(values: Any, path: tuple[Any, ...]) -> Any:

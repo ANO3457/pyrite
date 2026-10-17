@@ -249,8 +249,12 @@ of that field is refused with `VALIDATION_FAILED` naming both spellings
 until one goes; its other fields stay editable. A pair whose two spellings
 hold the same value is still a double spelling: `qa fix` (rule
 `field_spelled_twice`) merges it into the field's own top-level spelling,
-removing the other spelling and losing nothing; a pair that disagrees stays
-a hand fix. On create, a declared field or an alias sent inside the
+removing the other spelling and losing nothing, and removes a `metadata:`
+block that is left empty; "the same value" is the same YAML value, type
+included (`true` is not `1`, `1` is not `1.0`), so a pair that differs in
+any way stays a hand fix, as does a doubly spelled `type`. Only `qa fix`'s
+own call may remove a spelling; an `unset` of one through any surface is
+refused like any other update of the field. On create, a declared field or an alias sent inside the
 `metadata` envelope lands at its own key; only an undeclared key is placed
 under `metadata:` (#178); a field Pyrite or the type manages (`id`,
 `provenance`, a task's `status_change_log`, ...) is refused there as an
