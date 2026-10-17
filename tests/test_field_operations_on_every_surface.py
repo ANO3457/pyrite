@@ -537,7 +537,13 @@ LINK = {"target": "bar", "relation": "related"}
         pytest.param(
             "links", marks=pytest.mark.control(reason="the item exemption held for `links`")
         ),
-        "metadata.links",
+        pytest.param(
+            "metadata.links",
+            marks=pytest.mark.control(
+                reason="red on d210d0fa, fixed by #973 round 1 (939910c); kept as the "
+                "statement that `metadata.links` is a spelling of `links` under #994 too"
+            ),
+        ),
     ],
 )
 @pytest.mark.parametrize("op", ["append", "remove"])

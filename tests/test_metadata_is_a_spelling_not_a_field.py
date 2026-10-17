@@ -191,6 +191,7 @@ def _cells() -> list[Any]:
             return [(n,) for n in names] + [("metadata", n) for n in names]
 
     cells: list[Any] = []
+    seen: set[Any] = set()
     base_done = False
     for type_name, cls in sorted(_classes().items()):
         own = frozenset(getattr(cls, "managed_fields", frozenset()))
@@ -204,8 +205,10 @@ def _cells() -> list[Any]:
             for spelling in spellings_of(cls, type_name, field):
                 for depth in range(0, 3):
                     path = _wrapped(spelling, depth)
-                    if len(path) > 3:
+                    # `metadata.k` wrapped once is `k` wrapped twice: one cell.
+                    if len(path) > 3 or (type_name, path) in seen:
                         continue
+                    seen.add((type_name, path))
                     for op in (Set, Append, Remove, Unset):
                         for surface in ("service", "mcp", "rest.patch", "cli"):
                             cells.append((type_name, field, path, op, surface))
@@ -386,10 +389,40 @@ def _managed_values(
     return out
 
 
+def _control_reason(cell: Any) -> str | None:
+    """Why a cell is a deliberate control on 939910c (#973 round 1's head)
+    rather than evidence: the grid states the invariant for every spelling,
+    and most spellings were already refused there. ``None`` is a cell that
+    wrote on 939910c (the `metadata.metadata.k` form, set or append: the
+    one-level strip left a nested key the refusal never saw)."""
+    _type_name, _field, path, op, _surface = cell
+    depth = 0
+    while depth < len(path) and path[depth] == "metadata":
+        depth += 1
+    if depth < 2:
+        return (
+            "the `k` and `metadata.k` spellings were refused on 939910c by the first-segment "
+            "check and the one-level strip (round 1's hand grid); the generated grid states "
+            "the invariant for every spelling"
+        )
+    if op in (Remove, Unset):
+        return (
+            "nothing sat at that nested key on 939910c, so a remove or unset of it wrote "
+            "nothing; the fix refuses it, for the right reason"
+        )
+    return None
+
+
 _CELLS = _cells()
+_PARAMS = [
+    pytest.param(c, marks=pytest.mark.control(reason=reason), id=_cell_id(c))
+    if (reason := _control_reason(c))
+    else pytest.param(c, id=_cell_id(c))
+    for c in _CELLS
+]
 
 
-@pytest.mark.parametrize("cell", _CELLS, ids=[_cell_id(c) for c in _CELLS])
+@pytest.mark.parametrize("cell", _PARAMS)
 def test_no_spelling_of_a_managed_field_reaches_the_file_or_the_index(
     cell: Any, tmp_path_factory: pytest.TempPathFactory
 ):
@@ -401,16 +434,30 @@ def test_no_spelling_of_a_managed_field_reaches_the_file_or_the_index(
     before = _managed_values(config, type_name, entry_id, cls)
 
     try:
-        _send(surface, config, entry_id, op, path)
-    except PyriteError:
-        assert file_path.read_bytes() == before_bytes, "refused, yet the file changed"
-        return
+        try:
+            _send(surface, config, entry_id, op, path)
+        except PyriteError:
+            assert file_path.read_bytes() == before_bytes, "refused, yet the file changed"
+            return
 
-    # Not refused (MCP sets a bare managed key aside, #455; a remove of an
-    # absent item is a no-op): then nothing managed may have moved, in the
-    # model or in the row.
-    after = _managed_values(config, type_name, entry_id, cls)
-    assert after == before, {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+        # Not refused (MCP sets a bare managed key aside, #455; a remove of
+        # an absent item is a no-op): then nothing may have reached the file
+        # -- a managed field has no spelling a write may land at, nested or
+        # not -- and nothing managed may have moved, in the model or the row.
+        assert file_path.read_bytes() == before_bytes, "not refused, and the file changed"
+        after = _managed_values(config, type_name, entry_id, cls)
+        assert after == before, {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+    finally:
+        # A cell that wrote (the defect) must not hand the next cell a file
+        # that already holds its value, where the same write is a no-op and
+        # the cell passes for nothing: every cell starts from the same file.
+        if file_path.read_bytes() != before_bytes:
+            file_path.write_bytes(before_bytes)
+            db = PyriteDB(config.settings.index_path)
+            try:
+                IndexManager(db, config).index_kb(KB)
+            finally:
+                db.close()
 
 
 # --------------------------------------------------------------------------
@@ -514,6 +561,10 @@ def test_an_in_process_write_to_a_field_spelled_twice_is_refused_too(tmp_path: P
     assert path.read_bytes() == before
 
 
+@pytest.mark.control(
+    reason="939910c's one-level strip already edited a key the file held only under "
+    "`metadata:` there; the statement is kept so `spelling_in` cannot lose it"
+)
 def test_a_field_spelled_once_under_metadata_is_edited_there(tmp_path: Path):
     """The other half of the rule: a file that spells `rank` only as
     `metadata.rank` is edited at that spelling, whichever the request used,
