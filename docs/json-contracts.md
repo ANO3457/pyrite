@@ -238,6 +238,23 @@ non-core types appear in `undeclared_types` and no spelling is `declared`.
 Any row makes the status `warning`. The same field is on `kb health`, REST
 and MCP `kb_health`.
 
+**`index health` → `double_spellings`; `qa validate` →
+`field_spelled_twice`.** `metadata` is not a field: `metadata.k` is a
+second spelling of field `k`, one level only, the same as an alias (Andon
+#994, decision A; ADR-0051, a proposed amendment to ADR-0042 decision 6). A
+file that spells one field twice (`k:` and `metadata.k`, a field and its
+alias, or either under `metadata:`) is read one way, the field's own
+top-level name first, in the model and the index row alike, and an update
+of that field is refused with `VALIDATION_FAILED` naming both spellings
+until one goes; its other fields stay editable. `index health` lists each
+such field once under `double_spellings`: `{kb, id, field, spellings}`,
+where `spellings` are the dotted paths as the file spells them. The status
+is `warning`. `qa validate` (the KB and one entry alike) reports one
+`field_spelled_twice` issue per field, `severity: "warning"`, with the
+`field`, the file's `path` and `entry_id`, and both spellings in `message`.
+One rule decides both and the refusal
+(`schema.field_aliases.double_spellings` over `spelling_in`).
+
 **`index health` → `unmodellable_frontmatter`; `qa validate` →
 `frontmatter_unmodellable`.** A file whose frontmatter Pyrite cannot model
 (a tagged key `!!str a: 1`, a complex key `? [a, b]`, a duplicate key, a
@@ -283,10 +300,17 @@ every update surface.
 **How an update writes (ADR-0042, #955).** The request is applied as
 operations to the file's own text: each named field changes its own lines
 and nothing else (comments, key order, quoting, line endings and every
-other key keep their bytes). An alias is written under the spelling the
-file uses; a key the file holds under `metadata:` is edited there, any
-other key at the top level, so a key refused at the top level (`type`,
-`id`, `links`, `body`) is refused under `metadata` too. `updated_at` is
+other key keep their bytes). **`metadata` is not a field** (Andon #994,
+decision A): `metadata.k`, in a file or a request, is a second spelling of
+field `k`, one level only, the same as an alias. A field has one spelling
+per file: an update is written at the spelling the file uses (`k:`, an
+alias of `k`, or either under `metadata:`; the field's own top-level name
+when the file has none), and a file that spells a field twice is reported
+(`index health` → `double_spellings`, `qa validate` → `field_spelled_twice`)
+and refused for an update of that field. A path whose field would be
+`metadata` (`metadata` alone, `metadata.metadata.k`) is refused at any
+depth, so a key refused at the top level (`type`, `id`, `links`, `body`) is
+refused under `metadata` too. `updated_at` is
 refreshed only where the file already carries it, in its own spelling (the
 separator, a `Z` or an offset, the fraction's digits); a timestamp the
 request sets is written as sent, and one that is no instant is refused. A
@@ -303,10 +327,10 @@ without a lock and the result says `"locked": false`. An item operation
 their bytes, and `links`/`sources` take item operations on every surface
 though a set of the whole list is still refused; an appended link is
 checked as a link. Every operation (`set`, `append`, `remove`, `unset`)
-is first resolved onto the file's own key -- an alias to the spelling the
-file uses, `metadata.k` to the top-level `k` (decision 6; the file's own
-`metadata.k` only where it holds one) -- and every refusal is decided on
-that key, in one place, whatever the path form (`k`, `metadata.k`,
+is first resolved to its field (`field_at`: the key, an alias folded to its
+target, `metadata.k` folded to `k`) and to the one path the file spells
+that field at (`spelling_in`), and every refusal is decided on that field,
+in one place, whatever the path form (`k`, `metadata.k`, an alias,
 `k[0].x`) or surface: a managed field, `type`, `id` and `body` as a key are
 refused for every operation; `links` and `sources` take an item appended or
 removed as a whole item only (`links[0].x` is refused), and an appended
