@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 from .kb_schema import KBSchema
@@ -294,14 +295,44 @@ def values_identical(a: Any, b: Any) -> bool:
     not ``1.0`` (Python's ``==`` says they are), a list or a mapping compares
     item by item the same way. What "an equal pair" means for the merge of
     a doubly spelled field (#1001 round 4, item 1): a spelling is removed
-    only when nothing the author wrote is lost."""
-    if type(a) is not type(b):
+    only when nothing the author wrote is lost.
+
+    "Type" is the YAML kind (``_yaml_kind``), not the parser's class: the
+    round-trip parser reads ``x``, ``'x'`` and ``"x"`` as three ``str``
+    subclasses and a block mapping as its own mapping class, and they are
+    one value each (#1013: a quoted pair was called a disagreement)."""
+    if _yaml_kind(a) != _yaml_kind(b):
         return False
-    if isinstance(a, dict):
+    if isinstance(a, Mapping):
         return a.keys() == b.keys() and all(values_identical(a[k], b[k]) for k in a)
     if isinstance(a, list | tuple):
         return len(a) == len(b) and all(values_identical(x, y) for x, y in zip(a, b, strict=True))
     return bool(a == b)
+
+
+def _yaml_kind(value: Any) -> str:
+    """The YAML kind a parsed value is: null, bool, int, float, str, date,
+    timestamp, map or seq (``bool`` before ``int`` and ``datetime`` before
+    ``date``, each being a subclass of the other); anything else its class."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, datetime):
+        return "timestamp"
+    if isinstance(value, date):
+        return "date"
+    if isinstance(value, Mapping):
+        return "map"
+    if isinstance(value, list | tuple):
+        return "seq"
+    return type(value).__name__
 
 
 def double_spellings(

@@ -1335,3 +1335,379 @@ def test_qa_fix_leaves_a_doubly_spelled_type_to_a_hand_fix(tmp_path: Path):
     assert report["failed"] == [], report
     assert [m["reason"] for m in report["manual"]] == ["field_fixed_once_created"], report
     assert path.read_bytes() == before
+
+
+# --------------------------------------------------------------------------
+# The maintainer's go for round 5 (#1001, comment 6236339417): each of the
+# round-4 review's five items has a stated property; the tests above pin an
+# instance of each, the grids below the property.
+# --------------------------------------------------------------------------
+
+
+def _spellings_fn():
+    """``spellings_of``, or the same generator over the alias map the base
+    has (see ``_cells``), so the grids below collect and go red on the base
+    for what they test."""
+    try:
+        from pyrite.schema.field_aliases import spellings_of
+    except ImportError:
+        from pyrite.schema.field_aliases import class_field_aliases
+
+        def spellings_of(cls: type, entry_type: str, field: str) -> list[tuple[str, ...]]:
+            aliases = class_field_aliases(cls, entry_type)
+            names = [field, *(a for a, t in aliases.items() if t == field and a != field)]
+            return [(n,) for n in names] + [("metadata", n) for n in names]
+
+    return spellings_of
+
+
+def _frontmatter_of(path: Path) -> dict[str, Any]:
+    from pyrite.utils.frontmatter import load_frontmatter
+
+    meta, _body = load_frontmatter(path.read_text(encoding="utf-8"))
+    return meta
+
+
+def _same_yaml_value(a: Any, b: Any) -> bool:
+    """The oracle's own statement of item 1: two YAML values are the same
+    when they are of one type and, item by item, equal; `true` and `1`, `1`
+    and `1.0`, a date and its text are not (Python's `==` says some are)."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same_yaml_value(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same_yaml_value(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
+#: YAML texts a file may spell a value as, chosen so Python's `==` and YAML
+#: equality disagree on many pairs: `1`/`1.0`/`true`, `[1]`/`[1.0]`,
+#: `{a: 1}`/`{a: true}`, a date and its quoted text, an empty list and map;
+#: and pairs that are one YAML value in two notations (`x`, `'x'`, `"x"`:
+#: the parser gives each its own scalar class, #1013).
+_YAML_TEXTS = [
+    "1",
+    "1.0",
+    "true",
+    "'1'",
+    "'true'",
+    "null",
+    "x",
+    "'x'",
+    '"x"',
+    "[1]",
+    "[1.0]",
+    "[true]",
+    "{a: 1}",
+    "{a: true}",
+    "2026-01-01",
+    "'2026-01-01'",
+    "[]",
+    "{}",
+]
+
+
+def _equality_cells() -> list[Any]:
+    """Every ordered pair of ``_YAML_TEXTS`` whose values Python calls equal
+    (the pairs where the property bites, the same text included), plus the
+    pairs that differ outright."""
+    import yaml
+
+    cells: list[Any] = []
+    for top in _YAML_TEXTS:
+        for nested in _YAML_TEXTS:
+            try:
+                equal = yaml.safe_load(top) == yaml.safe_load(nested)
+            except TypeError:
+                equal = False
+            if equal or (top, nested) in {
+                ("x", "1"),
+                ("null", "x"),
+                ("[]", "{}"),
+                ("2026-01-01", "'2026-01-01'"),
+                ("1", "'1'"),
+                ("true", "'true'"),
+                ("[1]", "[true]"),
+            }:
+                cells.append((top, nested))
+    return cells
+
+
+@pytest.mark.parametrize(
+    ("top", "nested"), [pytest.param(t, n, id=f"{t}|{n}") for t, n in _equality_cells()]
+)
+def test_a_double_spelling_merges_iff_both_spell_the_same_yaml_value(
+    tmp_path: Path, top: str, nested: str
+):
+    """Item 1, the property: `qa fix` merges a pair spelled `k: a` and
+    `metadata: {k: b}` exactly when `a` and `b` are the same YAML value,
+    type included (``_same_yaml_value``); then the file holds `k` at the top
+    level alone, reading the value it had. Any other pair is a hand fix
+    (`spellings_disagree`) and the bytes stay."""
+    import yaml
+
+    text = f"---\nid: n12\ntitle: N12\ntype: note\nflag: {top}\nmetadata:\n  flag: {nested}\n---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, "notes", "n12", text)
+    before_bytes = path.read_bytes()
+    before = _frontmatter_of(path)
+    report = _fix_double_spellings(config)
+    assert report["failed"] == [], report
+    if _same_yaml_value(yaml.safe_load(top), yaml.safe_load(nested)):
+        assert [f["field"] for f in report["fixed"]] == ["flag"], report
+        after = _frontmatter_of(path)
+        assert "metadata" not in after, after
+        assert _same_yaml_value(after["flag"], before["flag"]), (after, before)
+        assert "  flag:" not in path.read_text(encoding="utf-8")
+    else:
+        assert report["fixed"] == [], report
+        assert [(m["field"], m["reason"]) for m in report["manual"]] == [
+            ("flag", "spellings_disagree")
+        ], report
+        assert path.read_bytes() == before_bytes
+
+
+def _create_pair_cells() -> list[Any]:
+    """Item 2: for fields with two or more spellings (`k`/`metadata.k`, and
+    `actors`/`participants` with each under `metadata.`), every pair of
+    distinct spellings × the three create surfaces. A cell is
+    ``(type, field, spelling_a, spelling_b, value_a, value_b, surface)``."""
+    spellings_of = _spellings_fn()
+    cells: list[Any] = []
+    for type_name, field, value_a, value_b in (
+        ("note", "title", "A", "B"),
+        ("note", "tags", ["a"], ["b"]),
+        ("note", "custom", "A", "B"),
+        ("event", "actors", ["A"], ["B"]),
+    ):
+        cls = get_entry_class(type_name)
+        spellings = spellings_of(cls, type_name, field)
+        for i, first in enumerate(spellings):
+            for second in spellings[i + 1 :]:
+                for surface in ("service.create", "rest.post", "mcp.create"):
+                    cells.append((type_name, field, first, second, value_a, value_b, surface))
+    return cells
+
+
+def _create_request(spelling_a: tuple[str, ...], a: Any, spelling_b: tuple[str, ...], b: Any):
+    extra: dict[str, Any] = {}
+    envelope: dict[str, Any] = {}
+    for spelling, value in ((spelling_a, a), (spelling_b, b)):
+        if spelling[0] == "metadata":
+            envelope[spelling[1]] = value
+        else:
+            extra[spelling[0]] = value
+    if envelope:
+        extra["metadata"] = envelope
+    return extra
+
+
+def _skip_unless_rest_carries(surface: str, extra: dict[str, Any]) -> None:
+    carried = {"title", "tags", "participants", "metadata", "date"}
+    if surface == "rest.post" and not set(extra) <= carried:
+        pytest.skip("REST POST's body carries no such top-level key (n/a on this surface)")
+
+
+def _create_cell_id(c: Any) -> str:
+    return f"{c[0]}:{_dotted(c[2])}+{_dotted(c[3])}:{c[6]}"
+
+
+@pytest.mark.parametrize(
+    "cell", [pytest.param(c, id=_create_cell_id(c)) for c in _create_pair_cells()]
+)
+def test_create_refuses_every_pair_of_spellings_of_one_field_with_different_values(
+    cell: Any, tmp_path: Path
+):
+    """Item 2, the property: a create that names one field at two spellings
+    (`k` and `metadata.k`, an alias and its target, either under
+    `metadata.`) with different values is refused on every create surface,
+    and no file appears."""
+    type_name, _field, first, second, value_a, value_b, surface = cell
+    extra = _create_request(first, value_a, second, value_b)
+    if type_name == "event":
+        extra["date"] = "2026-01-01"
+    _skip_unless_rest_carries(surface, extra)
+    config, _path = _one_file_kb(tmp_path, "notes", "seed", _FILES["note"])
+    kb_path = config.knowledge_bases[0].path
+    before = sorted(p.name for p in kb_path.rglob("*.md"))
+    with pytest.raises(PyriteError) as info:
+        _create(surface, config, type_name, "twice", extra)
+    assert "different values" in str(info.value), str(info.value)
+    assert sorted(p.name for p in kb_path.rglob("*.md")) == before, "refused, yet a file appeared"
+
+
+@pytest.mark.parametrize(
+    "cell", [pytest.param(c, id=_create_cell_id(c)) for c in _create_pair_cells()]
+)
+def test_create_writes_a_field_named_at_two_spellings_with_one_value_once(
+    cell: Any, tmp_path: Path
+):
+    """Item 2, the other half: equal values at two spellings name one value
+    (#720), and the file spells the field exactly once, at one of its
+    spellings, reading that value."""
+    type_name, field, first, second, value_a, _value_b, surface = cell
+    extra = _create_request(first, value_a, second, value_a)
+    if type_name == "event":
+        extra["date"] = "2026-01-01"
+    _skip_unless_rest_carries(surface, extra)
+    config, _path = _one_file_kb(tmp_path, "notes", "seed", _FILES["note"])
+    kb_path = config.knowledge_bases[0].path
+    _create(surface, config, type_name, "once", extra)
+    written = [p for p in kb_path.rglob("*.md") if p.name != "seed.md"]
+    assert len(written) == 1, written
+    fm = _frontmatter_of(written[0])
+    nested = fm.get("metadata") or {}
+    spelled = [
+        s
+        for s in _spellings_fn()(get_entry_class(type_name), type_name, field)
+        if s[-1] in (nested if s[0] == "metadata" else fm)
+    ]
+    assert len(spelled) == 1, (spelled, fm)
+    holder = nested if spelled[0][0] == "metadata" else fm
+    assert holder[spelled[0][-1]] == value_a, fm
+
+
+def _merge_closed_cells() -> list[Any]:
+    cells: list[Any] = []
+    for agree in (True, False):
+        for path in (("custom",), ("metadata", "custom")):
+            for op in (Set, Append, Remove, Unset):
+                for surface in ("service", "mcp", "rest.patch", "cli"):
+                    cells.append((agree, path, op, surface))
+    return cells
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        pytest.param(
+            c, id=f"{'equal' if c[0] else 'differ'}:{_dotted(c[1])}:{c[2].__name__.lower()}:{c[3]}"
+        )
+        for c in _merge_closed_cells()
+    ],
+)
+def test_no_update_of_a_field_spelled_twice_removes_a_spelling_on_any_surface(
+    cell: Any, tmp_path: Path
+):
+    """Item 3, the property: the merge is `qa fix`'s own call. An update of
+    a field the file spells twice is refused for every operation kind, at
+    either spelling, on every surface, whether or not the two spellings
+    agree; the bytes stay. (`test_qa_fix_merges_an_equal_double_spelling_
+    into_the_top_level_spelling` is the one caller the exception is for.)"""
+    agree, path, op, surface = cell
+    nested = "[x]" if agree else "[y]"
+    text = (
+        f"---\nid: n13\ntitle: N13\ntype: note\ncustom: [x]\nmetadata:\n  custom: {nested}\n"
+        "---\n\nText.\n"
+    )
+    config, file_path = _one_file_kb(tmp_path, "notes", "n13", text)
+    before = file_path.read_bytes()
+    with pytest.raises(PyriteError):
+        _send(surface, config, "n13", op, path)
+    assert file_path.read_bytes() == before
+
+
+#: Item 4: the shapes a `metadata:` block may take around an equal pair,
+#: with the fields merged and what the block holds afterwards (None: the
+#: block is gone). The last shape keeps a key that is no second spelling,
+#: so the block stays with that key alone (#1013's shape, which merges; the
+#: issue's probe failed on quoting, item 1's grid above).
+_EMPTIED_BLOCKS: list[Any] = [
+    pytest.param("notes", "custom: x\nmetadata:\n  custom: x\n", ["custom"], None, id="block"),
+    pytest.param("notes", "custom: x\nmetadata: {custom: x}\n", ["custom"], None, id="flow"),
+    pytest.param(
+        "notes",
+        "custom: x\nother: 2\nmetadata:\n  custom: x\n  other: 2\n",
+        ["custom", "other"],
+        None,
+        id="two-pairs",
+    ),
+    pytest.param(
+        "notes",
+        "custom: x\nmetadata:\n  # the author's note\n  custom: x\n",
+        ["custom"],
+        None,
+        id="comment",
+    ),
+    pytest.param(
+        "notes",
+        "custom: [a, b]\nmetadata:\n  custom:\n  - a\n  - b\n",
+        ["custom"],
+        None,
+        id="list",
+    ),
+    pytest.param(
+        "events",
+        "date: 2026-01-01\nactors: [A]\nmetadata:\n  participants: [A]\n",
+        ["actors"],
+        None,
+        id="alias-pair",
+    ),
+    pytest.param(
+        "notes",
+        "custom: x\nmetadata:\n  custom: x\n  other: 1\n",
+        ["custom"],
+        {"other": 1},
+        id="other-key",
+    ),
+]
+
+
+@pytest.mark.parametrize(("folder", "fields", "merged", "block_after"), _EMPTIED_BLOCKS)
+def test_the_merge_never_leaves_an_empty_metadata_block(
+    tmp_path: Path, folder: str, fields: str, merged: list[str], block_after: dict | None
+):
+    """Item 4, the property: whatever shape the block has (block or flow
+    style, one pair or several, a comment, a list value, an alias pair, a
+    key of its own beside the pair), after `qa fix` the file holds no
+    `metadata` key with nothing under it: a block the merge empties is
+    gone whole, one it does not empty keeps its other keys; every merged
+    field stands at the top level alone, with the value it had."""
+    type_name = "event" if folder == "events" else "note"
+    text = f"---\nid: b1\ntitle: B1\ntype: {type_name}\n{fields}---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, folder, "b1", text)
+    before = _frontmatter_of(path)
+    report = _fix_double_spellings(config)
+    assert report["failed"] == [], report
+    assert sorted(f["field"] for f in report["fixed"]) == sorted(merged), report
+    after_text = path.read_text(encoding="utf-8")
+    after = _frontmatter_of(path)
+    assert "metadata: {}" not in after_text and "metadata:\n---" not in after_text, after_text
+    if block_after is None:
+        assert "metadata" not in after, after_text
+    else:
+        assert after["metadata"] == block_after, after_text
+    for field in merged:
+        assert field in after and after[field] == before[field], (field, after_text)
+        assert f"  {field}:" not in after_text, after_text
+
+
+@pytest.mark.parametrize(
+    ("type_name", "top", "nested"),
+    [
+        pytest.param("note", "note", "note", id="note-equal"),
+        pytest.param("note", "note", "task", id="note-differ"),
+        pytest.param("task", "task", "task", id="task-equal"),
+        pytest.param("task", "task", "note", id="task-differ"),
+    ],
+)
+def test_a_doubly_spelled_type_is_a_hand_fix_whatever_the_values(
+    tmp_path: Path, type_name: str, top: str, nested: str
+):
+    """Item 5, the property: `type` spelled twice is listed as a hand fix
+    (`field_fixed_once_created`) for every class and whether or not the two
+    spellings agree; it is never `fixed` and never `failed`, and the bytes
+    stay."""
+    extra = "status: open\n" if type_name == "task" else ""
+    text = (
+        f"---\nid: t1\ntitle: T1\ntype: {top}\n{extra}metadata:\n  type: {nested}\n---\n\nText.\n"
+    )
+    folder = "tasks" if type_name == "task" else "notes"
+    config, path = _one_file_kb(tmp_path, folder, "t1", text)
+    before = path.read_bytes()
+    report = _fix_double_spellings(config)
+    assert report["failed"] == [] and report["fixed"] == [], report
+    assert [(m["field"], m["reason"]) for m in report["manual"]] == [
+        ("type", "field_fixed_once_created")
+    ], report
+    assert path.read_bytes() == before
