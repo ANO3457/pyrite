@@ -172,8 +172,8 @@ class WikilinkService:
         # spells it under `metadata:`, the bag.
         sql = """
             SELECT id, kb_name, entry_type, title FROM entry
-            WHERE aliases LIKE :alias_pattern
-               OR json_extract(metadata, '$.aliases') LIKE :alias_pattern
+            WHERE (aliases LIKE :alias_pattern
+                   OR json_extract(metadata, '$.aliases') LIKE :alias_pattern)
         """
         params = {"alias_pattern": f"%{actual_target}%", **scope_params}
         if actual_kb:

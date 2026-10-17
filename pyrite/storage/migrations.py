@@ -16,7 +16,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Current schema version
-CURRENT_VERSION = 27
+CURRENT_VERSION = 28
 
 
 @dataclass

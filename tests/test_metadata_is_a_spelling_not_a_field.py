@@ -1144,3 +1144,37 @@ def _create(surface: str, config: PyriteConfig, type_name: str, new_id: str, ext
         raise ValidationError(res.text)
     assert res.status_code != 500, res.text
     return res.json()
+
+
+def test_a_top_level_alias_in_an_unreadable_kb_does_not_resolve_for_a_scoped_caller(
+    tmp_path: Path,
+):
+    """The alias pass reads the `aliases` column and the bag in one `OR`;
+    the caller's read scope must bind both branches (an unparenthesised
+    `OR ... AND kb_name` let a private KB's top-level alias resolve for a
+    scoped caller, caught by `test_read_scope_queries`)."""
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.wikilink_service import WikilinkService
+
+    kbs: list[KBConfig] = []
+    for name in ("pub", "priv"):
+        kb_path = tmp_path / name
+        (kb_path / "notes").mkdir(parents=True)
+        (kb_path / "notes" / f"{name}-1.md").write_text(
+            f"---\nid: {name}-1\ntitle: {name.title()}\ntype: note\naliases: [Hidden {name}]\n"
+            "---\n\nText.\n",
+            encoding="utf-8",
+        )
+        kbs.append(KBConfig(name=name, path=kb_path, kb_type="generic"))
+    config = PyriteConfig(
+        knowledge_bases=kbs, settings=Settings(index_path=tmp_path / "index.db", auto_embed=False)
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        svc = WikilinkService(config, db)
+        assert svc.resolve_entry("Hidden priv", readable_kbs={"pub"}) is None
+        assert svc.resolve_entry("Hidden pub", readable_kbs={"pub"})["id"] == "pub-1"
+        assert svc.resolve_entry("Hidden priv", readable_kbs=UNSCOPED)["id"] == "priv-1"
+    finally:
+        db.close()
