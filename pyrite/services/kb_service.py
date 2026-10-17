@@ -1051,6 +1051,7 @@ class KBService:
         if resolve_type:
             entry_type = self._resolve_entry_type(entry_type, kb_config.kb_type)
         if builder is None:
+            self._refuse_managed_in_envelope(entry_type, kb_config, fields)
             entry = build_entry(entry_type, entry_id=entry_id, title=title, body=body, **fields)
         else:
             entry = builder(entry_type, entry_id, title, body, fields)
@@ -1728,6 +1729,38 @@ class KBService:
             updates["metadata"] if isinstance(updates.get("metadata"), dict) else {},
         )
 
+    def _refuse_managed_in_envelope(
+        self, entry_type: str, kb_config: KBConfig, fields: dict[str, Any]
+    ) -> None:
+        """A create's ``metadata`` envelope (REST POST, MCP ``kb_create``, the
+        service) names fields by a second spelling (Andon #994, decision A);
+        a field Pyrite or the type manages is refused there, as an update
+        refuses it (#1001, decision 6). ``links`` and ``sources`` are a new
+        entry's own content and stay creatable, as at the top level."""
+        from ..models.core_types import get_entry_class
+        from ..schema.field_aliases import NotAFieldError, field_at, path_segments
+
+        envelope = fields.get("metadata")
+        if not isinstance(envelope, dict):
+            return
+        cls = get_entry_class(entry_type)
+        managed = self._field_sets(entry_type, kb_config)[2] - _ITEM_LISTS
+        for key in envelope:
+            if not isinstance(key, str):
+                continue
+            try:
+                field, _rest = field_at(cls, entry_type, ("metadata", *path_segments(key)))
+            except (NotAFieldError, ValueError) as e:
+                # `metadata.k` inside the envelope, an unreadable path: not
+                # a field, so not a key a new file gets (decision A).
+                raise ValidationError(f"Cannot create a {entry_type}: {e}") from None
+            if field in managed:
+                raise ValidationError(
+                    f"Cannot set {field} on a new {entry_type} through `metadata`: Pyrite "
+                    "maintains these fields. To keep a field of your own under that name, "
+                    f"name it differently (for example `{entry_type}_{field}`)."
+                )
+
     def _resolve_operation(
         self,
         entry: Entry,
@@ -1817,9 +1850,24 @@ class KBService:
         try:
             head = spelling_in(file_values, type(entry), entry.entry_type, field)
         except SpelledTwiceError as e:
+            # The one write a doubly spelled field takes: unsetting one of
+            # its spellings when every spelling holds the same value, which
+            # loses nothing and is how `qa fix` merges the pair into the
+            # field's own name (#1001, decision 2). The field's own name
+            # (the first spelling) is never the one removed.
+            path_sent = tuple(getattr(op, "path", ()) or ())
+            values = [_value_at(file_values, p) for p in e.spellings]
+            if (
+                isinstance(op, Unset)
+                and not rest
+                and path_sent in e.spellings[1:]
+                and all(v == values[0] for v in values)
+            ):
+                return Unset(path_sent)
             raise ValidationError(
                 f"Cannot update {field} on {entry_id!r}: {e}. A field has one spelling "
-                "per file; remove one of them by hand, then update."
+                "per file; remove one of them by hand, or `pyrite qa fix` merges an "
+                "equal pair, then update."
             ) from None
 
         # The output path is the tuple `field_at` decided on, with the file's
@@ -3520,6 +3568,19 @@ def _frontmatter_span(text: str) -> FrontmatterSpan:
     split = split_frontmatter(text)
     assert isinstance(split, Frontmatter), split  # apply() just produced it
     return FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
+
+
+def _value_at(values: Any, path: tuple[Any, ...]) -> Any:
+    """The value a file's frontmatter holds at ``path`` (a key, or a key under
+    ``metadata:``), or None when the path is absent; a reading only, for
+    comparing two spellings of one field."""
+    node = values
+    for seg in path:
+        if isinstance(node, dict) and seg in node:
+            node = node[seg]
+        else:
+            return None
+    return node
 
 
 def _plain_value(value: Any) -> Any:

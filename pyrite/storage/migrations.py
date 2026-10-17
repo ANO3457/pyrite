@@ -522,6 +522,18 @@ MIGRATIONS: list[Migration] = [
         -- SQLite < 3.35 does not support DROP COLUMN; columns remain but are unused.
         """,
     ),
+    Migration(
+        version=28,
+        description="Add entry.aliases: a read spells a field where the file does (#1001, decision 5)",
+        # ALTER handled conditionally in _apply_v28() since the column may
+        # already exist from ORM create_all. Rows indexed before this hold
+        # their aliases only in the metadata JSON until the next reindex; the
+        # wikilink alias pass reads both.
+        up="",
+        down="""
+        -- SQLite < 3.35 does not support DROP COLUMN; the column remains but is unused.
+        """,
+    ),
 ]
 
 
@@ -895,6 +907,18 @@ class MigrationManager:
         existing = {row[1] for row in self.conn.execute("PRAGMA table_info(entry)").fetchall()}
         if "content_hash" not in existing:
             self.conn.execute("ALTER TABLE entry ADD COLUMN content_hash TEXT")
+        self.conn.commit()
+
+    def _apply_v28(self) -> None:
+        """Conditionally add the aliases column to entry (#1001, decision 5)."""
+        table_exists = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='entry'"
+        ).fetchone()
+        if not table_exists:
+            return
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(entry)").fetchall()}
+        if "aliases" not in existing:
+            self.conn.execute("ALTER TABLE entry ADD COLUMN aliases TEXT")
         self.conn.commit()
 
     def rollback(self, target_version: int = 0) -> list[Migration]:

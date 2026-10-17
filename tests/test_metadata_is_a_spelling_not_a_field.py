@@ -732,7 +732,10 @@ def test_a_top_level_aliases_key_resolves_a_wikilink(tmp_path: Path):
         row = db.get_entry("n4", KB)
     finally:
         db.close()
-    assert row is not None and row["metadata"].get("aliases") == ["Hidden moniker"]
+    # The row's own `aliases` column (#1001, decision 5): a read spells a
+    # field where the file does, so nothing appears under `metadata`.
+    assert row is not None and row["aliases"] == ["Hidden moniker"]
+    assert "aliases" not in row["metadata"], row["metadata"]
     assert top is not None and top["id"] == "n4", top
     assert nested is not None and nested["id"] == "n5", nested
 
@@ -746,7 +749,7 @@ _TWO_SPELLINGS = [
 ]
 
 
-@pytest.mark.parametrize("surface", ["service", "rest.put", "mcp"])
+@pytest.mark.parametrize("surface", ["service", "rest.put", "mcp", "cli"])
 @pytest.mark.parametrize("updates", _TWO_SPELLINGS)
 def test_two_spellings_of_one_field_in_one_request_are_refused(
     tmp_path: Path, surface: str, updates: dict[str, Any]
@@ -779,6 +782,8 @@ def test_two_spellings_of_one_field_in_one_request_are_refused(
             "REST PUT carries only title/body/tags/importance at the top level; every other "
             "key travels inside `metadata`, so these two spellings cannot both be sent"
         )
+    if surface == "cli" and "metadata.custom" in updates and "metadata" in updates:
+        pytest.skip("the CLI spells both of these `-f metadata.custom=`; one `-f` key, sent twice")
     before = path.read_bytes()
     with pytest.raises(PyriteError) as info:
         _send_request(surface, config, "t1", updates)
@@ -831,6 +836,22 @@ def _send_request(surface: str, config: PyriteConfig, entry_id: str, updates: di
         if result.get("error") or result.get("isError"):
             raise ValidationError(str(result))
         return result
+    if surface == "cli":
+        args = ["update", entry_id, "-k", KB, "--format", "json"]
+        for key, value in updates.items():
+            if key == "metadata":
+                for mk, mv in value.items():
+                    args += ["-f", f"metadata.{mk}={_cli_value(mv)}"]
+            else:
+                args += ["-f", f"{key}={_cli_value(value)}"]
+        with (
+            patch("pyrite.cli.load_config", return_value=config),
+            patch("pyrite.cli.context.load_config", return_value=config),
+        ):
+            result = CliRunner().invoke(cli_app, args)
+        if result.exit_code != 0:
+            raise ValidationError(result.output)
+        return result.output
     pytest.importorskip("fastapi", reason="fastapi not installed")
     from fastapi.testclient import TestClient
 
@@ -861,6 +882,265 @@ def _send_request(surface: str, config: PyriteConfig, entry_id: str, updates: di
         client.close()
         db.close()
     if res.status_code != 200:
+        raise ValidationError(res.text)
+    assert res.status_code != 500, res.text
+    return res.json()
+
+
+def _cli_value(value: Any) -> str:
+    """A value as `-f key=value` sends it: a list as JSON, else the text."""
+    return json.dumps(value) if isinstance(value, list | dict) else str(value)
+
+
+# --------------------------------------------------------------------------
+# The maintainer's decisions on #1001 (2026-10-17)
+# --------------------------------------------------------------------------
+
+
+def _one_file_kb(tmp_path: Path, folder: str, name: str, text: str) -> tuple[PyriteConfig, Path]:
+    kb_path = tmp_path / "kb"
+    (kb_path / folder).mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb_path, check=True, capture_output=True, timeout=30)
+    path = kb_path / folder / f"{name}.md"
+    path.write_text(text, encoding="utf-8")
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+    finally:
+        db.close()
+    return config, path
+
+
+def test_qa_fix_merges_an_equal_double_spelling_into_the_top_level_spelling(tmp_path: Path):
+    """Decision 2: an update of a field the file spells twice stays refused
+    even when both spellings agree; `qa fix` merges the equal pair into the
+    field's own top-level spelling, losing nothing. Here `custom` and
+    `metadata.custom` both hold `x`; after the fix only `custom: x` stands
+    and the other keys keep their bytes."""
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.qa_fix_service import QAFixService
+    from pyrite.services.qa_service import QAService
+
+    text = (
+        "---\nid: n6\ntitle: N6\ntype: note\ncustom: x\nmetadata:\n  custom: x\n  other: 1\n"
+        "---\n\nText.\n"
+    )
+    config, path = _one_file_kb(tmp_path, "notes", "n6", text)
+    db = PyriteDB(config.settings.index_path)
+    try:
+        svc = KBService(config, db)
+        with pytest.raises(ValidationError):
+            svc.update("n6", KB, {"custom": "y"})
+        qa = QAService(config, db)
+        report = QAFixService(config, db).fix_kb(
+            KB,
+            dry_run=False,
+            fix_rules=["field_spelled_twice"],
+            validate_kb_fn=lambda kb: qa.validate_kb(kb, readable_kbs=UNSCOPED),
+        )
+    finally:
+        db.close()
+    assert [f["field"] for f in report["fixed"]] == ["custom"], report
+    after = path.read_text(encoding="utf-8")
+    assert "\ncustom: x\n" in after and "  custom:" not in after, after
+    assert "metadata:\n  other: 1\n" in after, after
+    # and the field is editable again
+    db = PyriteDB(config.settings.index_path)
+    try:
+        KBService(config, db).update("n6", KB, {"custom": "y"})
+    finally:
+        db.close()
+    assert "\ncustom: y\n" in path.read_text(encoding="utf-8")
+
+
+def test_qa_fix_leaves_a_disagreeing_double_spelling_to_a_hand_fix(tmp_path: Path):
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.services.qa_fix_service import QAFixService
+    from pyrite.services.qa_service import QAService
+
+    text = "---\nid: n7\ntitle: N7\ntype: note\ncustom: x\nmetadata:\n  custom: y\n---\n\nText.\n"
+    config, path = _one_file_kb(tmp_path, "notes", "n7", text)
+    before = path.read_bytes()
+    db = PyriteDB(config.settings.index_path)
+    try:
+        qa = QAService(config, db)
+        report = QAFixService(config, db).fix_kb(
+            KB,
+            dry_run=False,
+            fix_rules=["field_spelled_twice"],
+            validate_kb_fn=lambda kb: qa.validate_kb(kb, readable_kbs=UNSCOPED),
+        )
+    finally:
+        db.close()
+    assert report["fixed"] == [], report
+    assert [m["reason"] for m in report["manual"]] == ["spellings_disagree"], report
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "---\nid: g1\ntitle: G\ntype: widget\nrank: 1\nmetadata:\n  rank: 2\n---\n\nText.\n",
+            id="generic",
+        ),
+        pytest.param(
+            "---\nid: g3\ntitle: G\ntype: note\nrank: 1\nmetadata:\n  rank: 2\n---\n\nText.\n",
+            id="note",
+        ),
+        pytest.param(
+            "---\nid: g2\ntitle: G\ntype: task\nstatus: open\nrank: 1\nmetadata:\n  rank: 2\n"
+            "---\n\nText.\n",
+            id="task",
+        ),
+    ],
+)
+def test_a_save_through_the_model_keeps_both_values_of_a_doubly_spelled_key(text: str):
+    """Decision 4: the model reads the top-level spelling (decision 3) and a
+    save through the model loses nothing: `rank: 1` and `metadata: {rank: 2}`
+    both come back."""
+    from pyrite.models.core_types import entry_from_frontmatter
+    from pyrite.utils.frontmatter import load_frontmatter
+
+    meta, body = load_frontmatter(text)
+    entry = entry_from_frontmatter(meta, body)
+    fm = entry.to_frontmatter()
+    assert fm.get("rank") == 1 and fm.get("metadata", {}).get("rank") == 2, fm
+    saved, _ = load_frontmatter(entry.to_markdown())
+    assert saved.get("rank") == 1 and saved.get("metadata", {}).get("rank") == 2, saved
+
+
+def test_a_read_spells_aliases_where_the_file_does(tmp_path: Path):
+    """Decision 5: a file with a top-level `aliases:` reads it at the top
+    level and nothing under `metadata`; a file that nests it reads it under
+    `metadata` and an empty top-level list. The row and the single-entry
+    read agree."""
+    kb_path = tmp_path / "kb"
+    (kb_path / "notes").mkdir(parents=True)
+    (kb_path / "notes" / "a1.md").write_text(
+        "---\nid: a1\ntitle: A1\ntype: note\naliases: [Top]\n---\n\nText.\n", encoding="utf-8"
+    )
+    (kb_path / "notes" / "a2.md").write_text(
+        "---\nid: a2\ntitle: A2\ntype: note\nmetadata:\n  aliases: [Nested]\n---\n\nText.\n",
+        encoding="utf-8",
+    )
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_path, kb_type="generic")],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        from pyrite.services.access_policy import UNSCOPED
+
+        svc = KBService(config, db)
+        top_row = db.get_entry("a1", KB)
+        top_read = svc.get_entry("a1", KB, readable_kbs=UNSCOPED)
+        nested_row = db.get_entry("a2", KB)
+        nested_read = svc.get_entry("a2", KB, readable_kbs=UNSCOPED)
+    finally:
+        db.close()
+    for shape in (top_row, top_read):
+        assert shape["aliases"] == ["Top"] and "aliases" not in shape["metadata"], shape
+    for shape in (nested_row, nested_read):
+        assert shape["aliases"] == [] and shape["metadata"].get("aliases") == ["Nested"], shape
+
+
+def _create_cells() -> list[Any]:
+    """Decision 6: every managed field, at every spelling `spellings_of`
+    gives (and each under `metadata.`), as one key of a create's `metadata`
+    envelope, through the service, REST POST and MCP `kb_create`."""
+    try:
+        from pyrite.schema.field_aliases import spellings_of
+    except ImportError:
+        return []
+    cells: list[Any] = []
+    base_done = False
+    for type_name, cls in sorted(_classes().items()):
+        own = frozenset(getattr(cls, "managed_fields", frozenset()))
+        fields = [f for f in _managed(cls) if f in own]
+        if not base_done and type_name == "note":
+            fields = _managed(cls)
+            base_done = True
+        if not fields or type_name not in _FILES:
+            continue
+        for field in fields:
+            keys: list[str] = []
+            for spelling in spellings_of(cls, type_name, field):
+                keys += [_dotted(spelling), f"metadata.{_dotted(spelling)}"]
+            for key in dict.fromkeys(keys):
+                for surface in ("service.create", "rest.post", "mcp.create"):
+                    cells.append((type_name, field, key, surface))
+    return cells
+
+
+_CREATE_CELLS = _create_cells()
+
+
+@pytest.mark.parametrize(
+    "cell", [pytest.param(c, id=f"{c[0]}:{c[2]}:{c[3]}") for c in _CREATE_CELLS]
+)
+def test_create_refuses_a_managed_field_sent_in_the_metadata_envelope(
+    cell: Any, tmp_path_factory: pytest.TempPathFactory
+):
+    type_name, _field, key, surface = cell
+    config, _path = _kb_for(type_name, tmp_path_factory)
+    kb_path = config.knowledge_bases[0].path
+    new_id = f"new-{abs(hash((type_name, key, surface))) % 10**8}"
+    before = sorted(p.name for p in kb_path.rglob("*.md"))
+    envelope = {"metadata": {key: "x"}}
+    with pytest.raises(PyriteError):
+        _create(surface, config, type_name, new_id, envelope)
+    assert sorted(p.name for p in kb_path.rglob("*.md")) == before, "refused, yet a file appeared"
+
+
+def _create(surface: str, config: PyriteConfig, type_name: str, new_id: str, extra: dict[str, Any]):
+    spec: dict[str, Any] = {
+        "entry_type": type_name,
+        "title": f"New {new_id}",
+        "id": new_id,
+        **extra,
+    }
+    if surface == "service.create":
+        db = PyriteDB(config.settings.index_path)
+        try:
+            return KBService(config, db).create(KB, spec)
+        finally:
+            db.close()
+    if surface == "mcp.create":
+        from pyrite.server.mcp_server import PyriteMCPServer
+
+        server = PyriteMCPServer(config, tier="write")
+        try:
+            result = server._dispatch_tool("kb_create", {"kb_name": KB, **spec})
+        finally:
+            server.close()
+        if result.get("error") or result.get("isError"):
+            raise ValidationError(str(result))
+        return result
+    pytest.importorskip("fastapi", reason="fastapi not installed")
+    from fastapi.testclient import TestClient
+
+    from pyrite.server.api import create_app, get_config, get_db, get_index_mgr
+
+    db = PyriteDB(config.settings.index_path)
+    index_mgr = IndexManager(db, config)
+    rest = create_app(config)
+    rest.dependency_overrides[get_config] = lambda: config
+    rest.dependency_overrides[get_db] = lambda: db
+    rest.dependency_overrides[get_index_mgr] = lambda: index_mgr
+    client = TestClient(rest, raise_server_exceptions=False)
+    try:
+        body = {"kb": KB, "entry_type": type_name, "title": spec["title"], **extra}
+        res = client.post("/api/entries", json=body)
+    finally:
+        client.close()
+        db.close()
+    if res.status_code >= 400:
         raise ValidationError(res.text)
     assert res.status_code != 500, res.text
     return res.json()

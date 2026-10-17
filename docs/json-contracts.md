@@ -246,9 +246,20 @@ file that spells one field twice (`k:` and `metadata.k`, a field and its
 alias, or either under `metadata:`) is read one way, the field's own
 top-level name first, in the model and the index row alike, and an update
 of that field is refused with `VALIDATION_FAILED` naming both spellings
-until one goes; its other fields stay editable. On create, a declared field
-or an alias sent inside the `metadata` envelope lands at its own key; only
-an undeclared key is placed under `metadata:` (#178). `index health` lists each
+until one goes; its other fields stay editable. A pair whose two spellings
+hold the same value is still a double spelling: `qa fix` (rule
+`field_spelled_twice`) merges it into the field's own top-level spelling,
+removing the other spelling and losing nothing; a pair that disagrees stays
+a hand fix. On create, a declared field or an alias sent inside the
+`metadata` envelope lands at its own key; only an undeclared key is placed
+under `metadata:` (#178); a field Pyrite or the type manages (`id`,
+`provenance`, a task's `status_change_log`, ...) is refused there as an
+update refuses it, on REST `POST`, MCP `kb_create` and the service
+(`links` and `sources` stay a new entry's own content). A read spells a
+field where the file does: `aliases` is its own row column, so a file with a
+top-level `aliases:` reads it at the top level and never under `metadata`,
+and wikilink resolution by alias reads that column (and the bag, for a file
+that nests it). `index health` lists each
 such field once under `double_spellings`: `{kb, id, field, spellings}`,
 where `spellings` are the dotted paths as the file spells them. The status
 is `warning`. `qa validate` (the KB and one entry alike) reports one

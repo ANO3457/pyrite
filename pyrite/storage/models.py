@@ -79,6 +79,10 @@ class Entry(Base):
 
     # Extension fields (JSON) — attribute named extra_data to avoid SQLAlchemy reserved 'metadata'
     extra_data = Column("metadata", Text, default="{}")
+    # The entry's `aliases` as a JSON list, its own column (#1001, decision
+    # 5): a read spells a field where the file does, so a top-level
+    # `aliases:` is never carried under the row's `metadata`.
+    aliases = Column(Text)
 
     # Timestamps
     created_at = Column(String)

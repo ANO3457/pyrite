@@ -543,12 +543,6 @@ class IndexManager:
             if hasattr(entry, "metadata") and isinstance(entry.metadata, dict):
                 ext_fields.update(entry.metadata)
             ext_fields.update({k: v for k, v in fm.items() if k not in stored_keys})
-            # `aliases` has no column: the row holds it only here, where the
-            # wikilink resolver's alias pass reads it (`$.aliases`). The
-            # model's reading, so a top-level `aliases:` resolves like one
-            # the file nested under `metadata:` (it never did before #994).
-            if entry.aliases:
-                ext_fields["aliases"] = data["aliases"]
             if ext_fields:
                 data["metadata"] = ext_fields  # stored as dict; upsert_entry JSON-encodes
         except Exception:
@@ -792,6 +786,10 @@ class IndexManager:
             result[key] = _as_column(key, data.get(key))
         result["lifecycle"] = result["lifecycle"] or "active"
         result["metadata"] = metadata
+        # Its own column (#1001, decision 5), read back through JSON like the
+        # row: a read spells `aliases` where the file does, never under
+        # `metadata` for a file that spells it at the top level.
+        result["aliases"] = json.loads(json.dumps(list(data["aliases"] or []), cls=SafeEncoder))
         # A timestamp the file does not carry (or carries unparsed) is not the
         # file's: the model fills it with "now", which would change on every
         # read. The row's value stands, as before (#670).

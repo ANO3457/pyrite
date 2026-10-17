@@ -154,6 +154,21 @@ class QAFixService:
                     else:
                         manual.append({**issue, "reason": "no_safe_default"})
 
+                elif rule == "field_spelled_twice":
+                    # Andon #994 / #1001 decision 2: an *equal* pair merges
+                    # into the field's own top-level spelling, losing
+                    # nothing; a pair that disagrees stays a hand fix.
+                    fix = self._fix_double_spelling(issue, kb_name)
+                    if fix is None:
+                        manual.append({**issue, "reason": "spellings_disagree"})
+                    else:
+                        attempt(
+                            [fix],
+                            lambda f=fix, eid=entry_id: self._apply_double_spelling_merge(
+                                eid, kb_name, f, kb_svc
+                            ),
+                        )
+
                 elif rule == "broken_link":
                     fix = self._fix_broken_link(issue, all_entry_ids)
                     if fix:
@@ -438,6 +453,57 @@ class QAFixService:
                 "(a link in the body is not rewritten)"
             )
         kb_svc.apply_operations(entry_id, kb_name, ops)
+        return None
+
+    def _fix_double_spelling(self, issue: dict[str, Any], kb_name: str) -> dict[str, Any] | None:
+        """The merge of a field one file spells twice: when every spelling
+        holds the same value, the spellings other than the field's own name
+        are removed (``Unset``), so the file loses nothing; None when the
+        spellings disagree (a hand fix, listed by ``index health`` and
+        ``qa validate``)."""
+        from ..schema.field_aliases import spellings_of
+        from ..storage.repository import KBRepository
+
+        entry_id = issue.get("entry_id", "")
+        field_name = issue.get("field", "")
+        kb_config = self.config.get_kb(kb_name)
+        if not kb_config or not entry_id or not field_name:
+            return None
+        entry = KBRepository(kb_config).load(entry_id)
+        source = getattr(entry, "_source_frontmatter", None)
+        if entry is None or not isinstance(source, dict):
+            return None
+        nested = source.get("metadata")
+        nested = nested if isinstance(nested, dict) else {}
+        present: list[tuple[str, ...]] = []
+        values: list[Any] = []
+        for path in spellings_of(type(entry), entry.entry_type, field_name):
+            holder = nested if path[0] == "metadata" else source
+            if path[-1] in holder:
+                present.append(path)
+                values.append(holder[path[-1]])
+        if len(present) < 2 or any(v != values[0] for v in values):
+            return None
+        return {
+            "entry_id": entry_id,
+            "kb_name": kb_name,
+            "rule": "field_spelled_twice",
+            "field": field_name,
+            "kept": ".".join(present[0]),
+            "removed": [".".join(p) for p in present[1:]],
+            "paths": present[1:],
+        }
+
+    @staticmethod
+    def _apply_double_spelling_merge(
+        entry_id: str, kb_name: str, fix: dict[str, Any], kb_svc
+    ) -> str | None:
+        """Remove the extra spellings of an equal pair; the resolver lets an
+        ``Unset`` of a non-canonical spelling through when every spelling
+        holds one value (``KBService._resolve_operation``)."""
+        from ..storage.file_operations import Unset
+
+        kb_svc.apply_operations(entry_id, kb_name, [Unset(tuple(p)) for p in fix["paths"]])
         return None
 
     def _file_value(self, entry_id: str, kb_name: str, key: str) -> tuple[bool, Any] | None:

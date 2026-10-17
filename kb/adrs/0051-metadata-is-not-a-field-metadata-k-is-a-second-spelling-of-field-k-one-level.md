@@ -127,6 +127,29 @@ unchanged in both the model and the index row.
 - Out of scope, on #990: the `sources` publish-before-index failure and
   `links[x]` INTERNAL.
 
+## The maintainer's decisions on the open questions (2026-10-17, #1001)
+
+1. **Two spellings in one request.** `refuse_conflicting_spellings`
+   treats `k` and `metadata.k` (envelope or dotted) as one field under the
+   #720 rule: different values are refused, equal values accepted.
+2. **Equal values in a file** are still a double spelling: an update of
+   the field is refused. `qa fix` (rule `field_spelled_twice`) merges an
+   equal pair into the top-level spelling, losing nothing; a pair that
+   disagrees stays a hand fix, listed by `index health` and `qa validate`.
+3. **Precedence:** for an undeclared key, the top-level spelling wins
+   over the nested one.
+4. **A save through the model loses nothing:** `rank: 1` +
+   `metadata: {rank: 2}` keeps both values (`_shadowed_nested` on
+   `GenericEntry` and `TaskEntry`).
+5. **Read shape:** a read spells a field where the file does. `aliases`
+   is its own index column (migration 28); a top-level `aliases:` never
+   appears under a read's `metadata`, and the wikilink alias pass reads
+   the column (and the bag, for a file that nests it).
+6. **Create** refuses a managed field sent in the `metadata` envelope,
+   as update does, on REST POST, MCP `kb_create` and the service.
+7. **The repo KB's doubly spelled entries** are fixed by hand in a
+   separate `kb/` PR to `dev`.
+
 ## Amends
 
 - **ADR-0042, decision 6**, "A key is written where the operation names

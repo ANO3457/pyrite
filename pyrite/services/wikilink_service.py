@@ -59,7 +59,13 @@ class WikilinkService:
         readable_kbs: set[str] | None,
     ) -> list[dict[str, Any]]:
         """Lightweight listing of entry IDs and titles for wikilink autocomplete."""
-        sql = "SELECT id, kb_name, entry_type, title, json_extract(metadata, '$.aliases') as aliases FROM entry WHERE 1=1"
+        # `aliases` is the row's own column (#1001, decision 5); a file that
+        # spells it under `metadata:` is still read there.
+        sql = (
+            "SELECT id, kb_name, entry_type, title, "
+            "COALESCE(aliases, json_extract(metadata, '$.aliases')) as aliases "
+            "FROM entry WHERE 1=1"
+        )
         params: dict[str, Any] = {}
 
         if kb_name:
@@ -69,7 +75,10 @@ class WikilinkService:
         sql += scope_sql
         params.update(scope_params)
         if query:
-            sql += " AND (title LIKE :q1 OR json_extract(metadata, '$.aliases') LIKE :q2)"
+            sql += (
+                " AND (title LIKE :q1 OR aliases LIKE :q2"
+                " OR json_extract(metadata, '$.aliases') LIKE :q2)"
+            )
             params["q1"] = f"%{query}%"
             params["q2"] = f"%{query}%"
 
@@ -158,10 +167,13 @@ class WikilinkService:
         if picked:
             return picked
 
-        # Third pass: search aliases
+        # Third pass: search aliases -- the row's own `aliases` column (a
+        # file's top-level `aliases:`, #1001 decision 5) or, for a file that
+        # spells it under `metadata:`, the bag.
         sql = """
             SELECT id, kb_name, entry_type, title FROM entry
-            WHERE json_extract(metadata, '$.aliases') LIKE :alias_pattern
+            WHERE aliases LIKE :alias_pattern
+               OR json_extract(metadata, '$.aliases') LIKE :alias_pattern
         """
         params = {"alias_pattern": f"%{actual_target}%", **scope_params}
         if actual_kb:
