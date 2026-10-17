@@ -193,6 +193,8 @@ class SQLiteBackend(BaseBackend):
             desired[key] = {
                 "note": link.get("note", ""),
                 "inverse_relation": get_inverse_relation(relation),
+                # The prefix as the file wrote it, beside the resolved KB (#980).
+                "target_prefix": link.get("prefix"),
             }
 
         # Load existing links from DB
@@ -213,9 +215,14 @@ class SQLiteBackend(BaseBackend):
             if key in existing_keys:
                 # Update note/inverse if changed
                 row = existing_keys[key]
-                if row.note != attrs["note"] or row.inverse_relation != attrs["inverse_relation"]:
+                if (
+                    row.note != attrs["note"]
+                    or row.inverse_relation != attrs["inverse_relation"]
+                    or row.target_prefix != attrs["target_prefix"]
+                ):
                     row.note = attrs["note"]
                     row.inverse_relation = attrs["inverse_relation"]
+                    row.target_prefix = attrs["target_prefix"]
             else:
                 # Insert new link
                 target_id, target_kb, relation = key
@@ -228,6 +235,7 @@ class SQLiteBackend(BaseBackend):
                         relation=relation,
                         inverse_relation=attrs["inverse_relation"],
                         note=attrs["note"],
+                        target_prefix=attrs["target_prefix"],
                     )
                 )
 

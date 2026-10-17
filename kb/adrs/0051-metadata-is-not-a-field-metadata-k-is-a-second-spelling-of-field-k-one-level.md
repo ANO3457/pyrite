@@ -142,7 +142,7 @@ unchanged in both the model and the index row.
    `metadata: {rank: 2}` keeps both values (`_shadowed_nested` on
    `GenericEntry` and `TaskEntry`).
 5. **Read shape:** a read spells a field where the file does. `aliases`
-   is its own index column (migration 28); a top-level `aliases:` never
+   is its own index column (migration 29); a top-level `aliases:` never
    appears under a read's `metadata`, and the wikilink alias pass reads
    the column (and the bag, for a file that nests it).
 6. **Create** refuses a managed field sent in the `metadata` envelope,

@@ -392,6 +392,29 @@ class IndexManager:
         self.db = db
         self.config = config or load_config()
 
+    def _link_kb(self, prefix: str | None, kb_name: str) -> str:
+        """The KB a link's ``prefix:`` names, as the index stores it: the
+        full name of the KB the prefix names (by full name, then shortname;
+        the indexer is unscoped), the owning KB when there is no prefix, or
+        the prefix as written when it names no KB, so the link counts as
+        broken, which it is. ADR-0049 / #952: the index stores the full
+        name, so backlinks, the graph and the broken-link count agree with
+        `resolve_entry` (#979)."""
+        if not prefix:
+            return kb_name
+        kb = self.config.readable_kb_named(prefix, readable_kbs=None)
+        return kb.name if kb is not None else prefix
+
+    def _frontmatter_link(self, link: dict[str, Any], kb_name: str) -> dict[str, Any]:
+        """A frontmatter ``links:`` item as the index stores it: its ``kb`` is
+        a KB field in link position (a name or a shortname, like a ``[[kb:id]]``
+        prefix), so it resolves the same way and the written value is kept
+        beside it (#980 review item 2)."""
+        written = link.get("kb")
+        if not written:
+            return link
+        return {**link, "kb": self._link_kb(written, kb_name), "prefix": written}
+
     def _entry_to_dict(
         self,
         entry: Entry,
@@ -429,7 +452,7 @@ class IndexManager:
             "tags": [_as_text(t) for t in entry.tags],
             "aliases": entry.aliases,
             "sources": [s.to_dict() for s in entry.sources],
-            "links": [l.to_dict() for l in entry.links],
+            "links": [self._frontmatter_link(l.to_dict(), kb_name) for l in entry.links],
             "lifecycle": getattr(entry, "lifecycle", "active"),
             "created_at": entry.created_at.isoformat() if entry.created_at else None,
             "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
@@ -577,7 +600,8 @@ class IndexManager:
                     data["links"].append(
                         {
                             "target": target,
-                            "kb": kb_prefix or kb_name,
+                            "kb": self._link_kb(kb_prefix, kb_name),
+                            "prefix": kb_prefix or None,
                             "relation": "wikilink",
                             "note": note,
                         }
@@ -620,8 +644,10 @@ class IndexManager:
                 ref_str = str(ref).strip()
                 if not ref_str:
                     continue
+                ref_prefix: str | None = None
                 if ":" in ref_str and not ref_str.startswith("http"):
-                    ref_kb, ref_id = ref_str.split(":", 1)
+                    ref_prefix, ref_id = ref_str.split(":", 1)
+                    ref_kb = self._link_kb(ref_prefix, kb_name)
                 else:
                     ref_kb, ref_id = kb_name, ref_str
                 if ref_id and ref_id != entry.id and ref_id not in existing_targets:
@@ -629,6 +655,7 @@ class IndexManager:
                         {
                             "target": ref_id,
                             "kb": ref_kb,
+                            "prefix": ref_prefix,
                             "relation": "references",
                             "note": "",
                         }
@@ -656,7 +683,8 @@ class IndexManager:
                     data["links"].append(
                         {
                             "target": target,
-                            "kb": kb_prefix or kb_name,
+                            "kb": self._link_kb(kb_prefix, kb_name),
+                            "prefix": kb_prefix or None,
                             "relation": "transclusion",
                             "note": note,
                         }
@@ -1312,6 +1340,7 @@ class IndexManager:
             "stale_entries": [],
             "content_changed": [],
             "broken_links": 0,
+            "links_stale_kb": 0,
             "undeclared_types": [],
             "missing_required_fields": [],
             "subdirectory_mismatches": [],
@@ -1477,6 +1506,31 @@ class IndexManager:
         rows = self.db.execute_sql(broken_sql, broken_params)
         if rows:
             health["broken_links"] = rows[0]["cnt"]
+
+        # Link rows a rebuild would point at a different KB (ADR-0049 Q3,
+        # #980): the prefix the file wrote, resolved now, is not the stored
+        # KB. A row from before v28 has no `target_prefix`, but its
+        # `target_kb` is the prefix as written (the old rule), so it is
+        # checked the same way. Causes: a shortname renamed or added in
+        # config since the file was indexed (an unchanged file's hash keeps
+        # `sync` from re-reading it), or a row stored before the full name
+        # was. A link whose prefix names no KB is not counted: a rebuild
+        # writes the same row, and `broken_links` counts it. `pyrite index
+        # build` re-reads every file, which clears this count by definition.
+        stale_sql = (
+            "SELECT COALESCE(l.target_prefix, l.target_kb) AS written, l.target_kb, "
+            "COUNT(*) AS cnt FROM link l"
+        )
+        stale_params: dict[str, Any] = {}
+        if kb_name is not None:
+            stale_sql += " WHERE l.source_kb = :kb_name"
+            stale_params["kb_name"] = kb_name
+        stale_sql += " GROUP BY written, l.target_kb"
+        health["links_stale_kb"] = sum(
+            row["cnt"]
+            for row in self.db.execute_sql(stale_sql, stale_params)
+            if self._link_kb(row["written"], row["target_kb"]) != row["target_kb"]
+        )
 
         # Each kb.yaml is loaded once here, never again below: a schema that
         # fails to load is reported in `schema_errors` and its KB counts as

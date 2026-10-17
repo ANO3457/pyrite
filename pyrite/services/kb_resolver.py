@@ -127,17 +127,12 @@ def kb_set(
 def readable_kb_with_shortname(
     config: PyriteConfig, name: str, readable_kbs: set[str] | None
 ) -> KBConfig | None:
-    """The KB among the caller's readable ones whose shortname is `name`.
-
-    Looked up in the readable set only, not in every KB and then checked: a
-    private KB that shares the shortname would otherwise be the one found
-    (whichever config.yaml lists first) and the caller's answer would
-    change with a KB it cannot see (#965 review, blocking 3).
-    """
-    for kb in config.all_kbs():
-        if kb.shortname == name and (readable_kbs is None or kb.name in readable_kbs):
-            return kb
-    return None
+    """The KB among the caller's readable ones whose shortname is `name`
+    (`PyriteConfig.readable_kb_with_shortname`: looked up in the readable set
+    only, so a private KB sharing the shortname never changes the answer,
+    #965 blocking 3). The implementation is on the config so that the index,
+    which may not import services, stores the KB a link prefix names."""
+    return config.readable_kb_with_shortname(name, readable_kbs=readable_kbs)
 
 
 def readable_kb_named(
@@ -145,18 +140,11 @@ def readable_kb_named(
 ) -> KBConfig | None:
     """The KB a link prefix (`[[name:id]]`) means for a caller who may read
     `readable_kbs`: the readable KB with that full name, else the readable
-    KB with that shortname, else None.
-
-    Both steps consult the readable set only. Existence is never checked
-    first: a private KB whose full name is a readable KB's shortname would
-    otherwise turn the link into a miss, and the miss would say the private
-    name exists (#965 round 3). For the unscoped caller a full name wins
-    over another KB's shortname, as `config.validate` warns it will.
-    """
-    for kb in config.all_kbs():
-        if kb.name == name and (readable_kbs is None or kb.name in readable_kbs):
-            return kb
-    return readable_kb_with_shortname(config, name, readable_kbs)
+    KB with that shortname, else None (`PyriteConfig.readable_kb_named`).
+    Neither step consults a KB outside the readable set, so an unreadable
+    KB never changes the answer, not even one whose full name is a readable
+    KB's shortname (#965 round 3)."""
+    return config.readable_kb_named(name, readable_kbs=readable_kbs)
 
 
 def _not_a_kb(config: PyriteConfig, name: str, readable_kbs: set[str] | None) -> KBNotFoundError:
