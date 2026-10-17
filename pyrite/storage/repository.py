@@ -40,6 +40,8 @@ def _is_regular_file(path: Path) -> bool:
         return stat.S_ISREG(path.stat().st_mode)
     except OSError:
         return False
+
+
 def new_entry_text(entry: Entry) -> str:
     """The text of a new entry file: ``---\nid: <id>\n---\n`` and the body, then
     one ``Set`` per key of the type's file frontmatter, in order, through
