@@ -1013,13 +1013,16 @@ def test_a_save_through_the_model_keeps_both_values_of_a_doubly_spelled_key(text
     save through the model loses nothing: `rank: 1` and `metadata: {rank: 2}`
     both come back."""
     from pyrite.models.core_types import entry_from_frontmatter
+    from pyrite.storage.repository import new_entry_text
     from pyrite.utils.frontmatter import load_frontmatter
 
     meta, body = load_frontmatter(text)
     entry = entry_from_frontmatter(meta, body)
     fm = entry.to_frontmatter()
     assert fm.get("rank") == 1 and fm.get("metadata", {}).get("rank") == 2, fm
-    saved, _ = load_frontmatter(entry.to_markdown())
+    # The model's own emitter is gone (#978): the one text a model still
+    # produces is a new file's, through `apply()`.
+    saved, _ = load_frontmatter(new_entry_text(entry))
     assert saved.get("rank") == 1 and saved.get("metadata", {}).get("rank") == 2, saved
 
 

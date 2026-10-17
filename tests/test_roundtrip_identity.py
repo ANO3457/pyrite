@@ -92,14 +92,32 @@ def _service_for(tmp_path: Path, kb_path: Path, kb_type: str = "generic"):
 
 def _echo_ops(text: str) -> list[object] | None:
     """The echo of ``text``: one ``Set`` per frontmatter key with the value as
-    loaded, and the body as read; None for a file with no frontmatter."""
+    loaded, and the body as read; None for a file with no frontmatter.
+
+    ``metadata`` is not a field (#1001, Andon #994): a key under the
+    ``metadata:`` block is echoed at its own spelling, ``("metadata", k)``,
+    never as one ``Set`` of the block. A field the file spells twice (``k:``
+    and ``metadata.k``) takes no write at all until one spelling goes, so the
+    echo leaves both of its spellings out: the property (nothing changes) is
+    still stated for every other key, and ``index health`` reports the pair
+    (``double_spellings``)."""
     split = split_frontmatter(text)
     if not isinstance(split, Frontmatter):
         return None
     values = load_yaml(split.text)
     if not isinstance(values, dict):
         return None
-    ops: list[object] = [Set(k, v) for k, v in values.items() if k not in NOT_ECHOED]
+    nested = values.get("metadata")
+    nested = nested if isinstance(nested, dict) else {}
+    spelled_twice = {k for k in nested if k in values}
+    ops: list[object] = [
+        Set(k, v)
+        for k, v in values.items()
+        if k not in NOT_ECHOED and k != "metadata" and k not in spelled_twice
+    ]
+    ops += [Set(("metadata", k), v) for k, v in nested.items() if k not in spelled_twice]
+    if "metadata" in values and not isinstance(values["metadata"], dict):
+        ops.append(Set("metadata", values["metadata"]))
     ops.append(ReplaceBody(split.body))
     return ops
 
