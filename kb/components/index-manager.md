@@ -38,14 +38,23 @@ writes rows anywhere else.
 
 ## What a link row names (ADR-0049 Q3)
 
-`_entry_to_dict` turns `[[x]]`, `[[kb:x]]`, `![[kb:x]]` and a `references`
-item into link rows. The row's `target_kb` is the **full KB name** the prefix
-resolves to (`services/kb_resolver.readable_kb_named`, unscoped: full name,
-then shortname), the source entry's KB when there is no prefix, or the prefix
-as written when it names no KB, so the link counts as broken, which it is
-(#952, #979). Backlinks, the graph, `check_health`'s `broken_links` and
-`qa check-links` therefore agree with `WikilinkService.resolve_entry` on
-whether a `[[short:id]]` link resolves. `check_health` also reports
-`links_to_unknown_kb`: rows whose KB is not a KB name (indexed before this
-rule, or after a shortname was renamed in config); a reindex of the source
-KB rewrites them. `tests/test_cross_kb_links.py` pins all of it.
+`_entry_to_dict` turns `[[x]]`, `[[kb:x]]`, `![[kb:x]]`, a `references` item and
+a frontmatter `links:` item (its `kb` is a KB field in link position) into
+link rows. The row's `target_kb` is the **full KB name** the prefix resolves to
+(`PyriteConfig.readable_kb_named(prefix, readable_kbs=None)`, unscoped: full
+name, then shortname; with duplicate shortnames the first KB in config order,
+as `config.validate` warns), the source entry's KB when there is no prefix, or
+the prefix as written when it names no KB, so the link counts as broken, which
+it is (#952, #979). The prefix as written is kept beside it in
+`target_prefix` (migration v28; NULL for no prefix, or a row from before), so
+a row can always be checked against what the file wrote (#980). Backlinks, the
+graph, `check_health`'s `broken_links` and `qa check-links` therefore agree
+with `WikilinkService.resolve_entry` on whether a `[[short:id]]` link
+resolves. `check_health` reports two kinds of row the index cannot stand
+behind, both warnings in `index health`: `links_to_unknown_kb` (the KB is not a
+KB name: indexed before the full name was stored) and `links_stale_prefix` (the
+written prefix no longer names that KB: a shortname renamed in config since
+the file was indexed, which no sync re-reads because the file's hash did not
+change). `pyrite index rebuild` rewrites both from the files.
+`tests/test_cross_kb_links.py` pins all of it, the renamed-shortname probe
+included.
