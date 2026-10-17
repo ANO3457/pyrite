@@ -446,6 +446,20 @@ def _control_reason(cell: Any) -> str | None:
                 "and 939910c (the one-level fold); the keys carrying `.` or `[i]` are the "
                 "evidence (#1001 review)"
             )
+        if "[" in path[0]:
+            # `apply()` refuses an index into a value that is not a list of
+            # that shape (a scalar, a mapping, an absent key, the absent
+            # `metadata:` block the `metadata.`-prefixed keys walk into), so
+            # most of these were refused on 939910c for the wrong reason; the
+            # label explains that pass. Where the fixture does hold the list
+            # (`status_change_log[0]`, `status_change_log[0].x`, `evidence[0]`)
+            # the cell wrote on 939910c and is red whatever the label says
+            # (verify-red reports a failing control as red).
+            return (
+                "an index into a value the fixture does not hold as a list of that shape "
+                "was refused by apply()'s shape check on 939910c, not by the managed-field "
+                "rule; the cells whose field is such a list are red regardless of this label"
+            )
         return None
     depth = 0
     while depth < len(path) and path[depth] == "metadata":
