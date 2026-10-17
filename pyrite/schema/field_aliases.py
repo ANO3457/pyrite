@@ -203,16 +203,13 @@ def path_segments(path: Any) -> tuple[Any, ...]:
     boundary, ``field_at`` and ``apply()`` share one reading of a path. A
     string no parser can read raises ``ValueError`` (the surfaces answer
     ``VALIDATION_FAILED``). Anything else is the empty path."""
+    from ..utils.field_path import parse_field_path
+
     if isinstance(path, tuple | list):
         return tuple(path)
     if not isinstance(path, str):
         return ()
-    from ..storage.file_operations import OperationRefusedError, parse_path
-
-    try:
-        return tuple(parse_path(path))
-    except OperationRefusedError as e:
-        raise ValueError(str(e)) from None
+    return tuple(parse_field_path(path))
 
 
 def field_at(cls: type, entry_type: str, path: Any) -> tuple[str, tuple[Any, ...]]:

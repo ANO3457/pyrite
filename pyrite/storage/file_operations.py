@@ -1010,13 +1010,13 @@ def _item_cols(doc: _Doc, seq: SequenceNode, i: int) -> tuple[int, int]:
 
 
 def parse_path(path: Any, op: Any = None) -> list[str | int]:
-    """THE parser of a path string: ``.`` between keys, ``[i]`` an index
-    (``links[0].relation`` -> ``["links", 0, "relation"]``). A tuple or list
-    is already parsed and is checked, not re-read: a string segment in it is
-    a literal key. The request boundary (``KBService._request_operations``,
-    ``_item_operations``), ``schema.field_aliases.path_segments`` and
-    ``apply()`` all read a path through here, once, so the path a refusal is
-    decided on is the path that is written (#1001 review)."""
+    """A path as ``apply()`` reads it: a string through the one parser,
+    ``utils.field_path.parse_field_path`` (``.`` between keys, ``[i]`` an
+    index); a tuple or list already parsed and only checked, a string
+    segment in it a literal key. The request boundary and
+    ``schema.field_aliases.path_segments`` read through that same parser,
+    so the path a refusal is decided on is the path that is written (#1001
+    review). Refusals are ``OperationRefusedError``."""
     return _segments(path, op)
 
 
@@ -1024,37 +1024,18 @@ def _segments(path: Any, op: Any = None) -> list[str | int]:
     """A path as segments: strings name keys, ints index lists. Refused when
     it cannot be read: an empty path or segment (``a..b``), a bracket that is
     not an index, a segment that is neither."""
-    if isinstance(path, tuple | list):
-        segs = list(path)
-        for seg in segs:
-            if isinstance(seg, bool) or not isinstance(seg, str | int):
-                raise OperationRefusedError(
-                    f"a path segment is a string or an int, not {seg!r}", op
-                )
-    elif isinstance(path, str):
-        segs = []
-        for part in path.split("."):
-            name, bracket, rest = part.partition("[")
-            if not name and not (bracket and segs):
-                raise OperationRefusedError(f"the path {path!r} has an empty segment", op)
-            if "]" in name:
-                raise OperationRefusedError(f"cannot read the path {path!r}", op)
-            if name:
-                segs.append(name)
-            rest = bracket + rest
-            while rest:
-                index, closed, rest = rest[1:].partition("]")
-                if not rest.startswith("[") and rest:
-                    raise OperationRefusedError(f"cannot read the path {path!r}", op)
-                try:
-                    number = int(index)
-                except ValueError as e:
-                    raise OperationRefusedError(f"cannot read the path {path!r}", op) from e
-                if not closed:
-                    raise OperationRefusedError(f"cannot read the path {path!r}", op)
-                segs.append(number)
-    else:
-        raise OperationRefusedError(f"a path is a string or a tuple, not {type(path).__name__}", op)
+    from ..utils.field_path import check_segments, parse_field_path
+
+    segs: list[str | int]
+    try:
+        if isinstance(path, tuple | list):
+            segs = check_segments(path)
+        elif isinstance(path, str):
+            segs = parse_field_path(path)
+        else:
+            raise ValueError(f"a path is a string or a tuple, not {type(path).__name__}")
+    except ValueError as e:
+        raise OperationRefusedError(str(e), op) from None
     if not segs and not isinstance(op, AddSubkey):
         raise OperationRefusedError(f"the path {path!r} is empty", op)
     if segs and isinstance(segs[0], int):
