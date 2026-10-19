@@ -490,3 +490,45 @@ def test_concurrent_creates_outside_git_give_one_file_and_the_rest_refusals(tmp_
         winner = outcomes.index("wrote")
         assert target.read_text(encoding="utf-8") == f"writer {winner}\n"
         assert sorted(p.name for p in target.parent.iterdir()) == ["raced.md"]
+
+
+@pytest.mark.control(
+    reason="in git the publish ran under the lock with expect=ABSENT before this round; pinned "
+    "beside the no-git race so the property is stated for every KB kind"
+)
+def test_concurrent_creates_in_git_give_one_file_and_the_rest_refusals(tmp_path: Path):
+    """Item 2, the other KB kind: the same eight-writer race inside a git
+    work tree, where the absence check and the publish run under the
+    momentary lock."""
+    import threading
+
+    from pyrite.storage.entry_writer import create_entry_text
+
+    kb = tmp_path / "kb"
+    (kb / "entries").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb, check=True, capture_output=True, timeout=30)
+    target = kb / "entries" / "raced.md"
+    for _round in range(5):
+        if target.exists():
+            target.unlink()
+        writers = 8
+        barrier = threading.Barrier(writers)
+        outcomes: list[str] = [""] * writers
+
+        def run(n: int, barrier=barrier, outcomes=outcomes) -> None:
+            barrier.wait()
+            try:
+                create_entry_text(target, f"writer {n}\n")
+                outcomes[n] = "wrote"
+            except FileExistsError:
+                outcomes[n] = "refused"
+
+        threads = [threading.Thread(target=run, args=(n,)) for n in range(writers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert outcomes.count("wrote") == 1, outcomes
+        winner = outcomes.index("wrote")
+        assert target.read_text(encoding="utf-8") == f"writer {winner}\n"
+        assert sorted(p.name for p in target.parent.iterdir()) == ["raced.md"]
