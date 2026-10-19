@@ -4,7 +4,7 @@ title: 'metadata is not a field: metadata.k is a second spelling of field k, one
 type: adr
 importance: 5
 adr_number: 51
-status: proposed
+status: accepted
 date: '2026-10-17'
 links:
 - target: adr-0042
@@ -14,10 +14,9 @@ links:
 
 # ADR-0051: metadata is not a field: metadata.k is a second spelling of field k, one level only, one spelling per file
 
-> **Proposed** (2026-10-17): a draft amendment to ADR-0042 decision 6, the
-> directed fix of Andon #994 (decision A, chosen by the maintainer on #994).
-> The maintainer accepts or rejects it. Lands with #973's fix on
-> `arch/2026-10`.
+> **Accepted** by the maintainer, 2026-10-19. It amends ADR-0042 decision 6;
+> it is the directed fix of Andon #994 (decision A, chosen by the maintainer on
+> #994), landed on `arch/2026-10` with #973 and #1001 (261e1d5a).
 
 ## Context
 
@@ -83,6 +82,18 @@ decided on `field_at(output path)`; the operation is then written at
 `spelling_in(file, field)`. The one-level strip, `_spelling_for` and
 `PATH_FORMS` are removed.
 
+**A path is parsed once** (#1001 round 3). Naming the field was half the
+model; the other half is what a path *is*. A request path is parsed into
+segments once, at each surface's boundary, by the one parser in
+`pyrite/utils/field_path.py`, and that tuple is both what `field_at`
+decides on and what `apply()` writes. Nothing between the surface and
+`apply()` joins a path back into a string or parses it again, and a key
+that still holds `.` or `[` inside one segment is parsed, never passed
+through. Round 2 showed why: a dotted key inside the `metadata` envelope
+(`{"metadata": {"status_change_log[0]": ...}}`) was one literal segment to
+the refusal and a list index to the writer, so the refusal decided on one
+path while `apply()` wrote another.
+
 **The reader agrees with itself.** The model's reading wins everywhere:
 in the index row (`_entry_to_dict` merges the bag first, the model's
 frontmatter over it) and in the model's own bag for an undeclared key
@@ -119,11 +130,15 @@ unchanged in both the model and the index row.
   `source_type` twice, and the row's bag-wins merge hid it. The repo's own
   KB holds such files (13 entries, 47 fields, nine of them disagreeing on
   `status`), reported by `index health` now.
-- `aliases` has no column of its own; the row held it only in its
+- `aliases` had no column of its own: the row held it only in its
   `metadata` JSON, and only for a file that nested it under `metadata:`, so
   a top-level `aliases:` (the field's own spelling) never resolved a
-  wikilink. The row now carries the model's `aliases` in that JSON, where
-  the resolver's alias pass reads it, for either spelling.
+  wikilink. It now has its own index column (decision 5 below, migration
+  29), which the wikilink alias pass reads.
+- A key a person wrote with a `.` or `[` in its name (`v1.2: x`) cannot be
+  addressed by path; `docs/json-contracts.md` says so beside the spelling
+  rule. Keys that only look alike (a leading space, a Cyrillic letter) are
+  distinct keys and are written as such.
 - Out of scope, on #990: the `sources` publish-before-index failure and
   `links[x]` INTERNAL.
 
@@ -136,6 +151,11 @@ unchanged in both the model and the index row.
    the field is refused. `qa fix` (rule `field_spelled_twice`) merges an
    equal pair into the top-level spelling, losing nothing; a pair that
    disagrees stays a hand fix, listed by `index health` and `qa validate`.
+   "Equal" means the same YAML value, kind included (`values_identical`):
+   `true`, `1` and `1.0` are three values, while `x`, `'x'` and `"x"` are
+   one. The merge removes only the nested key (and a `metadata:` block it
+   empties), and it is granted only to `qa fix`'s own call, never to an
+   update from a surface. A doubly spelled `type` is always a hand fix.
 3. **Precedence:** for an undeclared key, the top-level spelling wins
    over the nested one.
 4. **A save through the model loses nothing:** `rank: 1` +
@@ -146,7 +166,11 @@ unchanged in both the model and the index row.
    appears under a read's `metadata`, and the wikilink alias pass reads
    the column (and the bag, for a file that nests it).
 6. **Create** refuses a managed field sent in the `metadata` envelope,
-   as update does, on REST POST, MCP `kb_create` and the service.
+   as update does, on REST POST, MCP `kb_create` and the service, and
+   applies decision 1's rule: one field named at two spellings with
+   different values is refused and no file is written; equal values are
+   written once. (A managed field sent at the top level of an MCP create is
+   #1010.)
 7. **The repo KB's doubly spelled entries** are fixed by hand in a
    separate `kb/` PR to `dev`.
 
@@ -154,6 +178,4 @@ unchanged in both the model and the index row.
 
 - **ADR-0042, decision 6**, "A key is written where the operation names
   it": "A path `metadata.x` is a nested key like any other" is replaced by
-  the decision above. The amendment is written here as a proposed
-  amendment dated 2026-10-17; ADR-0042's text is edited once the maintainer
-  accepts.
+  the decision above. ADR-0042's text was edited on acceptance (2026-10-19).

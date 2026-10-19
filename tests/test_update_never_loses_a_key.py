@@ -223,10 +223,11 @@ def test_an_explicit_update_of_a_kept_key_still_lands(tmp_path, value):
 
 
 def test_a_link_added_to_a_kept_shorthand_list_leaves_the_shorthand_as_written(tmp_path):
-    """`links: [alpha]` is a shorthand the model reads lossily (`- alpha` is
-    a target with the default relation). `add_link` used to re-emit the whole
-    list in the model's shape; since #955 (B6 P4) it appends one item and the
-    shorthand keeps its bytes, and the model still reads both links."""
+    """A bare item, `links:` then `- alpha`, is a shorthand the model reads
+    lossily (`alpha` is a target with the default relation). `add_link` used
+    to re-emit the whole list in the model's shape (`- target: alpha`); since
+    #955 (B6 P4) it appends one item and the shorthand keeps its bytes, and
+    the model still reads both links."""
     text = "---\nid: d\ntitle: D\ntype: note\nlinks:\n- alpha\n---\n\nBody.\n"
     other = "---\nid: beta\ntitle: Beta\ntype: note\n---\n\nBody.\n"
     config, kb_path = _env(tmp_path, {"notes/d.md": text, "notes/beta.md": other})

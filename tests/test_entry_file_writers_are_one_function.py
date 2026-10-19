@@ -40,7 +40,14 @@ THE_WRITE_FUNCTION: dict[tuple[str, str], str] = {
         "atomic_write_text",
     ): "the crash-safe replace, compare and lock",
     ("pyrite/storage/entry_writer.py", "publish_entry_text"): "the one publish of an update",
-    ("pyrite/storage/entry_writer.py", "create_entry_text"): "the one publish of a templated move",
+    (
+        "pyrite/storage/entry_writer.py",
+        "create_entry_text",
+    ): "the one publish of a create or a templated move",
+    (
+        "pyrite/storage/entry_writer.py",
+        "publish_exclusive",
+    ): "the exclusive publish outside git (os.link, else O_EXCL, then replace)",
 }
 
 #: Callers of ``KBRepository.save``, whose bytes go through the write function

@@ -120,15 +120,21 @@ def new_entry_text(entry: Entry) -> str:
     from .file_operations import FrontmatterSpan, Set, apply
 
     meta = entry._frontmatter_for_file()
-    entry_id = meta.get("id", entry.id)
+    raw_id = meta.get("id", entry.id)
+    entry_id = raw_id if isinstance(raw_id, str) else str(raw_id)
     body = (entry.body or "").rstrip("\n")
     skeleton = f"---\nid: {_id_text(entry_id)}\n---\n" + (f"\n{body}\n" if body else "")
     split = split_frontmatter(skeleton)
     assert isinstance(split, Frontmatter), skeleton
     span = FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
     ops = [Set(key, _plain_for_file(value)) for key, value in meta.items() if key != "id"]
-    if _plain_for_file(entry_id) != entry_id:
-        ops.insert(0, Set("id", _plain_for_file(entry_id)))
+    if _id_text(entry_id) != entry_id:
+        # The skeleton holds the placeholder: the id is written by apply's
+        # emitter, which quotes a scalar YAML would misread (`yes`, `123`,
+        # `2024-01-01`), so the file reads back the id asked for (#974 cold
+        # read: the corrective Set was gated on a condition no string met,
+        # and three such ids all became `id: placeholder`).
+        ops.insert(0, Set("id", entry_id))
     text, _report = apply(skeleton, ops, span)
     return text
 
@@ -150,14 +156,14 @@ def _renamed_text(text: str, split: Frontmatter, new_id: str) -> str:
     return new_text
 
 
-def _id_text(entry_id: object) -> str:
-    """``id`` on the skeleton as a plain scalar; a value a YAML 1.1 reader
-    would misread, or that is not a plain string, is set through apply."""
+def _id_text(entry_id: str) -> str:
+    """``id`` on the skeleton as a plain scalar, when the string written bare
+    reads back as itself under YAML 1.2 and 1.1; otherwise the placeholder
+    ``new_entry_text`` replaces through apply."""
     from .file_operations import _plain_ok  # the one spelling rule for scalars
 
-    text = str(entry_id)
-    if isinstance(entry_id, str) and _plain_ok(text, False, False) and text == text.strip():
-        return text
+    if _plain_ok(entry_id, False, False) and entry_id == entry_id.strip():
+        return entry_id
     return "placeholder"
 
 

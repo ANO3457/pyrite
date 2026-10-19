@@ -429,9 +429,13 @@ This amends ADR-0038 (below). The rest follows:
   Untouched bare `yes`/`no` stay as written (narrows #568 to bytes Pyrite
   emits).
 - **A key is written where the operation names it.** Update never moves a key
-  into `metadata:`. A path `metadata.x` is a nested key like any other. Where
-  *create* places an undeclared key stays as today until #178 and #447 are
-  decided.
+  into `metadata:`. **`metadata` is not a field** (amended by
+  [[adr-0051]], 2026-10-19): `metadata.k` is a second spelling of field `k`,
+  one level only, the same as an alias; a field has one spelling per file, a
+  file that spells a field twice is reported and an update of that field is
+  refused, and a path whose field would be `metadata` is refused at any depth.
+  Where *create* places an undeclared key stays as today until #178 and #447
+  are decided.
 - **An alias resolves to the key the file uses.** A set of `actors` on a file
   that carries `participants:` writes `participants:`. A file carrying both is
   refused and reported. Spike 2 confirmed the rule on real files (95 appends
