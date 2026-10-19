@@ -62,7 +62,8 @@ from ..storage.file_operations import (
 )
 from ..storage.index import IndexManager, content_hash
 from ..storage.repository import KBRepository
-from ..utils.file_lock import LOCK_TIMEOUT, LockTimeout
+from ..utils.atomic_write import HardLinked
+from ..utils.file_lock import LOCK_TIMEOUT, LockDirError, LockTimeout
 from ..utils.frontmatter import Frontmatter, NoFrontmatter, describe, split_frontmatter
 from ..utils.metadata import parse_metadata
 from ..utils.yaml import load_yaml
@@ -313,6 +314,28 @@ def _safe_message(exc: Exception) -> str:
     server-side when it masks it.
     """
     return public_text(exc, log=logger)
+
+
+def _storage_error(entry_id: str, e: OSError) -> StorageError:
+    """A write's filesystem fault as the ``StorageError`` the surfaces show.
+    ``str()`` keeps the detail for the log (``public_text`` logs it, ADR-0037
+    §3). The two faults a caller can act on carry their reason as the public
+    message, with no path in it (#975 review): a file with more than one
+    hard link, and a lock directory that cannot be used."""
+    err = StorageError(f"Cannot write '{entry_id}': {e}")
+    if isinstance(e, HardLinked):
+        err.public_message = (
+            f"Cannot write '{entry_id}': its file has {e.links} hard links, and another "
+            "name for the same file would take a different lock. Break the link (copy "
+            "the file over itself), then retry."
+        )
+    elif isinstance(e, LockDirError):
+        err.public_message = (
+            f"Cannot write '{entry_id}': the lock directory of the repository holding it "
+            "cannot be used (a `.git` file that points at no repository, or a directory "
+            "that cannot be created there); the server log names it."
+        )
+    return err
 
 
 def _refusal_result(exc: Exception) -> dict[str, Any]:
@@ -1706,8 +1729,9 @@ class KBService:
                 # The lock directory (`LockDirError`), a hard link
                 # (`HardLinked`), the filesystem: a storage fault whose detail
                 # (a real path) belongs in the log, not in a client-facing
-                # body (ADR-0037 §3; `public_text` logs it).
-                raise StorageError(f"Cannot write '{entry_id}': {e}") from e
+                # body (ADR-0037 §3; `public_text` logs it). The two a caller
+                # can act on name their reason, without the path.
+                raise _storage_error(entry_id, e) from e
             break
         else:
             raise ConflictError(
@@ -1917,6 +1941,20 @@ class KBService:
                 "per file; remove one of them by hand, or `pyrite qa fix` merges an "
                 "equal pair, then update."
             ) from None
+
+        if field in _ITEM_LISTS and head[0] == "metadata":
+            # The model and the index read `links`/`sources` at the top level
+            # only, so an item written at `metadata.links` is never indexed,
+            # never seen by the duplicate check, and every retry adds a copy
+            # (#975 cold read). Until the reader reads that spelling (P5),
+            # the writer refuses it with the reason, rather than write where
+            # nothing reads.
+            raise ValidationError(
+                f"Cannot write {field} on {entry_id!r}: the file spells it as "
+                f"`metadata.{head[-1]}`, which Pyrite reads as a plain value, not as the "
+                f"entry's {field} (nothing there is indexed or deduplicated). Move the "
+                "list to the top level, then retry."
+            )
 
         # The output path is the tuple `field_at` decided on, with the file's
         # spelling in place of the field: never re-joined into a string that
@@ -2174,7 +2212,15 @@ class KBService:
             who then greps the file for what they typed). The duplicate key
             is ``(target, kb, relation)``, with targets compared as text: a
             second, different relation between the same two entries is a new
-            link, not a duplicate (#396).
+            link, not a duplicate (#396). The check reads the file once, before
+            the write; a link another writer appends between that read and
+            the publish is not re-checked, and both items land (Q2: the
+            publish re-applies on ``FileChanged`` and the last writer wins; a
+            duplicate pair is what the check tolerates on a replay). The
+            file must spell ``links`` at the top level: an item appended at
+            ``metadata.links`` would be read by nothing (not indexed, not
+            seen by this check), so that spelling is refused with the reason
+            (``_resolve_operation``, #975 review).
         """
         # A malformed request is refused before anything is loaded or written
         # (#846); every link writer passes through this one check.

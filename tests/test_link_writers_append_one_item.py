@@ -310,3 +310,170 @@ def test_a_link_refused_by_the_file_writes_nothing_and_names_the_reason(tmp_path
         _service(config)
 
     assert path.read_bytes() == before
+
+
+# --------------------------------------------------------------------------
+# #975 cold read (2026-10-19): the writer, the duplicate check and the reader
+# agree on where the file spells `links`; a refused write names its reason
+# --------------------------------------------------------------------------
+
+#: `links` spelled under `metadata:` and nowhere else: the model reads the
+#: entry's links at the top level only, so this list is a plain value to it.
+NESTED_NOTE = (
+    "---\n"
+    f"id: {ID}\n"
+    "title: Ops\n"
+    "type: note\n"
+    "metadata:\n"
+    "  links:\n"
+    "  - target: foo\n"
+    "    relation: related_to\n"
+    "extra: 1\n"
+    "---\n"
+    "\n"
+    "Text.\n"
+)
+
+
+def _spellings_of_links() -> list[tuple[str, ...]]:
+    from pyrite.models.core_types import get_entry_class
+    from pyrite.schema.field_aliases import spellings_of
+
+    return spellings_of(get_entry_class("note"), "note", "links")
+
+
+def _create_with_link(config: PyriteConfig, new_id: str) -> None:
+    args = [
+        "create",
+        "-k",
+        KB,
+        "--type",
+        "note",
+        "--title",
+        "Made",
+        "-f",
+        f"id={new_id}",
+        "--link",
+        TARGET,
+        "--format",
+        "json",
+    ]
+    with (
+        patch("pyrite.cli.load_config", return_value=config),
+        patch("pyrite.cli.context.load_config", return_value=config),
+    ):
+        result = CliRunner().invoke(cli_app, args)
+    if result.exit_code != 0:
+        raise ValidationError(result.output)
+
+
+def _outlinks(config: PyriteConfig, source: str) -> set[tuple[str, str]]:
+    db = PyriteDB(config.settings.index_path)
+    try:
+        return {(l["id"], l["relation"]) for l in db.get_outlinks(source, KB, readable_kbs=None)}
+    finally:
+        db.close()
+
+
+def _link_once(svc: KBService, entry_point: str, source: str) -> Any:
+    if entry_point == "add_links":
+        return svc.add_links(KB, [{"source": source, "target": TARGET}])
+    return svc.add_link(source, KB, TARGET, "related_to")
+
+
+@pytest.mark.parametrize("entry_point", ["add_link", "add_links", "create --link"])
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(
+            s,
+            id=".".join(s),
+            marks=pytest.mark.control(
+                reason="the top-level spelling is where the writer always appended and the "
+                "reader always read; pinned so the grid states the property for every "
+                "spelling `spellings_of` gives, and the nested one is the evidence"
+            ),
+        )
+        if s[0] != "metadata"
+        else pytest.param(s, id=".".join(s))
+        for s in _spellings_of_links()
+    ],
+)
+def test_the_writer_the_dedupe_and_the_reader_agree_on_where_links_is_spelled(
+    tmp_path: Path, spelling: tuple[str, ...], entry_point: str
+):
+    """The property (ADR-0051: `metadata.links` is a spelling of `links`): a
+    link is appended where the reader indexes it and the duplicate check sees
+    it. At the top level, the item lands on the list, is an outgoing link in
+    the index, and a repeat is a no-op. A file that spells `links` only under
+    `metadata:` is refused with the reason and left as it was: the model and
+    the index read the top level alone, so an item written there was indexed
+    by nothing and every retry appended another copy (the cold read's
+    reproduction)."""
+    nested = spelling[0] == "metadata"
+    if entry_point == "create --link":
+        if nested:
+            pytest.skip("a create writes a new file, which spells links at the top level (n/a)")
+        config, _path = _build(tmp_path, crlf=False)
+        source = "made-1"
+        _create_with_link(config, source)
+        path = config.knowledge_bases[0].path / "notes" / f"{source}.md"
+    else:
+        config, path = _build(tmp_path, NESTED_NOTE if nested else NOTE, crlf=False)
+        source = ID
+        before = path.read_bytes()
+        if nested:
+            if entry_point == "add_link":
+                with pytest.raises(ValidationError, match="metadata"):
+                    _with_service(config, lambda svc: _link_once(svc, entry_point, source))
+            else:
+                results = _with_service(config, lambda svc: _link_once(svc, entry_point, source))
+                assert results[0]["status"] == "failed", results
+                assert "metadata" in results[0]["error"], results
+            assert path.read_bytes() == before, "refused, yet the file changed"
+            assert _outlinks(config, source) == set()
+            return
+        _with_service(config, lambda svc: _link_once(svc, entry_point, source))
+
+    split = split_frontmatter(path.read_text(encoding="utf-8"))
+    assert isinstance(split, Frontmatter), split
+    fm = load_yaml(split.text)
+    assert any(item.get("target") == TARGET for item in fm["links"]), fm
+    assert "links" not in (fm.get("metadata") or {}), fm
+    assert (TARGET, "related_to") in _outlinks(config, source)
+
+    before = path.read_bytes()
+    repeat = _with_service(config, lambda svc: _link_once(svc, entry_point, source))
+    if entry_point == "add_links":
+        assert repeat[0]["status"] == "skipped", repeat
+    else:
+        assert repeat["created"] is False, repeat
+    assert path.read_bytes() == before, "a duplicate wrote"
+
+
+def test_a_write_the_filesystem_refuses_names_its_reason_without_the_path(tmp_path: Path):
+    """The review's Unsure item: a hard-linked file and an unusable lock
+    directory are the two faults a caller can act on, so their public
+    message names the reason; the path stays in the log (ADR-0037 §3)."""
+    import os
+    import shutil
+
+    from pyrite.exceptions import StorageError, public_text
+
+    config, path = _build(tmp_path)
+    os.link(path, tmp_path / "twin.md")
+    with pytest.raises(StorageError) as info:
+        _service(config)
+    shown = public_text(info.value)
+    assert "hard link" in shown and str(tmp_path) not in shown, shown
+    assert str(path) in str(info.value), "the detail left the log's text too"
+
+    config, path = _build(tmp_path / "lockdir")
+    shutil.rmtree(config.knowledge_bases[0].path / ".git")
+    (config.knowledge_bases[0].path / ".git").write_text(
+        "gitdir: /nowhere/secret-dir\n", encoding="utf-8"
+    )
+    with pytest.raises(StorageError) as info:
+        _service(config)
+    shown = public_text(info.value)
+    assert "lock directory" in shown and "secret-dir" not in shown, shown

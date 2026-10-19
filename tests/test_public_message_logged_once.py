@@ -466,7 +466,10 @@ def test_a_failed_bulk_link_save_logs_its_cause_once(tmp_path, caplog):
     finally:
         db.close()
     assert [r["status"] for r in results] == ["failed"] * 3
-    assert all(r["error"] == StorageError.public_message for r in results)
+    # The reason (an unusable lock directory) is named; the path is not
+    # (#975 review: `HardLinked`/`LockDirError` carry a public message).
+    assert all("lock directory" in r["error"] and DETAIL not in r["error"] for r in results)
+    assert all(r["error"] != StorageError.public_message for r in results)
     assert len(_causes(caplog)) == 1, [(r.name, r.levelname) for r in _causes(caplog)]
 
 
