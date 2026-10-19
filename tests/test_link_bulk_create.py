@@ -129,13 +129,16 @@ class TestBulkCreate:
         assert entry is not None
         assert len(entry.links) == 0
 
+    @pytest.mark.control(
+        reason="a property that held before #978; its old form pre-created the link through the whole-file save, which decision 4 made a create, so it goes through `pyrite link` now"
+    )
     def test_duplicate_skipped(self, bulk_env):
         """Existing links are skipped."""
-        # Pre-create a link
-        repo = KBRepository(bulk_env["config"].knowledge_bases[0])
-        entry = repo.load("entry-a")
-        entry.add_link(target="entry-b", relation="related_to", kb="test-notes")
-        repo.save(entry)
+        # Pre-create a link through the write that exists (a save over an
+        # existing entry is refused since #978, decision 4).
+        with _patch_config(bulk_env):
+            first = runner.invoke(app, ["link", "entry-a", "entry-b", "--kb", "test-notes"])
+            assert first.exit_code == 0, first.output
 
         links = [
             {"source": "entry-a", "target": "entry-b", "relation": "related_to"},
@@ -153,14 +156,16 @@ class TestBulkCreate:
             assert "1 created" in result.output
             assert "1 skipped" in result.output
 
+    @pytest.mark.control(
+        reason="a property that held before #978; its old form pre-created the link through the whole-file save, which decision 4 made a create, so it goes through `pyrite link` now"
+    )
     def test_distinct_relation_is_created_not_skipped(self, bulk_env):
         """A different relation between the same (source, target, kb) is a
         new link, not a duplicate (#396): the duplicate key is
         (target, kb, relation)."""
-        repo = KBRepository(bulk_env["config"].knowledge_bases[0])
-        entry = repo.load("entry-a")
-        entry.add_link(target="entry-b", relation="related_to", kb="test-notes")
-        repo.save(entry)
+        with _patch_config(bulk_env):
+            first = runner.invoke(app, ["link", "entry-a", "entry-b", "--kb", "test-notes"])
+            assert first.exit_code == 0, first.output
 
         links = [
             {"source": "entry-a", "target": "entry-b", "relation": "implements"},
