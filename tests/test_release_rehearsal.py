@@ -480,6 +480,57 @@ class TestEveryOneIsNamedInOneRun:
         assert err.count("FAIL at preconditions") == 1
 
 
+class TestEachFailureIsNamedOnce:
+    def test_the_missing_section_is_named_once_not_twice(self, checkout, capsys):
+        """The version mismatch and the missing section are two problems.
+
+        The missing section used to be found by two checks -- the changelog
+        check and the release notes, which are read out of that section -- so
+        one problem was named twice and counted as three (#889). The notes
+        check cannot run without the section, so it says nothing.
+        """
+        _write(checkout, "pyproject.toml", '[project]\nname = "widget"\nversion = "0.0.9"\n')
+        (checkout / "CHANGELOG.md").write_text("# Changelog\n")
+        _git(checkout, "commit", "-qam", "prepare: an older version and no section")
+        _git(checkout, "push", "-q", "origin", "dev:refs/heads/dev")
+        gh_answers(green(head(checkout)))
+
+        code, planned = rehearse(checkout)
+        captured = capsys.readouterr()
+        assert code == 1 and planned == []
+        assert captured.err.count("FAIL at ") == 2, captured.err
+        assert "pyproject.toml says version = '0.0.9'" in captured.err
+        assert captured.err.count("has no `## [0.1.0]` section") == 1, captured.err
+        assert "stop at the first of the 2 check(s)" in captured.err, captured.err
+        # Flagged where found, too -- and the second finding is not flagged twice.
+        assert captured.out.count("!! WOULD STOP --execute:") == 2, captured.out
+        assert "release notes for v0.1.0" not in captured.out
+
+    def test_a_section_dated_tomorrow_still_prints_the_notes(self, checkout, capsys):
+        """Only a missing section leaves the notes with nothing to read.
+
+        Gating the notes on the whole changelog check silenced them whenever
+        the section existed but was undated or dated for another day, and that
+        is the dry run made the day before the cut. The notes are the thing the
+        rehearsal exists to have read, so they still print here -- and the wrong
+        date is still named once, by the changelog check.
+        """
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        (checkout / "CHANGELOG.md").write_text(changelog(tomorrow))
+        _git(checkout, "commit", "-qam", f"release: {VERSION}")
+        _git(checkout, "push", "-q", "origin", "dev:refs/heads/dev")
+        gh_answers(green(_git(checkout, "rev-parse", "HEAD").strip()))
+
+        code, planned = rehearse(checkout)
+        captured = capsys.readouterr()
+        assert code == 1 and planned == []
+        assert f"is dated {tomorrow}, today is {TODAY}" in captured.err
+        assert captured.err.count("FAIL at ") == 1, captured.err
+        assert captured.out.count("!! WOULD STOP --execute:") == 1, captured.out
+        assert "release notes for v0.1.0" in captured.out
+        assert "- The first release." in captured.out
+
+
 class TestExecute:
     """`--execute` here pushes to the fixture's own bare repository in
     tmp_path and "creates the release" with the fake `gh`. The asserts at the

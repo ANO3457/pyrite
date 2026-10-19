@@ -436,7 +436,7 @@ def validate_status_change(
 # KB Preset
 # =========================================================================
 
-TASK_KB_PRESET = {
+TASK_KB_PRESET: dict[str, Any] = {
     "name": "task-board",
     "description": "Agent-oriented task tracking with workflow state machine",
     "types": {

@@ -24,6 +24,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from .. import __version__
 from ..config import PyriteConfig, Settings, load_config
 from ..exceptions import KBNotFoundError
 from ..services import access_policy
@@ -1065,7 +1066,7 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
     application = FastAPI(
         title="pyrite API",
         description="REST API for pyrite knowledge management",
-        version="0.12.0",
+        version=__version__,
         docs_url="/docs",
         redoc_url="/redoc",
     )
