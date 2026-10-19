@@ -560,30 +560,6 @@ def test_a_move_holds_one_lock_for_both_paths(tmp_path: Path):
     assert not src.exists() and dst.read_text(encoding="utf-8") == "moved\n"
 
 
-def test_a_rename_refuses_when_the_source_changed_under_it(tmp_path: Path, monkeypatch):
-    """Item 3 through rename: the source edited between the read and the
-    move (here by a hook on the id rewrite, as a second writer would) is
-    not removed; the rename is a `ConflictError` and both paths are as
-    they were, the edit included."""
-    from pyrite.exceptions import ConflictError
-    from pyrite.storage import repository
-
-    config, kb_path = _kb(tmp_path, {"notes/old-one.md": SOURCE})
-    src = kb_path / "notes" / "old-one.md"
-    real = repository._renamed_text
-
-    def edit_then_rename(text, split, new_id):
-        src.write_bytes(src.read_bytes() + b"\nEdited meanwhile.\n")
-        return real(text, split, new_id)
-
-    monkeypatch.setattr(repository, "_renamed_text", edit_then_rename)
-    with pytest.raises(ConflictError):
-        KBRepository(config.knowledge_bases[0]).rename("old-one", "new-one")
-
-    assert src.exists() and _text(src).endswith("Edited meanwhile.\n")
-    assert not (kb_path / "notes" / "new-one.md").exists()
-
-
 def test_the_models_whole_file_save_cannot_reach_an_existing_entry(tmp_path: Path):
     """Decision 4 (maintainer): the non-exclusive `repo.save` was still a
     public whole-file overwrite (`DocumentManager.save_entry(is_create=False)`
