@@ -222,6 +222,10 @@ def test_an_explicit_update_of_a_kept_key_still_lands(tmp_path, value):
     )
 
 
+@pytest.mark.control(
+    reason="only the docstring changed in #975 fix round 1 (it said `links: [alpha]` for the "
+    "block form it builds); the behaviour it pins held before"
+)
 def test_a_link_added_to_a_kept_shorthand_list_leaves_the_shorthand_as_written(tmp_path):
     """A bare item, `links:` then `- alpha`, is a shorthand the model reads
     lossily (`alpha` is a target with the default relation). `add_link` used
