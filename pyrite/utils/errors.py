@@ -574,7 +574,12 @@ def _named(exc: BaseException) -> str:
     """An exception's class, and the exit code it asked for if it had one.
     Never raises: it runs where the root is already answering NO_OUTCOME."""
     try:
-        code = getattr(exc, "exit_code", getattr(exc, "code", None))
+        if isinstance(exc, SystemExit):
+            code = exc.code
+        elif isinstance(exc, typer.Exit):
+            code = getattr(exc, "exit_code", None)
+        else:
+            code = None
         return type(exc).__name__ + (f" (exit code {code!r})" if code is not None else "")
     except BaseException:
         return type(exc).__name__
