@@ -812,7 +812,27 @@ UPDATED_AT_SPELLINGS_990: dict[str, tuple[str, str, bool]] = {
 }
 
 
-@pytest.mark.parametrize("spelling", sorted(UPDATED_AT_SPELLINGS_990))
+#: The three cases of #990's own round, which held on 24f9d57; the cold read
+#: of #991 added the four below them and the loader assertion.
+_SPELLINGS_990_ALREADY_KEPT = frozenset(
+    {"bare-T-hours-only-zone", "quoted-T-compact-zone", "bare-T-fraction-Z-crlf"}
+)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(
+            name,
+            marks=pytest.mark.control(
+                reason="#990's own case, kept on 24f9d57; pinned beside the zone forms and the spacing the cold read of #991 found dropped"
+            ),
+        )
+        if name in _SPELLINGS_990_ALREADY_KEPT
+        else pytest.param(name)
+        for name in sorted(UPDATED_AT_SPELLINGS_990)
+    ],
+)
 def test_a_refreshed_updated_at_keeps_an_unusual_zone_and_a_crlf_fraction(
     tmp_path: Path, spelling: str
 ):
@@ -973,8 +993,43 @@ TIMESTAMP_CANDIDATES = [
     "yesterday",
 ]
 
+#: The candidates on which the regex of #990 and the loader already agreed
+#: (24f9d57); the rest are the evidence: accepted and written as strings, or
+#: refused or quoted though the loader reads them as timestamps.
+_CANDIDATES_AGREED_ON_24F9D57 = frozenset(
+    {
+        "2026-10-02T12:00:00+05:30",
+        "2026-10-02T12:00:00+05",
+        "2026-10-02 12:00:00 +05:00",
+        "2026-10-02 12:00:00 Z",
+        "2026-10-02T12:00:00 -05:30",
+        "2026-10-02T12:00Z",
+        "2026-10-02 12:00",
+        "2026-10-02",
+        "2026-10-02t12:00:00z",
+        "2026-10-02t12:00:00Z",
+        "2026-10-02T12:00:00.5Z",
+        "2026-W40-1",
+        "20261002",
+        "yesterday",
+    }
+)
 
-@pytest.mark.parametrize("sent", TIMESTAMP_CANDIDATES)
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        pytest.param(
+            sent,
+            marks=pytest.mark.control(
+                reason="the regex of #990 and the loader agreed on this form (24f9d57); pinned so the grid states the property for every form"
+            ),
+        )
+        if sent in _CANDIDATES_AGREED_ON_24F9D57
+        else pytest.param(sent)
+        for sent in TIMESTAMP_CANDIDATES
+    ],
+)
 def test_a_sent_timestamp_is_accepted_iff_yaml_reads_it_as_one(tmp_path: Path, sent: str):
     """The property: the check and the loader agree. A value ruamel reads
     back as a date or timestamp is written as sent; one it reads as a string
@@ -1073,6 +1128,9 @@ def _templated_kb_with_a_taken_target(tmp_path: Path) -> tuple[PyriteConfig, Pat
     return config, path, moved_to
 
 
+@pytest.mark.control(
+    reason="#990's own test, kept on 24f9d57; its setup is a helper the CLI surface test of #991 shares"
+)
 def test_a_templated_move_whose_target_exists_keeps_the_file_and_says_so(tmp_path: Path):
     """The update is published at the old path before the move; when the
     target already holds a file the move is refused as `not_moved` with a
@@ -1095,7 +1153,18 @@ def test_a_templated_move_whose_target_exists_keeps_the_file_and_says_so(tmp_pat
     assert row is not None and Path(row["file_path"]) == path
 
 
-@pytest.mark.parametrize("fmt", ["rich", "json"])
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        "rich",
+        pytest.param(
+            "json",
+            marks=pytest.mark.control(
+                reason="the machine formats carried `not_moved` on 24f9d57; pinned beside the default output, which did not"
+            ),
+        ),
+    ],
+)
 def test_the_cli_says_when_a_templated_move_did_not_happen(tmp_path: Path, fmt: str):
     """The surface (the cold read of #991): `pyrite update` says the move did
     not happen and why, in the default output as in the machine one; the
