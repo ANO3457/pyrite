@@ -163,9 +163,16 @@ class SchemaService:
 
         Returns ``checked`` (files read and judged), ``migrated`` (files
         behind, written unless ``dry_run``) and ``errors`` (``path`` and
-        ``error`` per file that could not be read, judged or written; such
-        a file is neither checked nor migrated).
+        ``error`` per file that could not be read, judged, migrated or
+        written; such a file is neither checked nor migrated, and keeps its
+        bytes). The version is stamped only on a result that was written:
+        a migration that raises is an error, never a stamp, so the file is
+        tried again next time (#978 review, item 2). The written files are
+        not re-indexed here; the caller says to run ``pyrite index sync``.
         """
+        import copy
+
+        from pyrite.migrations import get_migration_registry, load_plugin_migrations
         from pyrite.storage.entry_writer import publish_entry_text
         from pyrite.storage.file_operations import FrontmatterSpan, apply
         from pyrite.storage.repository import KBRepository
@@ -177,6 +184,8 @@ class SchemaService:
         checked = 0
         migrated = 0
         errors: list[dict[str, str]] = []
+        load_plugin_migrations()
+        registry = get_migration_registry()
 
         for file_path in repo.list_files():
             try:
@@ -188,20 +197,29 @@ class SchemaService:
                 values = load_yaml(split.text)
                 if not isinstance(values, dict):
                     raise ValidationError("the frontmatter is not a mapping")
-                if entry_type and values.get("type", "") != entry_type:
+                type_name = values.get("type", "")
+                if entry_type and type_name != entry_type:
                     continue
 
-                type_schema = kb.kb_schema.get_type_schema(values.get("type", ""))
+                type_schema = kb.kb_schema.get_type_schema(type_name)
                 target = type_schema.version if type_schema else 0
-                needs_save = target > 0 and int(values.get("_schema_version", 0)) != target
+                entry_sv = int(values.get("_schema_version", 0))
+                needs_save = target > 0 and entry_sv != target
 
                 if needs_save and not dry_run:
-                    # `_maybe_migrate` is the load-time chain (the registry's
-                    # functions on a copy of the values); the type's version
-                    # is stamped even when no function is registered for it.
-                    after = repo._maybe_migrate(dict(values))
+                    # The registry's chain runs on a deep copy, so a
+                    # migration that changes its input in place cannot
+                    # change `before` too (the shallow copy lost such a
+                    # change: only the version was stamped); one that
+                    # raises reaches the `except` below and nothing is
+                    # written. A type with no registered function gets the
+                    # version alone, as the load-time chain gives it.
+                    before = copy.deepcopy(values)
+                    after = copy.deepcopy(values)
+                    if registry.has_migrations(type_name):
+                        after = registry.apply(type_name, after, entry_sv, target)
                     after["_schema_version"] = target
-                    ops = migration_operations(values, after)
+                    ops = migration_operations(before, after)
                     span = FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
                     new_text, _report = apply(text, ops, span)
                     publish_entry_text(file_path, new_text, expect=raw)

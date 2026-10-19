@@ -1111,8 +1111,11 @@ def test_an_explicit_created_at_assignment_still_reaches_the_file(tmp_path):
 
 
 def test_repository_save_preserves_body_line_matching_frontmatter_key(tmp_path):
-    """A body line can look like frontmatter without being duplicate metadata."""
-    from pyrite.storage.repository import KBRepository
+    """A body line can look like frontmatter without being duplicate metadata.
+    A save over an existing entry is refused since #978 (decision 4), so the
+    model's text is written as the new file it is and read back."""
+    from pyrite.storage.entry_writer import create_entry_text
+    from pyrite.storage.repository import KBRepository, new_entry_text
 
     kb_path = tmp_path / "body-line"
     events_path = kb_path / "events"
@@ -1126,7 +1129,8 @@ def test_repository_save_preserves_body_line_matching_frontmatter_key(tmp_path):
     repo = KBRepository(KBConfig(name="body-line", path=kb_path))
 
     entry = repo.load_entry_from_file(path)
-    saved_path = repo.save(entry, keep_filename=True)
+    saved_path = events_path / "body-first-line-copy.md"
+    create_entry_text(saved_path, new_entry_text(entry))
     saved_entry = repo.load_entry_from_file(saved_path)
 
     assert saved_entry.body == body

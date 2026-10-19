@@ -379,6 +379,9 @@ def schema_migrate(
             console.print(f"  [red]Errors: {errors}[/red] (files left as they were)")
         elif migrated == 0:
             console.print("  [green]All entries are up to date.[/green]")
+        if migrated and not dry_run:
+            # The files were written, not re-indexed (#978 review).
+            console.print("[dim]Run `pyrite index sync` to update the index.[/dim]")
         exit_unless_whole(errors, checked)
 
 

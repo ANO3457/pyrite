@@ -718,7 +718,7 @@ def sw_migrate_standards(
     """Migrate type:standard entries to programmatic_validation or development_convention."""
     from pathlib import Path
 
-    from pyrite.storage.entry_writer import FileChanged, create_entry_text, publish_entry_text
+    from pyrite.storage.entry_writer import FileChanged, move_entry_text, publish_entry_text
     from pyrite.storage.file_operations import FrontmatterSpan, Set, Unset, apply
     from pyrite.utils.frontmatter import Frontmatter, describe, split_frontmatter
     from pyrite.utils.yaml import load_yaml
@@ -796,21 +796,25 @@ def sw_migrate_standards(
             span = FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
             new_text, _report = apply(text, ops, span)
 
-            # Move file to new subdirectory if parent is standards/: published
-            # at the new path (never over something already there), then the
-            # old file removed; otherwise replaced in place, against the bytes
-            # read above.
+            # Move file to new subdirectory if parent is standards/: one move
+            # under one lock for both paths, the new file published (never
+            # over something already there) and the old one removed only
+            # while it still holds the bytes read above (#978 review, item
+            # 3); otherwise replaced in place, against those bytes.
             if path.parent.name == "standards":
                 new_dir = path.parent.parent / new_dir_name
                 new_dir.mkdir(parents=True, exist_ok=True)
                 new_path = new_dir / path.name
                 try:
-                    create_entry_text(new_path, new_text)
+                    move_entry_text(path, raw, new_path, new_text)
                 except FileExistsError:
                     console.print(f"  [red]Skip[/red] {row['title']}: {new_path} already exists")
                     skipped += 1
                     continue
-                path.unlink()
+                except FileChanged:
+                    console.print(f"  [red]Skip[/red] {row['title']}: {path} changed; run again")
+                    skipped += 1
+                    continue
                 console.print(f"  [green]Migrated[/green] {row['title']} -> {new_path}")
             else:
                 try:

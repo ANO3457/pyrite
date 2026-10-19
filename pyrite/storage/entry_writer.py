@@ -41,6 +41,7 @@ from ..utils.file_lock import LOCK_TIMEOUT, NotInGitRepository
 __all__ = [
     "FileChanged",
     "create_entry_text",
+    "move_entry_text",
     "publish_entry_text",
     "publish_exclusive",
     "raw_scalar",
@@ -142,25 +143,94 @@ def _create_exclusive_unlocked(target: Path, text: str) -> None:
     (fsynced, the mode a new file gets under the umask) and are published
     with ``publish_exclusive``; the temp file is removed on any failure."""
     target = Path(os.path.realpath(target))
-    data = text.encode("utf-8")
+    tmp = _tmp_beside(target, text.encode("utf-8"))
+    try:
+        publish_exclusive(tmp, target)
+    except BaseException:
+        _remove(tmp)
+        raise
+    _fsync_directory(target.parent)
+
+
+def _tmp_beside(target: Path, data: bytes) -> str:
+    """``data`` in a new temp file beside ``target``, fsynced, with the mode a
+    new file gets under the umask; the caller publishes or removes it."""
     tmp = str(target.parent / f".{target.name}.{secrets.token_hex(8)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
-        try:
-            view = memoryview(data)
-            while view:
-                view = view[os.write(fd, view) :]
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        publish_exclusive(tmp, target)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view) :]
+        os.fsync(fd)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
+        os.close(fd)
+        _remove(tmp)
         raise
-    _fsync_directory(target.parent)
+    os.close(fd)
+    return tmp
+
+
+def _remove(tmp: str) -> None:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+
+
+def _still_holds(src: Path, expect: bytes) -> None:
+    try:
+        on_disk: bytes | None = src.read_bytes()
+    except FileNotFoundError:
+        on_disk = None
+    if on_disk != expect:
+        raise FileChanged(src, on_disk)
+
+
+def move_entry_text(
+    src: str | os.PathLike[str],
+    expect: bytes,
+    dst: str | os.PathLike[str],
+    text: str,
+    *,
+    lock_timeout: float = LOCK_TIMEOUT,
+) -> bool:
+    """Move an entry file: publish ``text`` at ``dst``, which must not exist,
+    and remove ``src``, which must still hold ``expect``, as one write under
+    one lock for both paths (``file_lock(src, dst)``); return whether it ran
+    under the lock. The one move an entry file makes: rename, and
+    software-kb's ``migrate-standards`` (#978 review, item 3).
+
+    Raises ``FileChanged`` (nothing written, both paths as they were) when
+    ``src`` no longer holds ``expect``, and ``FileExistsError`` when ``dst``
+    is taken. Outside a git work tree (D1 (b)) the compare, the exclusive
+    publish and the removal run without a lock, in that order. A removal of
+    ``src`` that fails after ``dst`` is published raises with both files in
+    place.
+    """
+    from ..utils.file_lock import file_lock
+
+    src_path = Path(os.path.realpath(src))
+    dst_path = Path(os.path.realpath(dst))
+    tmp = _tmp_beside(dst_path, text.encode("utf-8"))
+    try:
+        try:
+            with file_lock(src_path, dst_path, timeout=lock_timeout):
+                _still_holds(src_path, expect)
+                publish_exclusive(tmp, dst_path)
+                os.unlink(src_path)
+            locked = True
+        except NotInGitRepository:
+            _still_holds(src_path, expect)
+            publish_exclusive(tmp, dst_path)
+            os.unlink(src_path)
+            locked = False
+    except BaseException:
+        _remove(tmp)
+        raise
+    _fsync_directory(dst_path.parent)
+    if src_path.parent != dst_path.parent:
+        _fsync_directory(src_path.parent)
+    return locked
 
 
 def publish_exclusive(tmp: str, path: Path) -> None:

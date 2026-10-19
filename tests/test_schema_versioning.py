@@ -334,13 +334,20 @@ class TestRepositoryMigration:
         config = KBConfig(name="test", path=kb_dir)
         repo = KBRepository(config)
 
-        entry1 = repo.load("idem-test")
-        repo.save(entry1, subdir="notes")
-        content1 = entry_file.read_text()
+        # A save over the existing file is refused since #978 (decision 4);
+        # the model's text is written as a new file each time and read back.
+        from pyrite.storage.entry_writer import create_entry_text
+        from pyrite.storage.repository import new_entry_text
 
-        entry2 = repo.load("idem-test")
-        repo.save(entry2, subdir="notes")
-        content2 = entry_file.read_text()
+        entry1 = repo.load("idem-test")
+        copy1 = notes_dir / "idem-copy-1.md"
+        create_entry_text(copy1, new_entry_text(entry1))
+        content1 = copy1.read_text()
+
+        entry2 = repo.load_entry_from_file(copy1)
+        copy2 = notes_dir / "idem-copy-2.md"
+        create_entry_text(copy2, new_entry_text(entry2))
+        content2 = copy2.read_text()
 
         # Core frontmatter should be the same (timestamps may differ)
         assert "_schema_version: 2" in content1

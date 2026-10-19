@@ -371,3 +371,245 @@ def test_migrate_standards_sets_the_type_unsets_enforced_and_keeps_the_rest(
     assert "type: programmatic_validation   # legacy type\r\n" in after, after
     assert "enforced" not in after, after
     assert_only_changed(before, after, [Set("type", "programmatic_validation"), Unset("enforced")])
+
+
+# --------------------------------------------------------------------------
+# #978 cold read (2026-10-19): a rename is refused only for the entry renamed;
+# the migrate version is stamped only on a written result; a move holds one
+# lock for both paths and compares bytes; the model's whole-file save cannot
+# reach an existing entry (the maintainer's decision 4)
+# --------------------------------------------------------------------------
+
+MALFORMED_LINKER = "---\nid: bad\ntitle: [unclosed\ntype: note\n---\n\nSee [[old-one]].\n"
+ANCHORED_LINKER = (
+    "---\nid: anchored\ntitle: A\ntype: note\ndefaults: &d\n  x: 1\nmore: *d\n---\n\n"
+    "See [[old-one]].\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("linker_text", "name"),
+    [
+        pytest.param(MALFORMED_LINKER, "bad", id="malformed-frontmatter"),
+        pytest.param(
+            ANCHORED_LINKER,
+            "anchored",
+            id="anchored-frontmatter",
+            marks=pytest.mark.control(
+                reason="apply refuses an operation on the anchored key alone, so the body rewrite "
+                "already went through on 9f87739; pinned beside the malformed case, which is the "
+                "evidence"
+            ),
+        ),
+    ],
+)
+def test_a_rename_is_refused_only_for_the_entry_renamed(
+    tmp_path: Path, linker_text: str, name: str
+):
+    """Item 1, the property: a linking file Pyrite cannot patch as values (a
+    frontmatter that does not parse, an anchor) never fails the rename, dry
+    run included. Its body's wikilinks are rewritten and its frontmatter
+    bytes stay, or the file is skipped and listed in the result."""
+    config, kb_path = _kb(tmp_path, {"notes/old-one.md": SOURCE, f"notes/{name}.md": linker_text})
+    linker = kb_path / "notes" / f"{name}.md"
+    before = _text(linker)
+    repo = KBRepository(config.knowledge_bases[0])
+
+    plan = repo.rename("old-one", "new-one", dry_run=True)
+    assert plan["renamed"] and plan["dry_run"], plan
+    assert _text(linker) == before
+
+    result = repo.rename("old-one", "new-one")
+
+    assert result["renamed"], result
+    assert (kb_path / "notes" / "new-one.md").exists()
+    assert not (kb_path / "notes" / "old-one.md").exists()
+    after = _text(linker)
+    split_before, split_after = split_frontmatter(before), split_frontmatter(after)
+    assert isinstance(split_before, Frontmatter) and isinstance(split_after, Frontmatter)
+    assert split_after.text == split_before.text, "the frontmatter bytes changed"
+    skipped = [s["path"] for s in result.get("files_skipped", [])]
+    if "[[new-one]]" in after:
+        assert "[[old-one]]" not in after and skipped == [], (after, result)
+    else:
+        assert after == before and skipped == [f"notes/{name}.md"], (after, result)
+
+
+@pytest.fixture
+def raising_migration():
+    """A registered migration for ``thing`` 0 -> 2 that raises."""
+    from pyrite.migrations import Migration, get_migration_registry
+
+    registry = get_migration_registry()
+
+    def boom(data: dict) -> dict:
+        raise ValueError("this migration cannot run")
+
+    registry.add(Migration("thing", 0, 2, boom, "raises"))
+    try:
+        yield
+    finally:
+        registry._migrations.pop("thing", None)
+
+
+@pytest.fixture
+def mutating_migration():
+    """A registered migration for ``thing`` 0 -> 2 that changes its input in
+    place (a list appended to) and returns it."""
+    from pyrite.migrations import Migration, get_migration_registry
+
+    registry = get_migration_registry()
+
+    def mutate(data: dict) -> dict:
+        data["tags"].append("migrated")
+        return data
+
+    registry.add(Migration("thing", 0, 2, mutate, "appends a tag in place"))
+    try:
+        yield
+    finally:
+        registry._migrations.pop("thing", None)
+
+
+def test_schema_migrate_stamps_nothing_when_the_migration_raises(tmp_path: Path, raising_migration):
+    """Item 2, the property: the version is stamped only when the migration
+    ran and its result was written. A migration that raises is an error in
+    the result and the file keeps its bytes, so the migration is retried
+    next time instead of being recorded as done."""
+    config, kb_path = _kb(tmp_path, {"things/t.md": THING}, kb_yaml=THING_KB_YAML)
+    path = kb_path / "things" / "t.md"
+    before = path.read_bytes()
+
+    with (
+        patch("pyrite.cli.load_config", return_value=config),
+        patch("pyrite.cli.context.load_config", return_value=config),
+    ):
+        result = CliRunner().invoke(cli_app, ["schema", "migrate", "--kb", KB])
+
+    assert result.exit_code != 0, result.output
+    assert "Migrated: 0" in result.output and "Errors: 1" in result.output, result.output
+    assert path.read_bytes() == before, "a raising migration wrote"
+
+
+def test_schema_migrate_writes_a_migrations_in_place_change(tmp_path: Path, mutating_migration):
+    """Item 2, the other half: a migration that mutates its input in place
+    changed the `before` values too through the shallow copy, so only the
+    version was stamped and the change was lost. The diff is taken against
+    a deep copy: the change and the version are both written, and the
+    result says to run `index sync`."""
+    config, kb_path = _kb(tmp_path, {"things/t.md": THING}, kb_yaml=THING_KB_YAML)
+    path = kb_path / "things" / "t.md"
+    before = _text(path)
+
+    out = _cli(config, ["schema", "migrate", "--kb", KB])
+
+    assert "Migrated: 1" in out and "index sync" in out, out
+    after = _text(path)
+    assert "tags: [a, b, migrated]" in after and "_schema_version: 2\n" in after, after
+    assert "old: 1   # moves to new\n" in after, after
+    assert_only_changed(
+        before, after, [Set("tags", ["a", "b", "migrated"]), Set("_schema_version", 2)]
+    )
+
+
+def test_a_move_refuses_when_the_source_changed_since_it_was_read(tmp_path: Path):
+    """Item 3, the property: a move removes the source only if its bytes are
+    the ones it read; otherwise it refuses and leaves both files. In a git
+    work tree and outside one."""
+    from pyrite.storage.entry_writer import FileChanged, move_entry_text
+
+    for git in (True, False):
+        root = tmp_path / ("git" if git else "plain")
+        (root / "notes").mkdir(parents=True)
+        if git:
+            subprocess.run(
+                ["git", "init", "-q"], cwd=root, check=True, capture_output=True, timeout=30
+            )
+        src = root / "notes" / "a.md"
+        dst = root / "notes" / "b.md"
+        src.write_text("one\n", encoding="utf-8")
+        raw = src.read_bytes()
+        src.write_text("two\n", encoding="utf-8")  # edited after the read
+        with pytest.raises(FileChanged):
+            move_entry_text(src, raw, dst, "moved\n")
+        assert src.read_text(encoding="utf-8") == "two\n" and not dst.exists()
+        assert sorted(p.name for p in (root / "notes").iterdir()) == ["a.md"], "a temp file stayed"
+
+
+def test_a_move_holds_one_lock_for_both_paths(tmp_path: Path):
+    from pyrite.storage.entry_writer import move_entry_text
+    from pyrite.utils.file_lock import file_lock
+
+    root = tmp_path / "kb"
+    (root / "notes").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True, timeout=30)
+    src = root / "notes" / "a.md"
+    dst = root / "notes" / "b.md"
+    src.write_text("one\n", encoding="utf-8")
+    raw = src.read_bytes()
+    worker = threading.Thread(target=lambda: move_entry_text(src, raw, dst, "moved\n"))
+
+    with file_lock(src, dst):
+        worker.start()
+        time.sleep(0.5)
+        assert worker.is_alive(), "the move did not wait for the lock"
+        assert src.exists() and not dst.exists(), "the move wrote while the lock was held"
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert not src.exists() and dst.read_text(encoding="utf-8") == "moved\n"
+
+
+def test_a_rename_refuses_when_the_source_changed_under_it(tmp_path: Path, monkeypatch):
+    """Item 3 through rename: the source edited between the read and the
+    move (here by a hook on the id rewrite, as a second writer would) is
+    not removed; the rename is a `ConflictError` and both paths are as
+    they were, the edit included."""
+    from pyrite.exceptions import ConflictError
+    from pyrite.storage import repository
+
+    config, kb_path = _kb(tmp_path, {"notes/old-one.md": SOURCE})
+    src = kb_path / "notes" / "old-one.md"
+    real = repository._renamed_text
+
+    def edit_then_rename(text, split, new_id):
+        src.write_bytes(src.read_bytes() + b"\nEdited meanwhile.\n")
+        return real(text, split, new_id)
+
+    monkeypatch.setattr(repository, "_renamed_text", edit_then_rename)
+    with pytest.raises(ConflictError):
+        KBRepository(config.knowledge_bases[0]).rename("old-one", "new-one")
+
+    assert src.exists() and _text(src).endswith("Edited meanwhile.\n")
+    assert not (kb_path / "notes" / "new-one.md").exists()
+
+
+def test_the_models_whole_file_save_cannot_reach_an_existing_entry(tmp_path: Path):
+    """Decision 4 (maintainer): the non-exclusive `repo.save` was still a
+    public whole-file overwrite (`DocumentManager.save_entry(is_create=False)`
+    reached it); nothing in the tree called it so, but a plugin could. A
+    save over an existing entry is refused with the bytes untouched; an
+    entry is changed through `KBService.apply_operations` alone."""
+    from pyrite.exceptions import EntryExistsError
+    from pyrite.storage.document_manager import DocumentManager
+
+    config, kb_path = _kb(tmp_path, {"notes/old-one.md": SOURCE})
+    kb_config = config.knowledge_bases[0]
+    path = kb_path / "notes" / "old-one.md"
+    before = path.read_bytes()
+    repo = KBRepository(kb_config)
+    entry = repo.load("old-one")
+    assert entry is not None
+    entry.title = "Changed through the model"
+
+    with pytest.raises(EntryExistsError):
+        repo.save(entry, keep_filename=True)
+    assert path.read_bytes() == before
+
+    db = PyriteDB(config.settings.index_path)
+    try:
+        with pytest.raises(EntryExistsError):
+            DocumentManager(db, IndexManager(db, config)).save_entry(entry, KB, kb_config)
+    finally:
+        db.close()
+    assert path.read_bytes() == before

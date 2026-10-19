@@ -662,7 +662,11 @@ claim and task services, and plugins' commands. `software-kb`'s
 `cli.py:704-714` and cascade's `migration.py` write entry files with
 `write_text` and regex today; they are converted (cascade is deleted). A
 plugin writes entry files only through `ctx.kb_service` (ADR-0040), and so is
-bound by decisions 1 to 11. ADR-0041 and this ADR say the same thing.
+bound by decisions 1 to 11. ADR-0041 and this ADR say the same thing. Git is
+out of this decision's scope: an operation that moves the working tree between
+commits (`git merge`, `git pull`, a worktree's `reset --hard`) replaces entry
+files wholesale as git, not as a Pyrite write, and what Pyrite writes between
+commits is what this path covers (#978 review).
 
 **The root-file move (#488) is a fix in this decision.** Today every update of
 a root-level file whose type has `subdirectory: ""` and a `file_pattern` moves

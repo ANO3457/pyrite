@@ -10,12 +10,13 @@ import io
 import logging
 import os
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from ..config import KBConfig
 from ..exceptions import (
     ConflictError,
+    EntryExistsError,
     EntryNotFoundError,
     FrontmatterError,
     KBReadOnlyError,
@@ -31,6 +32,7 @@ from ..utils.yaml import load_yaml, load_yaml_file
 from .entry_writer import (
     FileChanged,
     create_entry_text,
+    move_entry_text,
     publish_entry_text,
     raw_scalar,
     updated_at_stamp,
@@ -51,8 +53,6 @@ def _rewrite_wikilinks(text: str, old_id: str, new_id: str) -> tuple[str, int]:
     included, stays. A file with no frontmatter is rewritten as text."""
     import re
 
-    from .file_operations import FrontmatterSpan, ReplaceBody, Set, apply
-
     bare = re.compile(rf"\[\[{re.escape(old_id)}\]\]")
     aliased = re.compile(rf"\[\[{re.escape(old_id)}\|([^\]]*)\]\]")
 
@@ -67,6 +67,25 @@ def _rewrite_wikilinks(text: str, old_id: str, new_id: str) -> tuple[str, int]:
     split = split_frontmatter(text)
     if not isinstance(split, Frontmatter):
         return substitute(text)
+    try:
+        return _rewrite_as_values(text, split, substitute)
+    except Exception:  # noqa: BLE001 - the fallback below is the point
+        # The frontmatter cannot be patched as values (it does not parse, or
+        # `apply` refuses it): the wikilinks in the body alone are rewritten,
+        # as text after the closing fence, and the frontmatter's bytes stay.
+        # A linking file never fails the rename of the entry it links to
+        # (#978 review, item 1).
+        tail, count = substitute(text[split.close_end :])
+        return text[: split.close_end] + tail, count
+
+
+def _rewrite_as_values(
+    text: str, split: Frontmatter, substitute: Callable[[str], tuple[str, int]]
+) -> tuple[str, int]:
+    """The wikilink rewrite as operations: a ``ReplaceBody`` where the body
+    holds one, a ``Set`` of each frontmatter value that holds one."""
+    from .file_operations import FrontmatterSpan, ReplaceBody, Set, apply
+
     ops: list[object] = []
     total = 0
     new_body, count = substitute(split.body)
@@ -665,14 +684,12 @@ class KBRepository:
                 fresh filename as before. Ignored -- falls back to a fresh
                 resolution -- when ``entry.file_path`` is unset, since there
                 is no existing filename to keep.
-            exclusive: Passed to ``Entry.save``: publish with ``os.link``
-                instead of ``os.replace``, so a target that already exists
-                raises ``FileExistsError`` instead of being silently
-                overwritten (#391 cold read round 2 -- narrows, at the one
-                filesystem-atomic point available, the TOCTOU window
-                between the write pipeline's own exists() check and the
-                write that follows it). Create-path callers only; an update
-                means to overwrite.
+            exclusive: Kept for callers that pass it; every save is
+                exclusive now. A save is a create: a target that already
+                exists is refused (``EntryExistsError``, the file as it
+                was), never overwritten (the maintainer on #978, decision
+                4). An existing entry is changed through
+                ``KBService.apply_operations``.
 
         Returns:
             Path to the saved file
@@ -693,27 +710,20 @@ class KBRepository:
             entry.touch_updated_at()
         # The type's values written onto a skeleton by apply() (ADR-0042
         # decision 13; #955, B6 C2): to_frontmatter() decides which values the
-        # new file gets, never its bytes. A create publishes only if nothing
-        # is there (expect=ABSENT). The non-exclusive form is the whole-file
-        # overwrite `repo.save(entry)` callers and fixtures keep (no service
-        # path writes an existing entry this way since P4): published against
-        # the bytes read, so a file changed meanwhile is a ConflictError.
+        # new file gets, never its bytes. A save is a create: it publishes
+        # only if nothing is at the path. The model's whole-file text reaches
+        # no existing entry (the maintainer on #978, decision 4): an entry is
+        # changed through KBService.apply_operations alone, so a save over
+        # one is refused with the file as it was, whatever `exclusive` says.
         text = new_entry_text(entry)
-        if exclusive:
+        try:
             create_entry_text(file_path, text)
-        else:
-            try:
-                raw = file_path.read_bytes()
-            except FileNotFoundError:
-                create_entry_text(file_path, text)
-            else:
-                try:
-                    publish_entry_text(file_path, text, expect=raw)
-                except FileChanged as e:
-                    raise ConflictError(
-                        f"'{entry.id}' in KB '{self.name}' changed while it was being "
-                        "saved; nothing was written. Read it again and retry."
-                    ) from e
+        except FileExistsError:
+            raise EntryExistsError(
+                f"'{entry.id}' already exists in KB '{self.name}' at "
+                f"{self._rel(file_path)}: a save writes a new entry only; an existing "
+                "entry is changed through KBService.apply_operations."
+            ) from None
         entry.kb_name = self.name
         entry.file_path = file_path
 
@@ -819,6 +829,10 @@ class KBRepository:
         files_rewritten = 0
         links_rewritten = 0
         body_rewrites: list[tuple[Path, bytes, str]] = []  # (path, bytes read, new_text)
+        # A linking file the rewrite cannot read or patch at all is skipped
+        # and named here, never fatal: a rename is refused only for the
+        # entry being renamed (#978 review, item 1).
+        files_skipped: list[dict[str, str]] = []
 
         if update_links:
             for md_file in self.list_files():
@@ -829,9 +843,10 @@ class KBRepository:
                 try:
                     raw = md_file.read_bytes()
                     text = raw.decode("utf-8")
-                except (OSError, UnicodeDecodeError):
+                    new_text, count = _rewrite_wikilinks(text, old_id, new_id)
+                except Exception as e:  # noqa: BLE001 - listed, not fatal
+                    files_skipped.append({"path": self._rel(md_file), "reason": str(e)})
                     continue
-                new_text, count = _rewrite_wikilinks(text, old_id, new_id)
                 if count == 0:
                     continue
                 files_rewritten += 1
@@ -845,6 +860,7 @@ class KBRepository:
                 "new_id": new_id,
                 "files_rewritten": files_rewritten,
                 "links_rewritten": links_rewritten,
+                "files_skipped": files_skipped,
                 "dry_run": True,
             }
 
@@ -854,7 +870,10 @@ class KBRepository:
         # computed on; a file that changed meanwhile is re-read and
         # re-rewritten (#955, B6 P4).
         for path, raw, new_text in body_rewrites:
-            self._publish_rewrite(path, raw, new_text, old_id, new_id)
+            reason = self._publish_rewrite(path, raw, new_text, old_id, new_id)
+            if reason is not None:
+                files_rewritten -= 1
+                files_skipped.append({"path": self._rel(path), "reason": reason})
 
         # The source: one `Set("id", new_id)` on its own bytes (and the
         # `updated_at` bookkeeping where the file carries it), published at
@@ -898,19 +917,23 @@ class KBRepository:
                 ) from e
         else:
             file_path.parent.mkdir(parents=True, exist_ok=True)
+            # One move: the new file published and the old one removed as
+            # one write under one lock for both paths, the old file removed
+            # only while it still holds the bytes read above (#978 review,
+            # item 3). A target already taken, or a source that changed,
+            # leaves both paths as they are.
             try:
-                create_entry_text(file_path, new_text)
+                move_entry_text(src, raw, file_path, new_text)
             except FileExistsError:
                 raise ValidationError(
                     f"Cannot rename '{old_id}' to '{new_id}': target already exists "
                     f"in KB '{self.name}'"
                 ) from None
-            # Delete the old file only AFTER the new one is on disk, and
-            # only if the rename actually produced a DIFFERENT file (defense
-            # in depth: the file_pattern branch above already keeps them
-            # equal by construction).
-            if src.exists():
-                src.unlink()
+            except FileChanged as e:
+                raise ConflictError(
+                    f"'{old_id}' in KB '{self.name}' changed while the rename ran; "
+                    "nothing was written. Read it again and retry."
+                ) from e
 
         return {
             "renamed": True,
@@ -918,22 +941,36 @@ class KBRepository:
             "new_id": new_id,
             "files_rewritten": files_rewritten,
             "links_rewritten": links_rewritten,
+            "files_skipped": files_skipped,
             "dry_run": False,
         }
 
-    def _publish_rewrite(self, path: Path, raw: bytes, new_text: str, old_id: str, new_id: str):
+    def _rel(self, path: Path) -> str:
+        try:
+            return str(path.relative_to(self.path))
+        except ValueError:
+            return path.name
+
+    def _publish_rewrite(
+        self, path: Path, raw: bytes, new_text: str, old_id: str, new_id: str
+    ) -> str | None:
         """Publish a linking file's rewrite against the bytes it was computed
         on; if the file changed meanwhile, re-read and rewrite again, up to
-        ``_REWRITE_ATTEMPTS`` times."""
+        ``_REWRITE_ATTEMPTS`` times. Returns None when the file is done, or
+        the reason it was skipped (it could no longer be read or patched):
+        a linking file never fails the rename (#978 review, item 1)."""
         for _attempt in range(_REWRITE_ATTEMPTS):
             try:
                 publish_entry_text(path, new_text, expect=raw)
-                return
+                return None
             except FileChanged:
-                raw = path.read_bytes()
-                new_text, count = _rewrite_wikilinks(raw.decode("utf-8"), old_id, new_id)
+                try:
+                    raw = path.read_bytes()
+                    new_text, count = _rewrite_wikilinks(raw.decode("utf-8"), old_id, new_id)
+                except Exception as e:  # noqa: BLE001 - listed, not fatal
+                    return str(e)
                 if count == 0:
-                    return
+                    return None
         raise ConflictError(
             f"{path.name} in KB '{self.name}' kept changing while the rename of "
             f"'{old_id}' rewrote its links; nothing more was written. Retry."
