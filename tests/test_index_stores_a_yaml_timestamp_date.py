@@ -81,13 +81,13 @@ sources:
 Body.
 """
 
-#: One tag spelled with a `T`, one with a space: the same kind of value in
-#: the two spellings a file may use (#987).
+#: One tag spelled with a `T`, one with a space, one with a `Z`: the same
+#: kind of value in the spellings a file may use (#987).
 TAGS = """---
 id: t
 title: T
 type: task
-tags: [alpha, 2026-01-01T10:00:00, 2026-01-02 10:00:00]
+tags: [alpha, 2026-01-01T10:00:00, 2026-01-02 10:00:00, 2024-01-01T10:00:00Z]
 ---
 
 Body.
@@ -225,24 +225,39 @@ def test_a_tag_that_is_a_yaml_timestamp_is_stored_in_one_spelling(tmp_path: Path
     (``isoformat()``, the form every row ever held, #987), whether the file
     writes it with a ``T`` or a space: an index built before the upgrade and
     one after hold one tag, not two. A read returns that text, so
-    ``search_by_tag`` with the tag ``get`` returned finds the entry."""
+    ``search_by_tag`` with the tag ``get`` returned finds the entry; and a
+    query tag spelled as the file writes it is normalised the same way
+    (the maintainer on #991), so a tag you can grep for is a tag you can
+    search for."""
     config = _config(tmp_path, "task")
     (config.knowledge_bases[0].path / "tasks").mkdir()
     (config.knowledge_bases[0].path / "tasks" / "t.md").write_text(TAGS, encoding="utf-8")
 
+    as_the_file_spells = ["2026-01-02 10:00:00", "2024-01-01T10:00:00Z"]
     db = _indexed(config)
     try:
         row = db.get_entry("t", "t")
         got = KBService(config, db).get_entry("t", "t", readable_kbs=None)
         found = {tag: [r["id"] for r in db.search_by_tag(tag, kb_name="t")] for tag in got["tags"]}
         by_t = [r["id"] for r in db.search_by_tag("2026-01-02T10:00:00", kb_name="t")]
+        by_file = {
+            tag: [r["id"] for r in db.search_by_tag(tag, kb_name="t")] for tag in as_the_file_spells
+        }
+        plain = [r["id"] for r in db.search_by_tag("alpha", kb_name="t")]
     finally:
         db.close()
 
-    assert row["tags"] == ["alpha", "2026-01-01T10:00:00", "2026-01-02T10:00:00"]
+    assert row["tags"] == [
+        "alpha",
+        "2026-01-01T10:00:00",
+        "2026-01-02T10:00:00",
+        "2024-01-01T10:00:00+00:00",
+    ]
     assert got["tags"] == row["tags"]
     assert found == {tag: ["t"] for tag in row["tags"]}
     assert by_t == ["t"], "the space-spelled tag is found by the one stored spelling"
+    assert by_file == {tag: ["t"] for tag in as_the_file_spells}, by_file
+    assert plain == ["t"]
 
 
 @pytest.mark.control(

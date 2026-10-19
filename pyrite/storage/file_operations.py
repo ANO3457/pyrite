@@ -415,10 +415,24 @@ def _temporal_equals_text(value: date, text: str) -> bool:
         return False
     if value.isoformat(" ") == text:
         return True
+    other: Any = None
     try:
         other = datetime.fromisoformat(text)
     except ValueError:
-        return False
+        # Not ISO 8601 as Python reads it, yet maybe YAML's timestamp (`+5`,
+        # `+5:30`, a one-digit day, several spaces before the time): the
+        # loader's reading is the one that counts for a bare value (#991).
+        if "\n" in text or "\r" in text or "#" in text:
+            return False
+        try:
+            loaded = _yaml().load(f"k: {text}")
+        except YAMLError:
+            return False
+        if not isinstance(loaded, Mapping) or list(loaded) != ["k"]:
+            return False
+        other = loaded["k"]
+        if not isinstance(other, datetime):
+            return False
     if (value.tzinfo is None) != (other.tzinfo is None):
         return False
     return value == other
@@ -2422,7 +2436,14 @@ def _plain_ok(value: str, flow: bool, timestamp: bool) -> bool:
         got = got[0]
     if isinstance(got, str):
         return type(got) is str and got == value
-    return timestamp and isinstance(got, date) and values_equal(got, value)
+    if not (timestamp and isinstance(got, date)):
+        return False
+    # A caller's own spelling of a timestamp (`TimestampText`) is bare whenever
+    # the loader reads it as one: `+5`, `+5:30` or a one-digit day are YAML's
+    # timestamp too, though not `fromisoformat`'s (#991). A plain string
+    # written over a date stays bare only when it reads back as that same
+    # instant (decision 3).
+    return isinstance(value, TimestampText) or values_equal(got, value)
 
 
 def _single_ok(value: str) -> bool:

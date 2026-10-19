@@ -31,6 +31,29 @@ def temporal_text(value: Any) -> Any:
     return value
 
 
+def query_tag_text(tag: str) -> str:
+    """A query tag as the index stores a tag: a string YAML reads as a date or
+    timestamp (``2026-01-02 10:00:00``, ``2024-01-01T10:00:00Z``) as its
+    ``isoformat()`` (``temporal_text``, what the row holds for a tag spelled
+    so in a file, #987), any other string as is. So a tag spelled as the file
+    writes it is found (the maintainer on #991): a tag you can grep for is a
+    tag you can search for."""
+    if not tag or "\n" in tag or "\r" in tag or "#" in tag:
+        return tag
+    from ..utils.yaml import load_yaml
+
+    try:
+        loaded = load_yaml(f"k: {tag}")
+    except Exception:  # noqa: BLE001 - not a YAML scalar: the tag is the text
+        return tag
+    if not isinstance(loaded, dict) or list(loaded) != ["k"]:
+        return tag
+    value = loaded["k"]
+    if isinstance(value, date | datetime):
+        return temporal_text(value)
+    return tag
+
+
 def bindable(value: Any) -> Any:
     """``value`` with every date or datetime, at any depth, as its column text.
 

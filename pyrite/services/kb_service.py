@@ -105,14 +105,34 @@ _TIMESTAMP_FIELDS = frozenset({"created_at", "updated_at"})
 #: ``StorageBusyError`` (the lock's own default; a test shortens it).
 _LOCK_TIMEOUT = LOCK_TIMEOUT
 
-#: YAML's timestamp form (the YAML 1.1 type the loader reads bare): a date,
-#: optionally a time after ``T``, ``t`` or spaces, with a fraction, and ``Z``
-#: or an offset ``±HH``, ``±HH:MM`` or ``±HHMM``. What a caller may send for a
-#: timestamp key (#990): it is written as sent, so it must read back as one.
-_YAML_TIMESTAMP = re.compile(
-    r"\d{4}-\d\d?-\d\d?"
-    r"(?:(?:[Tt]|[ \t]+)\d\d?:\d\d:\d\d(?:\.\d+)?[ \t]*(?:Z|[+-]\d\d?(?::?\d\d)?)?)?"
-)
+#: What an HTML ``datetime-local`` field sends: a date, ``T``, hours and
+#: minutes, no seconds. YAML reads it as a string; it is accepted and written
+#: with ``:00`` seconds, a value YAML reads as a timestamp (the maintainer on
+#: #991). Every other form is accepted iff the loader reads it as a date or
+#: timestamp (``_yaml_reads_a_timestamp``).
+_DATETIME_LOCAL = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d")
+
+
+def _yaml_reads_a_timestamp(spelled: str) -> bool:
+    """Does the loader read ``spelled``, written bare, as a date or a
+    timestamp? The one rule for what a caller may send for a timestamp key
+    (#990): it is written as sent, so it must read back as one. Asked of the
+    loader itself, not of a regex beside it (the cold read of #991: a regex
+    let ``2026-1-5`` and ``+0530`` through, which ruamel reads as strings)."""
+    from collections.abc import Mapping
+
+    if not spelled or "\n" in spelled or "\r" in spelled or "#" in spelled:
+        return False
+    try:
+        loaded = load_yaml(f"k: {spelled}")
+    except Exception:  # noqa: BLE001 - a value YAML cannot parse is no timestamp
+        return False
+    return (
+        isinstance(loaded, Mapping)
+        and list(loaded) == ["k"]
+        and isinstance(loaded["k"], date | datetime)
+    )
+
 
 #: Keys a read result (`kb_get`, `GET /api/entries/{id}`) carries that are the
 #: index's, not the entry's: an update never writes them. With the managed
@@ -2010,16 +2030,23 @@ class KBService:
         """
         if key in _TIMESTAMP_FIELDS and not isinstance(value, date):
             # A `datetime` or a `date` from an in-process caller is written as
-            # the value it is (a date stays a date, #990). Text is checked
-            # against YAML's own timestamp form, not `fromisoformat`'s wider
-            # one (a week date, an hour-only time or a compact date would be
-            # written as a plain string or an int, #990).
+            # the value it is (a date stays a date, #990). Text is accepted
+            # iff the loader reads it back as a date or timestamp, not by
+            # `fromisoformat`'s wider rule (a week date, an hour-only time or
+            # a compact date would be written as a plain string or an int,
+            # #990), nor by a regex beside the loader (#991). The one form
+            # read as a string and still accepted is `datetime-local`'s
+            # `YYYY-MM-DDTHH:MM`, written with `:00` seconds.
             spelled = str(value).strip()
-            if not _YAML_TIMESTAMP.fullmatch(spelled):
+            if _DATETIME_LOCAL.fullmatch(spelled):
+                spelled += ":00"
+            if not _yaml_reads_a_timestamp(spelled):
                 raise ValidationError(
                     f"Cannot set {key} on {entry.entry_type} '{entry.id}': {spelled!r} is "
-                    "not a timestamp. Send YYYY-MM-DD, optionally followed by T or a space, "
-                    "HH:MM:SS, a fraction, and Z or an offset (e.g. 2026-01-15T09:00:00Z)."
+                    "not a timestamp YAML reads. Send YYYY-MM-DD, optionally followed by T "
+                    "or a space, HH:MM:SS, a fraction, and Z or an offset such as +05:30 "
+                    "(e.g. 2026-01-15T09:00:00Z), or YYYY-MM-DDTHH:MM, which is written "
+                    "with :00 seconds."
                 )
             value = TimestampText(spelled)
         if hasattr(entry, key):

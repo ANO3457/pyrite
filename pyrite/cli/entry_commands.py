@@ -647,7 +647,14 @@ def register_entry_commands(app: typer.Typer) -> None:
             data["warnings"] = written.warnings
 
         def rich(console: Console, data: dict) -> None:
-            console.print(f"[green]Updated:[/green] {data['entry_id']}")
+            from rich.markup import escape
+
+            console.print(f"[green]Updated:[/green] {escape(data['entry_id'])}")
+            if data.get("not_moved"):
+                # The templated move that did not happen, and why (an unpinned
+                # file, a target already taken): said here as in the machine
+                # formats (#990, the cold read of #991).
+                console.print(f"  [yellow]Not moved:[/yellow] {escape(data['not_moved'])}")
             _print_warnings(console, data.get("warnings", []))
 
         return Outcome.done(data, rich=rich)
