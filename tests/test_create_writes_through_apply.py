@@ -330,3 +330,205 @@ def test_a_create_outside_git_still_refuses_an_existing_file(tmp_path: Path):
     with pytest.raises(EntryExistsError):
         _with_service(config, lambda svc: svc.create(KB, {**spec, "body": "second"}))
     assert len(list(config.knowledge_bases[0].path.rglob("*.md"))) == 1
+
+
+# --------------------------------------------------------------------------
+# #974 cold read (2026-10-19): the id reads back as asked; a create is
+# exclusive at the instant of publish, in every KB kind
+# --------------------------------------------------------------------------
+
+#: Ids a YAML 1.1 or 1.2 reader would take for something other than the
+#: string asked for: booleans, null, numbers in every notation, dates and
+#: times, the tilde. `placeholder` is the one plain id the skeleton used to
+#: spell as itself.
+_MISREAD_IDS = [
+    "yes",
+    "no",
+    "on",
+    "off",
+    "y",
+    "n",
+    "true",
+    "false",
+    "null",
+    "~",
+    "123",
+    "007",
+    "1.5",
+    "1e3",
+    "0x1f",
+    "0o17",
+    "1_000",
+    ".inf",
+    "-.inf",
+    ".nan",
+    "2024-01-01",
+    "2024-01-01T10:00:00Z",
+    "12:30",
+    "placeholder",
+]
+
+
+@pytest.mark.parametrize(
+    "entry_id",
+    [
+        pytest.param(
+            i,
+            id=i,
+            marks=pytest.mark.control(
+                reason="a plain id the skeleton spells as itself; pinned so the grid states "
+                "the property for the one id that needs no quoting"
+            ),
+        )
+        if i == "placeholder"
+        else pytest.param(i, id=i)
+        for i in _MISREAD_IDS
+    ],
+)
+def test_the_id_a_create_writes_reads_back_as_asked(entry_id: str):
+    """Item 1 of the cold read, the property: whatever the id string, the
+    `id:` a create writes reads back as that string, quoted where YAML would
+    misread it. `_id_text` put `placeholder` on the skeleton for such an id
+    and the corrective `Set("id")` never came, so `yes`, `2024-01-01` and
+    `123` were all written as `id: placeholder` (and collapsed onto one
+    index row)."""
+    from pyrite.models.core_types import entry_from_frontmatter
+    from pyrite.storage.repository import new_entry_text
+
+    entry = entry_from_frontmatter({"id": entry_id, "title": "T", "type": "note"}, "Body.")
+    text = new_entry_text(entry)
+    fm, _body = load_frontmatter(text)
+    assert isinstance(fm["id"], str) and str(fm["id"]) == entry_id, text
+    assert "placeholder" not in text or entry_id == "placeholder", text
+    assert list(fm)[0] == "id", text
+
+
+def test_two_creates_with_ids_yaml_would_misread_are_two_entries(tmp_path: Path):
+    """The consequence the cold read saw: two such entries collapsed onto one
+    row. Created through the service, `yes` and `no` are two files, two
+    loadable entries and two index rows."""
+    from pyrite.storage.repository import KBRepository
+
+    config = _config(tmp_path)
+    for entry_id in ("yes", "no"):
+        _with_service(
+            config,
+            lambda svc, i=entry_id: svc.create(
+                KB, {"entry_type": "note", "id": i, "title": f"Title {i}", "body": "x"}
+            ),
+        )
+    repo = KBRepository(config.knowledge_bases[0])
+    for entry_id in ("yes", "no"):
+        loaded = repo.load(entry_id)
+        assert loaded is not None and loaded.id == entry_id, entry_id
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+        assert db.get_entry("yes", KB) is not None
+        assert db.get_entry("no", KB) is not None
+        assert db.get_entry("placeholder", KB) is None
+    finally:
+        db.close()
+
+
+def test_a_create_outside_git_refuses_at_the_instant_of_publish(tmp_path: Path, monkeypatch):
+    """Item 2 of the cold read, the deterministic half: outside git the
+    publish used to be `exists()` then `os.replace`, so a file created by
+    another writer between the two was overwritten (#391 reopened). Here the
+    existence check is made to lie, as a racer makes it lie, and the publish
+    must still refuse: exclusivity comes from the filesystem call that
+    publishes, not from a check before it."""
+    from pyrite.storage import entry_writer
+
+    target = tmp_path / "plain" / "entries" / "twice.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(entry_writer.Path, "exists", lambda self: False)
+    monkeypatch.setattr(entry_writer.os.path, "exists", lambda p: False)
+    with pytest.raises(FileExistsError):
+        entry_writer.create_entry_text(target, "second\n")
+    assert target.read_text(encoding="utf-8") == "first\n"
+    assert sorted(p.name for p in target.parent.iterdir()) == ["twice.md"], "a temp file was left"
+
+
+@pytest.mark.control(
+    reason="a timing race: on the base both writers usually pass the exists() check only "
+    "when they start within microseconds, so this half may pass there by luck; "
+    "`test_a_create_outside_git_refuses_at_the_instant_of_publish` is the deterministic evidence"
+)
+def test_concurrent_creates_outside_git_give_one_file_and_the_rest_refusals(tmp_path: Path):
+    """Item 2, the property as stated: two (here eight) creates of one path
+    racing outside git give one file, holding one writer's bytes whole, and
+    a `FileExistsError` for every other writer; nothing is left beside it."""
+    import threading
+
+    from pyrite.storage.entry_writer import create_entry_text
+
+    target = tmp_path / "plain" / "entries" / "raced.md"
+    target.parent.mkdir(parents=True)
+    for _round in range(5):
+        if target.exists():
+            target.unlink()
+        writers = 8
+        barrier = threading.Barrier(writers)
+        outcomes: list[str] = [""] * writers
+
+        def run(n: int, barrier=barrier, outcomes=outcomes) -> None:
+            barrier.wait()
+            try:
+                create_entry_text(target, f"writer {n}\n")
+                outcomes[n] = "wrote"
+            except FileExistsError:
+                outcomes[n] = "refused"
+
+        threads = [threading.Thread(target=run, args=(n,)) for n in range(writers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert outcomes.count("wrote") == 1, outcomes
+        winner = outcomes.index("wrote")
+        assert target.read_text(encoding="utf-8") == f"writer {winner}\n"
+        assert sorted(p.name for p in target.parent.iterdir()) == ["raced.md"]
+
+
+@pytest.mark.control(
+    reason="in git the publish ran under the lock with expect=ABSENT before this round; pinned "
+    "beside the no-git race so the property is stated for every KB kind"
+)
+def test_concurrent_creates_in_git_give_one_file_and_the_rest_refusals(tmp_path: Path):
+    """Item 2, the other KB kind: the same eight-writer race inside a git
+    work tree, where the absence check and the publish run under the
+    momentary lock."""
+    import threading
+
+    from pyrite.storage.entry_writer import create_entry_text
+
+    kb = tmp_path / "kb"
+    (kb / "entries").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=kb, check=True, capture_output=True, timeout=30)
+    target = kb / "entries" / "raced.md"
+    for _round in range(5):
+        if target.exists():
+            target.unlink()
+        writers = 8
+        barrier = threading.Barrier(writers)
+        outcomes: list[str] = [""] * writers
+
+        def run(n: int, barrier=barrier, outcomes=outcomes) -> None:
+            barrier.wait()
+            try:
+                create_entry_text(target, f"writer {n}\n")
+                outcomes[n] = "wrote"
+            except FileExistsError:
+                outcomes[n] = "refused"
+
+        threads = [threading.Thread(target=run, args=(n,)) for n in range(writers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert outcomes.count("wrote") == 1, outcomes
+        winner = outcomes.index("wrote")
+        assert target.read_text(encoding="utf-8") == f"writer {winner}\n"
+        assert sorted(p.name for p in target.parent.iterdir()) == ["raced.md"]
