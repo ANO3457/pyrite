@@ -1299,11 +1299,13 @@ class QAService:
         at load (#704) and is not reported here. The path in the message is the
         handle to use: no index row exists for such a file.
         """
-        from ..exceptions import FrontmatterError
+        from ..storage.repository import _is_regular_file
         from ..utils.frontmatter import Frontmatter, split_frontmatter
         from ..utils.yaml import load_yaml
 
         for file_path in repo.list_files():
+            if not _is_regular_file(file_path):
+                continue  # a FIFO would block the read (#972; the dev-to-arch merge, #1026)
             try:
                 text = file_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -1313,11 +1315,15 @@ class QAService:
                 continue
             try:
                 fm = load_yaml(split.text)
-            except FrontmatterError:
-                # Frontmatter that will not parse (`title: [a, b`) has no title
-                # to judge, and the malformed-file rule already reports it. Left
-                # unhandled it aborts the whole KB-wide pass over one bad file,
-                # so the rest of the KB goes unreported.
+            except Exception:  # noqa: BLE001 - every way a document fails to load
+                # Frontmatter that will not parse or construct (`title: [a, b`,
+                # a `2024-02-30:` key, `!!float abc`, 800 nested brackets) has
+                # no title to judge, and the reader's malformed-file row already
+                # reports it (#760). `load_yaml` turns a YAML error into a
+                # `FrontmatterError`, but a constructor failure is a
+                # `ValueError`, a `TypeError` or a `RecursionError`; left
+                # unhandled any of them aborts the whole KB-wide pass over one
+                # bad file, so the rest of the KB goes unreported (#1026).
                 logger.debug("non-string title check: skipping %s", file_path, exc_info=True)
                 continue
             if not isinstance(fm, dict) or "title" not in fm:

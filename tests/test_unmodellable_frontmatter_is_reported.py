@@ -367,6 +367,39 @@ def test_a_file_that_does_not_parse_is_the_readers_malformed_row_not_a_crash(
     assert not [i for i in report["issues"] if i.get("rule") == "frontmatter_unmodellable"]
 
 
+@pytest.mark.parametrize("name", [n for n in REFUSALS if REFUSALS[n][1] is None])
+def test_one_file_that_does_not_parse_does_not_stop_the_title_check(tmp_path: Path, name: str):
+    """The dev-to-arch merge (#1026): `dev`'s #784 title check reads every
+    file's frontmatter itself and caught only a `FrontmatterError`, so a
+    constructor failure (`2024-02-30:` as a key, `!!float abc`, 800 nested
+    brackets) aborted the whole KB-wide `validate_kb` over one bad file, and
+    a FIFO blocked it. The property: a file whose frontmatter does not parse
+    is the reader's malformed row, and the title check still reports the list
+    title of the file beside it."""
+    text, _ = REFUSALS[name]
+    config = _env_with(
+        tmp_path,
+        {"broken.md": text, "listed.md": "---\nid: l\ntitle: [a, b]\ntype: note\n---\n\nText.\n"},
+    )
+    notes = config.knowledge_bases[0].path / "notes"
+    os.mkfifo(notes / "fifo.md")
+
+    result: dict = {}
+    worker = threading.Thread(target=lambda: result.update(_validate_kb(config)), daemon=True)
+    worker.start()
+    worker.join(timeout=30)
+    assert not worker.is_alive(), "validate_kb hung on the FIFO"
+
+    titles = [i for i in result["issues"] if i.get("rule") == "non_string_title"]
+    assert [i["message"] for i in titles] and all("listed.md" in i["message"] for i in titles), (
+        result["issues"]
+    )
+    health = _health(config)
+    # The reader lists the broken file (and the list-title file, which its
+    # model refuses too); nothing crashed or hung on the way.
+    assert "broken.md" in [Path(r["path"]).name for r in health["malformed_frontmatter"]]
+
+
 def test_a_non_regular_or_unreadable_file_is_read_around(tmp_path: Path):
     """A FIFO named ``*.md`` hung ``check_health`` (its open blocks for a
     writer that never comes); a directory, a dangling symlink and bytes that
