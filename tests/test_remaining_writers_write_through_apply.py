@@ -23,6 +23,7 @@ the named operations' spans (``file_operations_oracle``).
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 import time
@@ -152,6 +153,26 @@ def test_a_rename_sets_the_id_and_leaves_the_rest_of_the_file_as_written(tmp_pat
     assert "id: new-one\n" in after, after
     assert "- to: foo          # legacy spelling\n  type: related\n  since: 2020\n" in after
     assert_only_changed(before, after, [Set("id", "new-one")])
+
+
+@pytest.mark.control(
+    reason="rename's stamp already goes through updated_at_stamp with the file's scalar; the control pins #990's check on this path"
+)
+def test_a_renames_stamp_keeps_the_files_own_spelling(tmp_path: Path):
+    """#990: the renamed file's `updated_at` keeps its spelling (a bare
+    `T…Z` stays `T…Z`), as an update's does (#971 fix round 1)."""
+    stamped = SOURCE.replace(
+        "tags: [alpha, beta]  # trailing\n",
+        "tags: [alpha, beta]\nupdated_at: 2020-01-01T00:00:00Z\n",
+    )
+    config, kb_path = _kb(tmp_path, {"notes/old-one.md": stamped})
+
+    KBRepository(config.knowledge_bases[0]).rename("old-one", "new-one")
+
+    after = _text(kb_path / "notes" / "new-one.md")
+    line = next(l for l in after.splitlines() if l.startswith("updated_at:"))
+    assert re.fullmatch(r"updated_at: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", line), line
+    assert line != "updated_at: 2020-01-01T00:00:00Z", "the stamp did not move"
 
 
 def test_a_rename_rewrites_only_the_wikilinks_in_a_linking_file(tmp_path: Path):

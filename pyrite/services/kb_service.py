@@ -10,6 +10,7 @@ import copy
 import dataclasses
 import logging
 import os
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -103,6 +104,35 @@ _TIMESTAMP_FIELDS = frozenset({"created_at", "updated_at"})
 #: How long an update waits for the entry's momentary lock before it is a
 #: ``StorageBusyError`` (the lock's own default; a test shortens it).
 _LOCK_TIMEOUT = LOCK_TIMEOUT
+
+#: What an HTML ``datetime-local`` field sends: a date, ``T``, hours and
+#: minutes, no seconds. YAML reads it as a string; it is accepted and written
+#: with ``:00`` seconds, a value YAML reads as a timestamp (the maintainer on
+#: #991). Every other form is accepted iff the loader reads it as a date or
+#: timestamp (``_yaml_reads_a_timestamp``).
+_DATETIME_LOCAL = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d")
+
+
+def _yaml_reads_a_timestamp(spelled: str) -> bool:
+    """Does the loader read ``spelled``, written bare, as a date or a
+    timestamp? The one rule for what a caller may send for a timestamp key
+    (#990): it is written as sent, so it must read back as one. Asked of the
+    loader itself, not of a regex beside it (the cold read of #991: a regex
+    let ``2026-1-5`` and ``+0530`` through, which ruamel reads as strings)."""
+    from collections.abc import Mapping
+
+    if not spelled or "\n" in spelled or "\r" in spelled or "#" in spelled:
+        return False
+    try:
+        loaded = load_yaml(f"k: {spelled}")
+    except Exception:  # noqa: BLE001 - a value YAML cannot parse is no timestamp
+        return False
+    return (
+        isinstance(loaded, Mapping)
+        and list(loaded) == ["k"]
+        and isinstance(loaded["k"], date | datetime)
+    )
+
 
 #: Keys a read result (`kb_get`, `GET /api/entries/{id}`) carries that are the
 #: index's, not the entry's: an update never writes them. With the managed
@@ -1998,19 +2028,27 @@ class KBService:
         is no instant is refused. A ``datetime`` (an in-process caller's) is
         written in the house spelling.
         """
-        if key in _TIMESTAMP_FIELDS and not isinstance(value, datetime):
-            if isinstance(value, date):
-                value = datetime(value.year, value.month, value.day, tzinfo=UTC)
-            else:
-                spelled = str(value).strip()
-                try:
-                    datetime.fromisoformat(spelled.replace("Z", "+00:00"))
-                except ValueError:
-                    raise ValidationError(
-                        f"Cannot set {key} on {entry.entry_type} '{entry.id}': "
-                        f"{spelled!r} is not a timestamp (ISO 8601, e.g. 2026-01-15T09:00:00Z)."
-                    ) from None
-                value = TimestampText(spelled)
+        if key in _TIMESTAMP_FIELDS and not isinstance(value, date):
+            # A `datetime` or a `date` from an in-process caller is written as
+            # the value it is (a date stays a date, #990). Text is accepted
+            # iff the loader reads it back as a date or timestamp, not by
+            # `fromisoformat`'s wider rule (a week date, an hour-only time or
+            # a compact date would be written as a plain string or an int,
+            # #990), nor by a regex beside the loader (#991). The one form
+            # read as a string and still accepted is `datetime-local`'s
+            # `YYYY-MM-DDTHH:MM`, written with `:00` seconds.
+            spelled = str(value).strip()
+            if _DATETIME_LOCAL.fullmatch(spelled):
+                spelled += ":00"
+            if not _yaml_reads_a_timestamp(spelled):
+                raise ValidationError(
+                    f"Cannot set {key} on {entry.entry_type} '{entry.id}': {spelled!r} is "
+                    "not a timestamp YAML reads. Send YYYY-MM-DD, optionally followed by T "
+                    "or a space, HH:MM:SS, a fraction, and Z or an offset such as +05:30 "
+                    "(e.g. 2026-01-15T09:00:00Z), or YYYY-MM-DDTHH:MM, which is written "
+                    "with :00 seconds."
+                )
+            value = TimestampText(spelled)
         if hasattr(entry, key):
             _as_field_type(entry, key, value)  # validation only: refuses before any write
         return _plain_value(value)
@@ -2039,7 +2077,15 @@ class KBService:
         if "id" not in file_values:
             return path, "no id pin: the file keeps its place; add an `id:` line to let it move"
         target.parent.mkdir(parents=True, exist_ok=True)
-        create_entry_text(target, text)
+        try:
+            create_entry_text(target, text)
+        except FileExistsError:
+            # The update is already published at the old path; the move is
+            # the part that did not happen. Said with the KB-relative target,
+            # never a raw error with an absolute path (#990); the index row
+            # keeps pointing at the file's real place.
+            where = target.relative_to(kb_config.path).as_posix()
+            return path, f"target exists: the file keeps its place; `{where}` already holds a file"
         self._doc_mgr._remove_old_file(path, kb_config.path)
         entry.file_path = target
         return target, None

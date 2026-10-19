@@ -766,6 +766,99 @@ UPDATED_AT_SPELLINGS: dict[str, tuple[str, str]] = {
 #: handled from the start.
 _SPELLINGS_ALREADY_KEPT = frozenset({"bare-space-offset", "quoted-T-Z", "quoted-space"})
 
+#: #990: a zone spelled `+02` or `+0530`, and a fraction in a CRLF file. The
+#: offset regex knew only `±HH:MM` (a bare `+02` value became naive UTC, a
+#: quoted one lost its zone), and the raw scalar was not found on a CRLF line
+#: (so `.5Z` came back `.000000Z`).
+UPDATED_AT_SPELLINGS_990: dict[str, tuple[str, str, bool]] = {
+    "bare-T-hours-only-zone": (
+        "2026-01-01T00:00:00+02",
+        r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+02",
+        False,
+    ),
+    "quoted-T-compact-zone": (
+        "'2026-01-01T00:00:00+0530'",
+        r"'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+0530'",
+        False,
+    ),
+    "bare-T-fraction-Z-crlf": (
+        "2026-01-01T00:00:00.5Z",
+        r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\dZ",
+        True,
+    ),
+    # The cold read of #991: a one-digit hour (`+5`, `+5:30`, both `TimeStamp`
+    # to the loader) was stamped as a naive UTC clock, and the space YAML
+    # allows before the zone (`12:00:00 +05:00`, `12:00:00 Z`) was dropped.
+    "bare-T-one-digit-zone": (
+        "2026-01-01T00:00:00+5",
+        r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+5",
+        False,
+    ),
+    "bare-T-one-digit-zone-minutes": (
+        "2026-01-01T00:00:00+5:30",
+        r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+5:30",
+        False,
+    ),
+    "bare-space-spaced-zone": (
+        "2026-01-01 00:00:00 +05:00",
+        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \+05:00",
+        False,
+    ),
+    "bare-space-spaced-Z": (
+        "2026-01-01 00:00:00 Z",
+        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Z",
+        False,
+    ),
+}
+
+
+#: The three cases of #990's own round, which held on 24f9d57; the cold read
+#: of #991 added the four below them and the loader assertion.
+_SPELLINGS_990_ALREADY_KEPT = frozenset(
+    {"bare-T-hours-only-zone", "quoted-T-compact-zone", "bare-T-fraction-Z-crlf"}
+)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param(
+            name,
+            marks=pytest.mark.control(
+                reason="#990's own case, kept on 24f9d57; pinned beside the zone forms and the spacing the cold read of #991 found dropped"
+            ),
+        )
+        if name in _SPELLINGS_990_ALREADY_KEPT
+        else pytest.param(name)
+        for name in sorted(UPDATED_AT_SPELLINGS_990)
+    ],
+)
+def test_a_refreshed_updated_at_keeps_an_unusual_zone_and_a_crlf_fraction(
+    tmp_path: Path, spelling: str
+):
+    """The property (#990; the cold read of #991): a stamp keeps every zone
+    form the loader accepts, spacing included, and the loader reads the
+    stamp back as a timestamp."""
+    from datetime import date, datetime
+
+    from pyrite.utils.yaml import load_yaml
+
+    old, pattern, crlf = UPDATED_AT_SPELLINGS_990[spelling]
+    text = f"---\nid: {ID}\ntitle: Walk\ntype: note\nupdated_at: {old}\n---\n\nText.\n"
+    config, path = _build(tmp_path, text, frozenset({"crlf"}) if crlf else frozenset())
+    before = _text(path)
+
+    _service_update(config, {"title": "Walk, second draft"})
+
+    after = _text(path)
+    line = next(l for l in after.splitlines() if l.startswith("updated_at:"))
+    assert re.fullmatch("updated_at: " + pattern, line), line
+    assert line != f"updated_at: {old}", "the stamp did not move"
+    assert_only_these_keys_changed(before, after, TITLE_EDIT_KEYS)
+    stamped = line[len("updated_at: ") :]
+    if not old.startswith("'"):
+        assert isinstance(load_yaml(f"k: {stamped}")["k"], date | datetime), stamped
+
 
 @pytest.mark.parametrize("surface", sorted(SURFACES))
 @pytest.mark.parametrize(
@@ -816,6 +909,10 @@ SENT_TIMESTAMPS = [
     ),
     ("2026-01-01T00:00:00Z", "2026-10-02T12:00:00.500+01:00", "2026-10-02T12:00:00.500+01:00"),
     ("'2026-01-01T00:00:00Z'", "2026-10-02T12:00:00Z", "'2026-10-02T12:00:00Z'"),
+    # The maintainer's decision on #991: what an HTML `datetime-local` field
+    # sends (no seconds) is accepted and written with `:00` seconds, a value
+    # YAML reads as a timestamp.
+    ("2026-01-01T00:00:00Z", "2026-10-02T12:00", "2026-10-02T12:00:00"),
 ]
 
 
@@ -841,10 +938,135 @@ def test_a_timestamp_the_caller_sends_is_written_as_sent(
     assert_only_these_keys_changed(text, after, ("created_at",))
 
 
+#: What a caller may send for a timestamp key: YAML's timestamp form (#990).
+#: `datetime.fromisoformat` accepts more (a week date, an hour-only time, a
+#: compact date), and those were written as plain strings or ints.
+NOT_A_YAML_TIMESTAMP = [
+    pytest.param(
+        "yesterday",
+        marks=pytest.mark.control(
+            reason="refused since #971 fix round 1 (no instant at all); the control pins it beside the forms fromisoformat let through"
+        ),
+    ),
+    "2026-W40-1",
+    "2026-10-02T12",
+    "20261002",
+    "2026-10-02 12:00",
+    # The cold read of #991: forms the regex of #990 let through that the
+    # loader reads as strings (a one-digit month, a compact offset), and the
+    # `datetime-local` form with a zone, which stays refused.
+    "2026-1-5",
+    "2026-10-02T12:00:00+0530",
+    pytest.param(
+        "2026-10-02T12:00Z",
+        marks=pytest.mark.control(
+            reason="refused on 24f9d57 already (no seconds); pinned beside the datetime-local form the maintainer accepted, which it is not"
+        ),
+    ),
+]
+
+#: The cold read of #991, blocking item 1: a sent timestamp is accepted iff
+#: the loader reads it back as a date or timestamp. Spellings the YAML 1.1
+#: type does and does not cover, each asked of ruamel by the test itself.
+TIMESTAMP_CANDIDATES = [
+    "2026-1-5",
+    "2026-10-02T12:00:00+0530",
+    "2026-10-02T12:00:00-0530",
+    "2026-10-02T12:00:00+05:30",
+    "2026-10-02T12:00:00+05",
+    "2026-10-02T12:00:00+5",
+    "2026-10-02T12:00:00+5:30",
+    "2026-10-02 12:00:00 +05:00",
+    "2026-10-02 12:00:00 Z",
+    "2026-10-02T12:00:00 -05:30",
+    "2026-10-02T12:00Z",
+    "2026-10-02 12:00",
+    "2026-10-02",
+    "2026-10-2",
+    "2026-10-02t12:00:00z",
+    "2026-10-02t12:00:00Z",
+    "2026-10-02T12:00:00.5Z",
+    "2026-10-02   12:00:00",
+    "2026-10-2T1:00:00Z",
+    "2026-W40-1",
+    "20261002",
+    "yesterday",
+]
+
+#: The candidates on which the regex of #990 and the loader already agreed
+#: (24f9d57); the rest are the evidence: accepted and written as strings, or
+#: refused or quoted though the loader reads them as timestamps.
+_CANDIDATES_AGREED_ON_24F9D57 = frozenset(
+    {
+        "2026-10-02T12:00:00+05:30",
+        "2026-10-02T12:00:00+05",
+        "2026-10-02 12:00:00 +05:00",
+        "2026-10-02 12:00:00 Z",
+        "2026-10-02T12:00:00 -05:30",
+        "2026-10-02T12:00Z",
+        "2026-10-02 12:00",
+        "2026-10-02",
+        "2026-10-02t12:00:00z",
+        "2026-10-02t12:00:00Z",
+        "2026-10-02T12:00:00.5Z",
+        "2026-W40-1",
+        "20261002",
+        "yesterday",
+    }
+)
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        pytest.param(
+            sent,
+            marks=pytest.mark.control(
+                reason="the regex of #990 and the loader agreed on this form (24f9d57); pinned so the grid states the property for every form"
+            ),
+        )
+        if sent in _CANDIDATES_AGREED_ON_24F9D57
+        else pytest.param(sent)
+        for sent in TIMESTAMP_CANDIDATES
+    ],
+)
+def test_a_sent_timestamp_is_accepted_iff_yaml_reads_it_as_one(tmp_path: Path, sent: str):
+    """The property: the check and the loader agree. A value ruamel reads
+    back as a date or timestamp is written as sent; one it reads as a string
+    is refused with nothing written (#990's regex let `2026-1-5` and a
+    compact `+0530` through, which the file then held as strings)."""
+    from datetime import date, datetime
+
+    from pyrite.utils.yaml import load_yaml
+
+    yaml_reads_it = isinstance(load_yaml(f"k: {sent}")["k"], date | datetime)
+    text = (
+        f"---\nid: {ID}\ntitle: Walk\ntype: note\ncreated_at: 2026-01-01T00:00:00Z\n---\n\nText.\n"
+    )
+    config, path = _build(tmp_path, text)
+    before = path.read_bytes()
+
+    if yaml_reads_it:
+        _service_update(config, {"created_at": sent})
+        after = _text(path)
+        assert f"created_at: {sent}\n" in after, after
+        line = next(l for l in after.splitlines() if l.startswith("created_at:"))
+        assert isinstance(load_yaml(line)["created_at"], date | datetime), line
+    else:
+        with pytest.raises(ValidationError):
+            _service_update(config, {"created_at": sent})
+        assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize("surface", sorted(SURFACES))
-def test_a_timestamp_the_caller_sends_that_is_no_instant_is_refused(tmp_path: Path, surface: str):
-    """Written as sent means refused when what was sent is not a timestamp:
-    `parse_datetime` used to read `yesterday` as now and write that."""
+@pytest.mark.parametrize("sent", NOT_A_YAML_TIMESTAMP)
+def test_a_timestamp_the_caller_sends_that_is_no_instant_is_refused(
+    tmp_path: Path, surface: str, sent: str
+):
+    """Written as sent means refused when what was sent is not a YAML
+    timestamp (`YYYY-MM-DD`, then optionally `T` or a space, `HH:MM:SS`, a
+    fraction, `Z` or an offset): `parse_datetime` used to read `yesterday`
+    as now and write that, and `fromisoformat` let a week date through."""
     if surface == "mcp.kb_update":
         pytest.skip("kb_update sets a timestamp aside as `ignored` (#455): it never writes one")
     text = (
@@ -852,7 +1074,7 @@ def test_a_timestamp_the_caller_sends_that_is_no_instant_is_refused(tmp_path: Pa
     )
     config, path = _build(tmp_path, text)
     before = path.read_bytes()
-    request: dict[str, Any] = {"created_at": "yesterday"}
+    request: dict[str, Any] = {"created_at": sent}
     if surface == "rest.put":
         request = {"metadata": request}
 
@@ -860,6 +1082,109 @@ def test_a_timestamp_the_caller_sends_that_is_no_instant_is_refused(tmp_path: Pa
         SURFACES[surface](config, request)
 
     assert path.read_bytes() == before
+
+
+# --------------------------------------------------------------------------
+# The templated move (decision 5) when the target is taken (#990)
+# --------------------------------------------------------------------------
+
+#: A kb.yaml type whose folder is templated by a field it declares: a
+#: generic entry keeps `status` in `metadata`, where the template reads it.
+TEMPLATED_KB_YAML = (
+    "name: walk\nkb_type: generic\ntypes:\n  thing:\n"
+    "    subdirectory: things/{status}\n    fields:\n      status:\n        type: text\n"
+)
+
+
+def _templated_kb_with_a_taken_target(tmp_path: Path) -> tuple[PyriteConfig, Path, Path]:
+    """A templated `thing` at `things/open/`, and a squatter already at the
+    place `status: done` would move it to; `(config, path, moved_to)`,
+    indexed."""
+    text = f"---\nid: {ID}\ntitle: Walk\ntype: thing\nstatus: open\n---\n\nText.\n"
+    config, path = _build(tmp_path, text)
+    kb_root = config.knowledge_bases[0].path
+    (kb_root / "kb.yaml").write_text(TEMPLATED_KB_YAML, encoding="utf-8")
+    # A fresh KBConfig: the one `_build` made read kb.yaml before the type
+    # was templated and keeps that schema.
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name=KB, path=kb_root, kb_type="generic")],
+        settings=config.settings,
+    )
+    moved_to = kb_root / "things" / "done" / f"{ID}.md"
+    moved_to.parent.mkdir(parents=True)
+    moved_to.write_text(
+        "---\nid: other\ntitle: Squatter\ntype: thing\nstatus: done\n---\n\nTaken.\n"
+    )
+    # `_build` wrote the file under notes/; the templated folder for `open`
+    # is things/open, so give the file its place first.
+    open_dir = kb_root / "things" / "open"
+    open_dir.mkdir(parents=True)
+    path = path.rename(open_dir / path.name)
+    db = PyriteDB(config.settings.index_path)
+    try:
+        IndexManager(db, config).index_all()
+    finally:
+        db.close()
+    return config, path, moved_to
+
+
+@pytest.mark.control(
+    reason="#990's own test, kept on 24f9d57; its setup is a helper the CLI surface test of #991 shares"
+)
+def test_a_templated_move_whose_target_exists_keeps_the_file_and_says_so(tmp_path: Path):
+    """The update is published at the old path before the move; when the
+    target already holds a file the move is refused as `not_moved` with a
+    reason naming the KB-relative target, never a raw `FileExistsError`
+    with an absolute path, and the index row points at the file's real
+    place (it stayed stale until the next sync before)."""
+    config, path, moved_to = _templated_kb_with_a_taken_target(tmp_path)
+    db = PyriteDB(config.settings.index_path)
+    try:
+        written = KBService(config, db).update(ID, KB, {"status": "done"})
+        row = db.get_entry(ID, KB)
+    finally:
+        db.close()
+
+    assert written.changed is True
+    assert written.not_moved is not None and "things/done" in written.not_moved, written.not_moved
+    assert str(tmp_path) not in written.not_moved
+    assert path.exists() and "status: done" in _text(path)
+    assert _text(moved_to).startswith("---\nid: other"), "the squatter was overwritten"
+    assert row is not None and Path(row["file_path"]) == path
+
+
+@pytest.mark.parametrize(
+    "fmt",
+    [
+        "rich",
+        pytest.param(
+            "json",
+            marks=pytest.mark.control(
+                reason="the machine formats carried `not_moved` on 24f9d57; pinned beside the default output, which did not"
+            ),
+        ),
+    ],
+)
+def test_the_cli_says_when_a_templated_move_did_not_happen(tmp_path: Path, fmt: str):
+    """The surface (the cold read of #991): `pyrite update` says the move did
+    not happen and why, in the default output as in the machine one; the
+    update itself completed, so the outcome stays `done`."""
+    config, path, moved_to = _templated_kb_with_a_taken_target(tmp_path)
+    args = ["update", ID, "-k", KB, "-f", "status=done", "--format", fmt]
+    with (
+        patch("pyrite.cli.load_config", return_value=config),
+        patch("pyrite.cli.context.load_config", return_value=config),
+    ):
+        result = CliRunner().invoke(cli_app, args)
+
+    assert result.exit_code == 0, result.output
+    if fmt == "json":
+        payload = json.loads(result.output)
+        assert "things/done" in payload["not_moved"] and payload["outcome"] == "done", payload
+    else:
+        assert "Not moved" in result.output and "things/done" in result.output, result.output
+    assert path.exists() and "status: done" in _text(path)
+    assert _text(moved_to).startswith("---\nid: other")
 
 
 # --------------------------------------------------------------------------
@@ -893,6 +1218,28 @@ def test_a_hard_linked_file_is_refused_as_a_storage_error(tmp_path: Path, surfac
         assert str(tmp_path) not in str(info.value), str(info.value)
         assert "STORAGE_ERROR" in str(info.value), str(info.value)
     assert path.read_bytes() == before
+
+
+def test_mcp_kb_update_carries_its_own_old_code_for_a_storage_fault(tmp_path: Path):
+    """`kb_update` answered every failure it did not name with `UPDATE_FAILED`
+    before ADR-0037, so that is its `legacy_error_code` for a storage fault
+    too; `REQUEST_REFUSED` (the module-wide fallback a plain `_refusal` would
+    carry) is a code `kb_update` never gave (#990, the #992 merge review)."""
+    from pyrite.server.mcp_server import PyriteMCPServer
+
+    text, flags = SHAPES["root-file"]
+    config, path = _build(tmp_path, text, flags)
+    os.link(path, path.with_name("another-name.bak"))
+    server = PyriteMCPServer(config, tier="write")
+    try:
+        result = server._dispatch_tool(
+            "kb_update", {"kb_name": KB, "entry_id": ID, "title": "Walk, second draft"}
+        )
+    finally:
+        server.close()
+    assert result["error_code"] == "STORAGE_ERROR", result
+    assert result["legacy_error_code"] == "UPDATE_FAILED", result
+    assert result["retryable"] is False
 
 
 def test_a_lock_held_too_long_is_a_busy_refusal(tmp_path: Path, monkeypatch):

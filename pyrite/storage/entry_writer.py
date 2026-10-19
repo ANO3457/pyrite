@@ -50,15 +50,36 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_STAMP_TZ = re.compile(r"[+-]\d\d:\d\d$")
+#: The tail of a timestamp as YAML spells it: the spaces it allows before the
+#: zone, then ``Z`` or an offset with a one- or two-digit hour and optional
+#: minutes, ``+5``, ``+05``, ``+5:30``, ``+0530``, ``+05:30`` (#990; the cold
+#: read of #991: a one-digit hour was stamped as naive UTC, and the space
+#: before the zone was dropped). A stamp keeps every zone form the loader
+#: accepts, spacing included.
+_STAMP_TAIL = re.compile(r"(?P<space>[ \t]*)(?P<tz>Z|[+-]\d\d?(?::?\d\d)?)$")
+
+
+def _zone_offset(tz: str) -> timezone:
+    """The ``timezone`` an offset spells: ``+5`` and ``+05`` are five hours,
+    ``+5:30``, ``+0530`` and ``+05:30`` five and a half."""
+    sign = 1 if tz[0] == "+" else -1
+    digits = tz[1:]
+    if ":" in digits:
+        hours_text, minutes_text = digits.split(":", 1)
+    elif len(digits) > 2:
+        hours_text, minutes_text = digits[:-2], digits[-2:]
+    else:
+        hours_text, minutes_text = digits, "0"
+    return timezone(sign * timedelta(hours=int(hours_text), minutes=int(minutes_text)))
 
 
 def raw_scalar(yaml_text: str, key: str) -> str | None:
     """The spelling of top-level ``key``'s scalar in ``yaml_text`` as written
-    (a trailing comment stripped), or None when the key is not a plain
-    ``key: value`` line (quoted key, flow mapping, block scalar)."""
+    (a trailing comment stripped; a CRLF line read as its LF twin, #990), or
+    None when the key is not a plain ``key: value`` line (quoted key, flow
+    mapping, block scalar)."""
     found = re.search(
-        rf"^{re.escape(key)}:[ \t]*([^\s#][^#\r\n]*?)[ \t]*(?:#.*)?$", yaml_text, re.M
+        rf"^{re.escape(key)}:[ \t]*([^\s#][^#\r\n]*?)[ \t]*(?:#[^\r\n]*)?\r?$", yaml_text, re.M
     )
     return found.group(1) if found else None
 
@@ -76,7 +97,9 @@ def updated_at_stamp(old: Any, raw: str | None = None) -> Any:
     ruamel's timestamp or a ``date``); ``raw`` is the scalar as the file
     spells it (``raw_scalar``), for a bare value. A quoted value stays a
     quoted string; a bare one is ``TimestampText``, which ``apply`` writes
-    bare in that spelling.
+    bare in that spelling. A zone is kept as spelled, with the spaces the
+    file puts before it: ``Z``, ``+5``, ``+02``, ``+5:30``, ``+0530``,
+    ``+05:30`` (#990, #991), the time converted to it.
     """
     from .file_operations import TimestampText
 
@@ -98,19 +121,15 @@ def updated_at_stamp(old: Any, raw: str | None = None) -> Any:
     if ":" not in spelled:
         return now.date() if not isinstance(old, str) else now.strftime("%Y-%m-%d")
     sep = "T" if "T" in spelled else " "
-    offset = _STAMP_TZ.search(spelled)
-    tz = "Z" if spelled.endswith("Z") else (offset.group(0) if offset else "")
-    core = spelled[: -len(tz)] if tz else spelled
+    tail = _STAMP_TAIL.search(spelled)
+    space, tz = (tail.group("space"), tail.group("tz")) if tail else ("", "")
+    core = spelled[: tail.start()] if tail else spelled
     digits = len(core.rsplit(".", 1)[1]) if "." in core else 0
-    shown = now
-    if tz and tz != "Z":
-        sign = 1 if tz[0] == "+" else -1
-        hours, minutes = int(tz[1:3]), int(tz[4:6])
-        shown = now.astimezone(timezone(sign * timedelta(hours=hours, minutes=minutes)))
+    shown = now if tz in ("", "Z") else now.astimezone(_zone_offset(tz))
     text = shown.strftime(f"%Y-%m-%d{sep}%H:%M:%S")
     if digits:
         text += "." + "0" * digits
-    text += tz
+    text += space + tz
     return text if isinstance(old, str) else TimestampText(text)
 
 
