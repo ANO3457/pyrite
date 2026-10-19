@@ -347,7 +347,9 @@ _MISREAD_IDS = [
     "on",
     "off",
     "y",
+    "Y",
     "n",
+    "N",
     "true",
     "false",
     "null",
@@ -381,16 +383,6 @@ _MISREAD_IDS = [
             ),
         )
         if i == "placeholder"
-        else pytest.param(
-            i,
-            id=i,
-            marks=pytest.mark.control(
-                reason="`y`/`n` are booleans only to the oldest YAML 1.1 readers; the skeleton "
-                "wrote them bare on 87470e1 and the loader read them back as the strings "
-                "they are; pinned so the grid states the property for every form"
-            ),
-        )
-        if i in ("y", "n")
         else pytest.param(i, id=i)
         for i in _MISREAD_IDS
     ],
@@ -401,7 +393,10 @@ def test_the_id_a_create_writes_reads_back_as_asked(entry_id: str):
     misread it. `_id_text` put `placeholder` on the skeleton for such an id
     and the corrective `Set("id")` never came, so `yes`, `2024-01-01` and
     `123` were all written as `id: placeholder` (and collapsed onto one
-    index row)."""
+    index row). `y`, `Y`, `n` and `N` are booleans to a YAML 1.1 reader (the
+    spec; PyYAML's own tables let them through, so the loader read them back
+    bare), and are written quoted (#974 ride-along, the delta review of
+    #978)."""
     from pyrite.models.core_types import entry_from_frontmatter
     from pyrite.storage.repository import new_entry_text
 
@@ -411,6 +406,8 @@ def test_the_id_a_create_writes_reads_back_as_asked(entry_id: str):
     assert isinstance(fm["id"], str) and str(fm["id"]) == entry_id, text
     assert "placeholder" not in text or entry_id == "placeholder", text
     assert list(fm)[0] == "id", text
+    if entry_id != "placeholder":
+        assert f"id: {entry_id}\n" not in text, f"written bare: {text!r}"
 
 
 def test_two_creates_with_ids_yaml_would_misread_are_two_entries(tmp_path: Path):

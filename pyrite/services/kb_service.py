@@ -1950,17 +1950,18 @@ class KBService:
             ) from None
 
         if field in _ITEM_LISTS and head[0] == "metadata":
-            # The model and the index read `links`/`sources` at the top level
-            # only, so an item written at `metadata.links` is never indexed,
-            # never seen by the duplicate check, and every retry adds a copy
-            # (#975 cold read). Until the reader reads that spelling (P5),
-            # the writer refuses it with the reason, rather than write where
-            # nothing reads.
+            # ADR-0051 makes `metadata.links` a spelling of `links`, but the
+            # model and the index read `links`/`sources` at the top level
+            # only (#1025), so an item written at `metadata.links` is never
+            # indexed, never seen by the duplicate check, and every retry
+            # adds a copy (#975 cold read). Until the reader reads that
+            # spelling, the writer refuses it with the reason, rather than
+            # write where nothing reads.
             raise ValidationError(
                 f"Cannot write {field} on {entry_id!r}: the file spells it as "
-                f"`metadata.{head[-1]}`, which Pyrite reads as a plain value, not as the "
-                f"entry's {field} (nothing there is indexed or deduplicated). Move the "
-                "list to the top level, then retry."
+                f"`metadata.{head[-1]}`, a spelling of {field} (ADR-0051) that the reader "
+                f"does not read yet (#1025), so nothing there is indexed or deduplicated. "
+                "Move the list to the top level, then retry."
             )
 
         # The output path is the tuple `field_at` decided on, with the file's
@@ -2229,8 +2230,8 @@ class KBService:
             duplicate pair is what the check tolerates on a replay). The
             file must spell ``links`` at the top level: an item appended at
             ``metadata.links`` would be read by nothing (not indexed, not
-            seen by this check), so that spelling is refused with the reason
-            (``_resolve_operation``, #975 review).
+            seen by this check: the reader's gap, #1025), so that spelling is
+            refused with the reason (``_resolve_operation``).
         """
         # A malformed request is refused before anything is loaded or written
         # (#846); every link writer passes through this one check.

@@ -224,6 +224,17 @@ class TimestampText(str):
     __slots__ = ()
 
 
+class QuotedText(str):
+    """A string to be written quoted whatever the plain rule says: an id a
+    YAML 1.1 reader takes for a boolean by the spec (``y``, ``Y``, ``n``,
+    ``N``; PyYAML's own tables let them through, so ``_plain_ok`` does), which
+    a create or a rename spells as the string it is (#974 ride-along, the
+    delta review of #978). Where the scalar it replaces was single-quoted it
+    stays single-quoted."""
+
+    __slots__ = ()
+
+
 @dataclass(frozen=True)
 class Set:
     """Set a key to a value. ``path`` names a top-level key (``"title"``) or a
@@ -2326,6 +2337,8 @@ def _emit_scalar(value: Any, style: str | None, tag: str | None, flow: bool) -> 
             return _emit_scalar(str(value), style, tag, flow)
         if _plain_ok(value, flow, timestamp=True):
             return str(value)
+        return _double(value)
+    if isinstance(value, QuotedText) and style != "'":
         return _double(value)
     if style == "'" and _single_ok(value):
         return "'" + value.replace("'", "''") + "'"

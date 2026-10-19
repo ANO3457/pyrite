@@ -11,6 +11,7 @@ import logging
 import os
 import stat
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import KBConfig
@@ -45,12 +46,39 @@ logger = logging.getLogger(__name__)
 _REWRITE_ATTEMPTS = 6
 
 
-def _rewrite_wikilinks(text: str, old_id: str, new_id: str) -> tuple[str, int]:
+@dataclass(frozen=True)
+class _Rewrite:
+    """A linking file's wikilink rewrite: the new text, how many wikilinks it
+    renames, and ``partial``, the reason when the frontmatter could not be
+    patched as values and wikilinks there still name the old id (None when
+    every wikilink in the file is rewritten)."""
+
+    text: str
+    count: int
+    partial: str | None = None
+
+
+@dataclass(frozen=True)
+class _Published:
+    """What publishing one linking file's rewrite did: the wikilinks written,
+    the ``partial`` reason carried over (or found on a re-read), or the
+    reason the file was skipped."""
+
+    count: int
+    partial: str | None
+    skipped: str | None
+
+
+def _rewrite_wikilinks(text: str, old_id: str, new_id: str) -> _Rewrite:
     """``text`` with every ``[[old_id]]`` and ``[[old_id|alias]]`` naming
     ``new_id``, and how many were rewritten, as operations on the file's own
     bytes (#955, B6 P4): a ``ReplaceBody`` where the body holds one, a ``Set``
     of each frontmatter value that holds one; every other byte, a comment
-    included, stays. A file with no frontmatter is rewritten as text."""
+    included, stays. A file with no frontmatter is rewritten as text. A
+    frontmatter that cannot be patched as values (it does not parse, or
+    ``apply`` refuses it) keeps its bytes while the body is rewritten, and the
+    result says so when a wikilink there stays (#978 delta review, round 1:
+    a partly rewritten file is reported, never counted as done)."""
     import re
 
     bare = re.compile(rf"\[\[{re.escape(old_id)}\]\]")
@@ -66,17 +94,59 @@ def _rewrite_wikilinks(text: str, old_id: str, new_id: str) -> tuple[str, int]:
 
     split = split_frontmatter(text)
     if not isinstance(split, Frontmatter):
-        return substitute(text)
+        new_text, count = substitute(text)
+        return _Rewrite(new_text, count)
     try:
-        return _rewrite_as_values(text, split, substitute)
-    except Exception:  # noqa: BLE001 - the fallback below is the point
-        # The frontmatter cannot be patched as values (it does not parse, or
-        # `apply` refuses it): the wikilinks in the body alone are rewritten,
-        # as text after the closing fence, and the frontmatter's bytes stay.
-        # A linking file never fails the rename of the entry it links to
-        # (#978 review, item 1).
+        new_text, count = _rewrite_as_values(text, split, substitute)
+        return _Rewrite(new_text, count)
+    except Exception as e:  # noqa: BLE001 - the fallback below is the point
+        # The frontmatter cannot be patched as values: the wikilinks in the
+        # body alone are rewritten, as text after the closing fence, and the
+        # frontmatter's bytes stay. A linking file never fails the rename of
+        # the entry it links to (#978 review, item 1); one whose frontmatter
+        # still names the old id is reported as partial.
         tail, count = substitute(text[split.close_end :])
-        return text[: split.close_end] + tail, count
+        _same, left = substitute(split.text)
+        partial = None
+        if left:
+            partial = (
+                f"the frontmatter could not be patched as values ({type(e).__name__}: {e}); "
+                f"{left} wikilink(s) there still name '{old_id}'"
+            )
+        return _Rewrite(text[: split.close_end] + tail, count, partial)
+
+
+def _hard_link_fault(path: Path) -> str | None:
+    """Why a compare-and-replace of ``path`` would be refused before any
+    linker is written: in a git work tree a file with more than one hard link
+    is refused (``HardLinked``: another name for the same inode would take
+    another lock); outside one the write is in place and the link is no
+    fault. None when the file can be published."""
+    from pyrite.utils.file_lock import LockDirError, lock_dir_for
+
+    try:
+        links = path.stat().st_nlink
+    except OSError:
+        return None
+    if links <= 1:
+        return None
+    try:
+        lock_dir_for(path)
+    except LockDirError:  # not in git (an in-place write), or a lock directory
+        return None  # the move of the entry itself will say so, before any linker
+    return _hard_linked(links)
+
+
+def _hard_linked(links: int) -> str:
+    return f"it has {links} hard links; another name for the same inode would take another lock"
+
+
+def _fault_reason(e: BaseException) -> str:
+    from pyrite.utils.atomic_write import HardLinked
+
+    if isinstance(e, HardLinked):
+        return _hard_linked(e.links)
+    return f"{type(e).__name__}: {e}"
 
 
 def _rewrite_as_values(
@@ -153,7 +223,7 @@ def new_entry_text(entry: Entry) -> str:
         # `2024-01-01`), so the file reads back the id asked for (#974 cold
         # read: the corrective Set was gated on a condition no string met,
         # and three such ids all became `id: placeholder`).
-        ops.insert(0, Set("id", entry_id))
+        ops.insert(0, Set("id", _id_value(entry_id)))
     text, _report = apply(skeleton, ops, span)
     return text
 
@@ -165,7 +235,7 @@ def _renamed_text(text: str, split: Frontmatter, new_id: str) -> str:
     from .file_operations import FrontmatterSpan, Set, apply
 
     span = FrontmatterSpan(split.yaml_start, split.close_start, split.close_end)
-    ops: list[object] = [Set("id", _plain_for_file(new_id))]
+    ops: list[object] = [Set("id", _id_value(new_id))]
     values = load_yaml(split.text)
     if isinstance(values, dict) and "updated_at" in values:
         stamp = updated_at_stamp(values["updated_at"], raw_scalar(split.text, "updated_at"))
@@ -175,12 +245,30 @@ def _renamed_text(text: str, split: Frontmatter, new_id: str) -> str:
     return new_text
 
 
+#: Booleans to a YAML 1.1 reader by the spec, which PyYAML's own tables let
+#: through (so apply's plain rule does too, `utils.yaml._is_yaml11_ambiguous`
+#: says why): an id spelled so is written quoted, by a create and a rename as
+#: `ids pin` already quotes it (#974 ride-along, the delta review of #978).
+_YAML11_BOOL_LETTERS = frozenset({"y", "Y", "n", "N"})
+
+
+def _id_value(entry_id: str) -> str:
+    """The id as the value a ``Set("id", ...)`` writes: quoted whatever the
+    plain rule says for the four letters above, the string itself otherwise
+    (apply's emitter quotes what YAML would misread)."""
+    from .file_operations import QuotedText
+
+    return QuotedText(entry_id) if entry_id in _YAML11_BOOL_LETTERS else entry_id
+
+
 def _id_text(entry_id: str) -> str:
     """``id`` on the skeleton as a plain scalar, when the string written bare
     reads back as itself under YAML 1.2 and 1.1; otherwise the placeholder
     ``new_entry_text`` replaces through apply."""
     from .file_operations import _plain_ok  # the one spelling rule for scalars
 
+    if entry_id in _YAML11_BOOL_LETTERS:
+        return "placeholder"
     if _plain_ok(entry_id, False, False) and entry_id == entry_id.strip():
         return entry_id
     return "placeholder"
@@ -794,12 +882,26 @@ class KBRepository:
 
         Returns:
             Plan/result dict with keys ``renamed`` (bool), ``old_id``,
-            ``new_id``, ``files_rewritten``, ``links_rewritten``,
-            ``dry_run``.
+            ``new_id``, ``files_rewritten`` (linking files written),
+            ``links_rewritten``, ``files_skipped`` (linking files the rename
+            could not patch, each ``{"path", "reason"}``), ``files_partial``
+            (linking files whose body was rewritten while a wikilink in a
+            frontmatter that could not be patched as values still names the
+            old id, each ``{"path", "reason"}``), ``dry_run``.
+
+        A rename either completes, with every linker it could not patch
+        listed, or changes nothing (#978 delta review, round 1): the entry
+        is moved first, under one lock for both paths, so a source that
+        changed or a target already taken leaves every file as it was; the
+        linking files are written after it, and a fault in any of them
+        (hard-linked, undecodable, unparseable, refused by ``apply``, the
+        lock directory) is listed, never fatal. No linker is written before
+        every linker's rewrite is computed and its hard links checked.
 
         Raises:
             EntryNotFoundError: if ``old_id`` doesn't exist in this KB.
             ValidationError: if the new ID equals the old ID or already exists.
+            ConflictError: if the entry changed between the read and the move.
             KBReadOnlyError: if the KB is read-only.
         """
         if self.config.read_only and not dry_run:
@@ -825,60 +927,58 @@ class KBRepository:
         # Plan the link rewrite. We scan every body once and substitute
         # `[[<old_id>]]` and `[[<old_id>|...]]`. Substring matches at
         # arbitrary positions are NOT touched (the spec calls for exact
-        # wikilink-id match only).
-        files_rewritten = 0
-        links_rewritten = 0
-        body_rewrites: list[tuple[Path, bytes, str]] = []  # (path, bytes read, new_text)
-        # A linking file the rewrite cannot read or patch at all is skipped
-        # and named here, never fatal: a rename is refused only for the
-        # entry being renamed (#978 review, item 1).
-        files_skipped: list[dict[str, str]] = []
+        # wikilink-id match only). Every linker's rewrite is computed, and
+        # its hard links checked, before anything is written: a linking file
+        # the rename cannot read or patch is listed, never fatal (#978 review,
+        # item 1; the delta review: no linker is written before every
+        # linker's fault is known, and a partly rewritten one is reported).
+        rewrites: list[tuple[Path, bytes, _Rewrite]] = []  # (path, bytes read, rewrite)
+        skipped: dict[str, str] = {}  # relative path -> reason
+        partial: dict[str, str] = {}
 
         if update_links:
             for md_file in self.list_files():
-                # The source file itself will get a fresh write below;
-                # don't pre-count its body or double-write.
+                # The source file itself gets its own write below; don't
+                # pre-count its body or double-write.
                 if md_file.resolve() == src.resolve():
                     continue
+                rel = self._rel(md_file)
                 try:
                     raw = md_file.read_bytes()
-                    text = raw.decode("utf-8")
-                    new_text, count = _rewrite_wikilinks(text, old_id, new_id)
+                    rewrite = _rewrite_wikilinks(raw.decode("utf-8"), old_id, new_id)
                 except Exception as e:  # noqa: BLE001 - listed, not fatal
-                    files_skipped.append({"path": self._rel(md_file), "reason": str(e)})
+                    skipped[rel] = _fault_reason(e)
                     continue
-                if count == 0:
+                if rewrite.count == 0 and rewrite.partial is None:
                     continue
-                files_rewritten += 1
-                links_rewritten += count
-                body_rewrites.append((md_file, raw, new_text))
+                fault = _hard_link_fault(md_file)
+                if fault is not None:
+                    skipped[rel] = fault
+                    continue
+                if rewrite.partial is not None:
+                    partial[rel] = rewrite.partial
+                if rewrite.count:
+                    rewrites.append((md_file, raw, rewrite))
 
         if dry_run:
-            return {
-                "renamed": True,
-                "old_id": old_id,
-                "new_id": new_id,
-                "files_rewritten": files_rewritten,
-                "links_rewritten": links_rewritten,
-                "files_skipped": files_skipped,
-                "dry_run": True,
-            }
+            return self._rename_result(
+                old_id,
+                new_id,
+                files_rewritten=len(rewrites),
+                links_rewritten=sum(r.count for _p, _raw, r in rewrites),
+                skipped=skipped,
+                partial=partial,
+                dry_run=True,
+            )
 
-        # Execute. Rewrite-other-files first so a failure leaves the
-        # rename incomplete rather than orphaned wikilinks against a
-        # missing source. Each is published against the bytes it was
-        # computed on; a file that changed meanwhile is re-read and
-        # re-rewritten (#955, B6 P4).
-        for path, raw, new_text in body_rewrites:
-            reason = self._publish_rewrite(path, raw, new_text, old_id, new_id)
-            if reason is not None:
-                files_rewritten -= 1
-                files_skipped.append({"path": self._rel(path), "reason": reason})
-
-        # The source: one `Set("id", new_id)` on its own bytes (and the
-        # `updated_at` bookkeeping where the file carries it), published at
-        # the new path with expect=ABSENT, then the old file removed. The
-        # model is loaded only to resolve the new path; it supplies no bytes.
+        # Execute: the entry first, so a rename that cannot move it changes
+        # nothing (the delta review's "half-applied rename": the linkers used
+        # to be written first, and a refused move left them naming an id that
+        # did not exist). The source: one `Set("id", new_id)` on its own
+        # bytes (and the `updated_at` bookkeeping where the file carries it),
+        # published at the new path as one move with the removal of the old
+        # file. The model is loaded only to resolve the new path; it supplies
+        # no bytes.
         raw = src.read_bytes()
         text = raw.decode("utf-8")
         split = split_frontmatter(text)
@@ -935,14 +1035,57 @@ class KBRepository:
                     "nothing was written. Read it again and retry."
                 ) from e
 
+        # The linking files, each published against the bytes it was computed
+        # on; one that changed meanwhile is re-read and rewritten again, one
+        # whose publish is refused is listed with the reason (#955, B6 P4;
+        # #978 delta review: any per-linker fault is caught the same way).
+        files_rewritten = 0
+        links_rewritten = 0
+        for path, raw, rewrite in rewrites:
+            rel = self._rel(path)
+            done = self._publish_rewrite(path, raw, rewrite, old_id, new_id)
+            if done.skipped is not None:
+                skipped[rel] = done.skipped
+                partial.pop(rel, None)
+                continue
+            if done.count:
+                files_rewritten += 1
+                links_rewritten += done.count
+            if done.partial is not None:
+                partial[rel] = done.partial
+            else:
+                partial.pop(rel, None)
+
+        return self._rename_result(
+            old_id,
+            new_id,
+            files_rewritten=files_rewritten,
+            links_rewritten=links_rewritten,
+            skipped=skipped,
+            partial=partial,
+            dry_run=False,
+        )
+
+    @staticmethod
+    def _rename_result(
+        old_id: str,
+        new_id: str,
+        *,
+        files_rewritten: int,
+        links_rewritten: int,
+        skipped: dict[str, str],
+        partial: dict[str, str],
+        dry_run: bool,
+    ) -> dict:
         return {
             "renamed": True,
             "old_id": old_id,
             "new_id": new_id,
             "files_rewritten": files_rewritten,
             "links_rewritten": links_rewritten,
-            "files_skipped": files_skipped,
-            "dry_run": False,
+            "files_skipped": [{"path": p, "reason": r} for p, r in skipped.items()],
+            "files_partial": [{"path": p, "reason": r} for p, r in partial.items()],
+            "dry_run": dry_run,
         }
 
     def _rel(self, path: Path) -> str:
@@ -952,28 +1095,33 @@ class KBRepository:
             return path.name
 
     def _publish_rewrite(
-        self, path: Path, raw: bytes, new_text: str, old_id: str, new_id: str
-    ) -> str | None:
+        self, path: Path, raw: bytes, rewrite: _Rewrite, old_id: str, new_id: str
+    ) -> _Published:
         """Publish a linking file's rewrite against the bytes it was computed
         on; if the file changed meanwhile, re-read and rewrite again, up to
-        ``_REWRITE_ATTEMPTS`` times. Returns None when the file is done, or
-        the reason it was skipped (it could no longer be read or patched):
-        a linking file never fails the rename (#978 review, item 1)."""
+        ``_REWRITE_ATTEMPTS`` times. Any fault (the file hard-linked, the lock
+        directory, bytes that no longer decode or patch, a file that kept
+        changing) is the reason the file was skipped, never a failure of the
+        rename (#978 review, item 1; the delta review)."""
         for _attempt in range(_REWRITE_ATTEMPTS):
             try:
-                publish_entry_text(path, new_text, expect=raw)
-                return None
+                publish_entry_text(path, rewrite.text, expect=raw)
+                return _Published(rewrite.count, rewrite.partial, None)
             except FileChanged:
                 try:
                     raw = path.read_bytes()
-                    new_text, count = _rewrite_wikilinks(raw.decode("utf-8"), old_id, new_id)
+                    rewrite = _rewrite_wikilinks(raw.decode("utf-8"), old_id, new_id)
                 except Exception as e:  # noqa: BLE001 - listed, not fatal
-                    return str(e)
-                if count == 0:
-                    return None
-        raise ConflictError(
-            f"{path.name} in KB '{self.name}' kept changing while the rename of "
-            f"'{old_id}' rewrote its links; nothing more was written. Retry."
+                    return _Published(0, None, _fault_reason(e))
+                if rewrite.count == 0:
+                    return _Published(0, rewrite.partial, None)
+            except Exception as e:  # noqa: BLE001 - listed, not fatal
+                return _Published(0, None, _fault_reason(e))
+        return _Published(
+            0,
+            None,
+            f"it kept changing while the rename of '{old_id}' rewrote its links "
+            f"({_REWRITE_ATTEMPTS} attempts); nothing more was written to it",
         )
 
     def list_files(self) -> Iterator[Path]:

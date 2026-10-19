@@ -317,8 +317,9 @@ def test_a_link_refused_by_the_file_writes_nothing_and_names_the_reason(tmp_path
 # agree on where the file spells `links`; a refused write names its reason
 # --------------------------------------------------------------------------
 
-#: `links` spelled under `metadata:` and nowhere else: the model reads the
-#: entry's links at the top level only, so this list is a plain value to it.
+#: `links` spelled under `metadata:` and nowhere else: ADR-0051 makes it a
+#: spelling of `links`, but the model and the index read the top level only
+#: (#1025), so nothing reads this list.
 NESTED_NOTE = (
     "---\n"
     f"id: {ID}\n"
@@ -423,13 +424,17 @@ def test_the_writer_the_dedupe_and_the_reader_agree_on_where_links_is_spelled(
         source = ID
         before = path.read_bytes()
         if nested:
+            # The refusal cites #1025, the reader's gap (ADR-0051 says the
+            # spelling is the field's; the reader does not read it yet).
             if entry_point == "add_link":
-                with pytest.raises(ValidationError, match="metadata"):
+                with pytest.raises(ValidationError, match="metadata") as exc:
                     _with_service(config, lambda svc: _link_once(svc, entry_point, source))
+                assert "#1025" in str(exc.value), exc.value
             else:
                 results = _with_service(config, lambda svc: _link_once(svc, entry_point, source))
                 assert results[0]["status"] == "failed", results
                 assert "metadata" in results[0]["error"], results
+                assert "#1025" in results[0]["error"], results
             assert path.read_bytes() == before, "refused, yet the file changed"
             assert _outlinks(config, source) == set()
             return

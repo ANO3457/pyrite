@@ -39,7 +39,7 @@ from pyrite.storage.database import PyriteDB
 from pyrite.storage.file_operations import FrontmatterSpan, Set, Unset
 from pyrite.storage.index import IndexManager
 from pyrite.storage.repository import KBRepository
-from pyrite.utils.frontmatter import Frontmatter, split_frontmatter
+from pyrite.utils.frontmatter import Frontmatter, load_frontmatter, split_frontmatter
 from tests.file_operations_oracle import op_spans, outside_identical
 
 KB = "rw"
@@ -433,6 +433,188 @@ def test_a_rename_is_refused_only_for_the_entry_renamed(
         assert "[[old-one]]" not in after and skipped == [], (after, result)
     else:
         assert after == before and skipped == [f"notes/{name}.md"], (after, result)
+
+
+#: A linker whose frontmatter does not parse and holds a wikilink of its own:
+#: the body can be rewritten, the frontmatter cannot (#978 delta review, round 1).
+MALFORMED_PARTIAL_LINKER = (
+    '---\nid: bad\ntitle: [unclosed\nrelated: "[[old-one]]"\ntype: note\n---\n\nSee [[old-one]].\n'
+)
+#: The wikilink sits inside the anchored mapping, where `apply` refuses the
+#: Set (an anchor elsewhere in the file leaves a plain key patchable).
+ANCHORED_PARTIAL_LINKER = (
+    '---\nid: anchored\ntitle: A\ntype: note\ndefaults: &d\n  related: "[[old-one]]"\n'
+    "more: *d\n---\n\nSee [[old-one]].\n"
+)
+UNDECODABLE_LINKER = b"---\nid: raw\ntype: note\n---\n\n\xff\xfe See [[old-one]].\n"
+
+
+def _healthy_linker(i: int) -> str:
+    return f"---\nid: ok-{i}\ntitle: Ok {i}\ntype: note\n---\n\nSee [[old-one]] here.\n"
+
+
+def _plant_fault(kind: str, kb_path: Path, path: Path, tmp_path: Path) -> None:
+    """Write the faulty linker at ``path``."""
+    if kind == "hard-linked":
+        path.write_text(_healthy_linker(9), encoding="utf-8")
+        import os
+
+        os.link(path, tmp_path / "another-name-for-the-linker.md")
+    elif kind == "undecodable":
+        path.write_bytes(UNDECODABLE_LINKER)
+    elif kind == "malformed-frontmatter":
+        path.write_text(MALFORMED_PARTIAL_LINKER, encoding="utf-8")
+    elif kind == "anchored-frontmatter":
+        path.write_text(ANCHORED_PARTIAL_LINKER, encoding="utf-8")
+    else:  # pragma: no cover - the grid names every kind
+        raise AssertionError(kind)
+
+
+_FAULT_KINDS = ["hard-linked", "undecodable", "malformed-frontmatter", "anchored-frontmatter"]
+_POSITIONS = ["first", "middle", "last"]
+
+
+@pytest.mark.parametrize(
+    ("fault", "position"),
+    [
+        pytest.param(
+            fault,
+            position,
+            id=f"{fault}-{position}",
+            marks=pytest.mark.control(
+                reason="the planning loop listed a file it could not decode on 3e9f68b already; "
+                "pinned beside the faults that failed the rename halfway or went unreported"
+            ),
+        )
+        if fault == "undecodable"
+        else pytest.param(fault, position, id=f"{fault}-{position}")
+        for fault in _FAULT_KINDS
+        for position in _POSITIONS
+    ],
+)
+def test_a_rename_completes_and_lists_every_linker_it_could_not_patch(
+    tmp_path: Path, fault: str, position: str
+):
+    """#978 delta review, round 1, the property: a rename either completes,
+    with every linker it could not patch listed in the result with the
+    reason, or changes nothing. A per-linker fault (a hard-linked file, bytes
+    that do not decode, a frontmatter that does not parse or holds an
+    anchor) never fails the rename halfway, whatever its position among the
+    linkers; a file whose body was rewritten while its frontmatter's wikilink
+    stayed is reported as partial, not counted as done."""
+    files = {"notes/old-one.md": SOURCE}
+    names = ["0-first", "1-middle", "2-last"]
+    at = _POSITIONS.index(position)
+    for i, name in enumerate(names):
+        if i != at:
+            files[f"notes/{name}.md"] = _healthy_linker(i)
+    config, kb_path = _kb(tmp_path, files)
+    faulty = kb_path / "notes" / f"{names[at]}.md"
+    _plant_fault(fault, kb_path, faulty, tmp_path)
+    before = faulty.read_bytes()
+    healthy = [kb_path / "notes" / f"{n}.md" for i, n in enumerate(names) if i != at]
+    repo = KBRepository(config.knowledge_bases[0])
+
+    plan = repo.rename("old-one", "new-one", dry_run=True)
+    assert plan["renamed"] and plan["dry_run"], plan
+    assert faulty.read_bytes() == before and all("[[old-one]]" in _text(p) for p in healthy)
+
+    result = repo.rename("old-one", "new-one")
+
+    assert result["renamed"], result
+    assert (kb_path / "notes" / "new-one.md").exists()
+    assert not (kb_path / "notes" / "old-one.md").exists()
+    for p in healthy:
+        assert "[[new-one]]" in _text(p) and "[[old-one]]" not in _text(p), p
+    skipped = {s["path"]: s["reason"] for s in result["files_skipped"]}
+    partial = {s["path"]: s["reason"] for s in result["files_partial"]}
+    rel = f"notes/{names[at]}.md"
+    if fault in ("hard-linked", "undecodable"):
+        assert faulty.read_bytes() == before, "a file the rename could not patch was written"
+        assert rel in skipped and rel not in partial, result
+        assert result["files_rewritten"] == 2, result
+        if fault == "hard-linked":
+            assert "hard link" in skipped[rel], skipped
+    else:
+        after = _text(faulty)
+        split_before, split_after = (
+            split_frontmatter(before.decode("utf-8")),
+            split_frontmatter(after),
+        )
+        assert isinstance(split_before, Frontmatter) and isinstance(split_after, Frontmatter)
+        assert split_after.text == split_before.text, "the frontmatter bytes changed"
+        assert "[[new-one]]" in split_after.body and "[[old-one]]" not in split_after.body
+        assert rel in partial and rel not in skipped, result
+        assert "1 wikilink" in partial[rel] and "old-one" in partial[rel], partial
+        assert result["files_rewritten"] == 3, result
+    for key in ("files_skipped", "files_partial"):
+        assert plan[key] == result[key], (key, plan, result)
+
+
+def test_the_cli_rename_says_what_it_skipped_and_exits_partial(tmp_path: Path):
+    """The default output names every file the rename skipped or rewrote
+    partly, with the reason, and the outcome is `partial` (exit 3; the
+    machine formats carry `outcome: partial`)."""
+    import os
+
+    config, kb_path = _kb(
+        tmp_path,
+        {
+            "notes/old-one.md": SOURCE,
+            "notes/linker.md": LINKER,
+            "notes/bad.md": MALFORMED_PARTIAL_LINKER,
+            "notes/twin.md": _healthy_linker(7),
+        },
+    )
+    os.link(kb_path / "notes" / "twin.md", tmp_path / "another-name.md")
+
+    with (
+        patch("pyrite.cli.load_config", return_value=config),
+        patch("pyrite.cli.context.load_config", return_value=config),
+    ):
+        shown = CliRunner().invoke(cli_app, ["rename", "old-one", "new-one", "-k", KB])
+    assert shown.exit_code == 3, shown.output
+    assert "notes/bad.md" in shown.output and "notes/twin.md" in shown.output, shown.output
+    assert "hard link" in shown.output and "1 wikilink" in shown.output, shown.output
+
+    # The rename went through; a second one is refused (no old-one), so the
+    # machine form is read on a fresh KB of the same shape.
+    config2, kb_path2 = _kb(
+        tmp_path / "second",
+        {"notes/old-one.md": SOURCE, "notes/bad.md": MALFORMED_PARTIAL_LINKER},
+    )
+    with (
+        patch("pyrite.cli.load_config", return_value=config2),
+        patch("pyrite.cli.context.load_config", return_value=config2),
+    ):
+        machine = CliRunner().invoke(
+            cli_app, ["rename", "old-one", "new-one", "-k", KB, "--format", "json"]
+        )
+    assert machine.exit_code == 3, machine.output
+    import json
+
+    payload = json.loads(machine.output)
+    assert payload["outcome"] == "partial", payload
+    assert [p["path"] for p in payload["files_partial"]] == ["notes/bad.md"], payload
+    assert payload["files_skipped"] == [], payload
+
+
+@pytest.mark.parametrize("new_id", ["y", "Y", "n", "N"])
+def test_a_rename_to_an_id_a_yaml_1_1_reader_takes_for_a_boolean_quotes_it(
+    tmp_path: Path, new_id: str
+):
+    """Ride-along from #974 (the delta review of #978, round 1): `y`, `Y`, `n`
+    and `N` are booleans to a YAML 1.1 reader (the spec; PyYAML's own tables
+    let them through), so an id spelled so is written quoted, by a rename as
+    by a create."""
+    config, kb_path = _kb(tmp_path, {"notes/old-one.md": SOURCE})
+
+    KBRepository(config.knowledge_bases[0]).rename("old-one", new_id)
+
+    after = _text(kb_path / "notes" / f"{new_id}.md")
+    assert f'id: "{new_id}"\n' in after, after
+    fm, _body = load_frontmatter(after)
+    assert fm["id"] == new_id and isinstance(fm["id"], str), fm
 
 
 @pytest.fixture

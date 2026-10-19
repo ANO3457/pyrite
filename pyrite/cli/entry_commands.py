@@ -710,18 +710,37 @@ def register_entry_commands(app: typer.Typer) -> None:
                 dry_run=dry_run,
             )
 
+        from rich.markup import escape
+
+        skipped = result.get("files_skipped") or []
+        partial = result.get("files_partial") or []
+
         def rich(console: Console, result: dict) -> None:
             verb = "Would rename" if dry_run else "Renamed"
-            console.print(f"[green]{verb}:[/green] {old_id} -> {new_id}")
+            console.print(f"[green]{verb}:[/green] {escape(old_id)} -> {escape(new_id)}")
             if update_links:
                 console.print(
                     f"  Wikilink rewrites: "
                     f"{result['links_rewritten']} link(s) in "
                     f"{result['files_rewritten']} file(s)"
                 )
+                # A linking file the rename could not patch, or patched only
+                # in its body, is said here with its reason (#978 delta review).
+                for item in partial:
+                    console.print(
+                        f"  [yellow]Partly rewritten:[/yellow] {escape(item['path'])}: "
+                        f"{escape(item['reason'])}"
+                    )
+                for item in skipped:
+                    console.print(
+                        f"  [yellow]Skipped:[/yellow] {escape(item['path'])}: "
+                        f"{escape(item['reason'])}"
+                    )
             if dry_run:
                 console.print("[yellow]Dry run — no files modified.[/yellow]")
 
+        if skipped or partial:
+            return Outcome.partial(result, rich=rich)
         return Outcome.done(result, rich=rich)
 
     @app.command("link")
