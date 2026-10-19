@@ -1110,6 +1110,9 @@ def test_an_explicit_created_at_assignment_still_reaches_the_file(tmp_path):
     )
 
 
+@pytest.mark.control(
+    reason="a property that held before #978; its old form re-saved through the whole-file save, which decision 4 made a create, so it writes the model's text as a new file now"
+)
 def test_repository_save_preserves_body_line_matching_frontmatter_key(tmp_path):
     """A body line can look like frontmatter without being duplicate metadata.
     A save over an existing entry is refused since #978 (decision 4), so the

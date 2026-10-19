@@ -221,6 +221,9 @@ def test_save_entry_no_move_when_path_unchanged(template_setup):
     assert [p.name for p in kb.path.rglob("*.md")] == ["stay-test.md"]
 
 
+@pytest.mark.control(
+    reason="a property that held before #978; its old form re-saved through the whole-file save, which decision 4 made a create, so it updates through KBService.update now"
+)
 def test_save_entry_preserves_deliberate_subdir_on_update(setup):
     """Updating an entry that lives in a non-default subdirectory must keep it
     there, not relocate it to the type-default subdir.

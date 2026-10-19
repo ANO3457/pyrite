@@ -313,6 +313,9 @@ class TestRepositoryMigration:
         content = path.read_text()
         assert "_schema_version: 3" in content
 
+    @pytest.mark.control(
+        reason="a property that held before #978; its old form re-saved through the whole-file save, which decision 4 made a create, so it writes the model's text as new files now"
+    )
     def test_migrate_idempotent(self, tmp_path):
         """Load+save twice, same result."""
         from pyrite.config import KBConfig
