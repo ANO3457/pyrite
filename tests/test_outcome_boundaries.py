@@ -10,6 +10,7 @@ from pyrite.cli.outcome import Outcome
 from pyrite.cli.output import OUTPUT_FORMAT
 from pyrite.exceptions import KBNotFoundError
 from pyrite.utils.errors import PyriteCLIGroup
+from tests.cli_help import plain
 from tests.outcome_walk import (
     ROOTS,
     _current_context,
@@ -86,7 +87,7 @@ def test_shared_option_without_a_pyrite_root_refuses_before_the_body():
 
     result = runner.invoke(app, ["probe"])
     assert result.exit_code == 2, result.output
-    assert "PyriteCLIGroup" in result.stderr
+    assert "PyriteCLIGroup" in plain(result.stderr)
 
 
 @pytest.mark.control(
@@ -127,3 +128,19 @@ def test_unsupported_environment_format_has_named_shared_and_legacy_limits():
     legacy = runner.invoke(app, ["plugin"], env={"PYRITE_FORMAT": "markdown"})
     assert legacy.exit_code == 0
     assert json.loads(legacy.stdout)["outcome"] == "done"
+
+
+def test_keyboard_interrupt_in_body_is_not_overwritten_by_cleanup_failure():
+    app = typer.Typer(cls=PyriteCLIGroup)
+
+    @app.callback()
+    def root():
+        pass
+
+    @app.command()
+    def probe(output_format: str = OUTPUT_FORMAT):
+        _current_context().find_root().call_on_close(lambda: 1 / 0)
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        runner.invoke(app, ["probe"], catch_exceptions=False)

@@ -30,7 +30,7 @@ from typing import Any
 import typer
 from typer.core import TyperGroup
 
-from ..exceptions import PyriteError
+from ..exceptions import PyriteError, public_text
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def cli_error_from(
     (``NOT_FOUND``; see ``_CLI_CODE_OVERRIDES``), and ``extra`` adds keys as
     ``cli_error``'s does. Always raises ``typer.Exit(1)`` (via ``cli_error``).
     """
-    message = exc.public_message or str(exc)
+    message = public_text(exc, log=logger)
     cli_error(
         message,
         output_format,
@@ -182,7 +182,7 @@ def _refusal_payload(exc: BaseException) -> dict[str, Any]:
     return {
         "outcome": REFUSED,
         **build_error(
-            exc.public_message or str(exc),
+            public_text(exc, log=logger),
             code,
             suggestion=getattr(exc, "suggestion", None),
             retryable=bool(getattr(exc, "retryable", False)),
@@ -532,8 +532,11 @@ class PyriteCLIGroup(TyperGroup):
         # ExitStack while stdout is still held; the later close is idempotent.
         try:
             ctx.close()
+        except KeyboardInterrupt:
+            raise
         except BaseException as exc:
-            raised = exc
+            if not isinstance(raised, KeyboardInterrupt):
+                raised = exc
         try:
             # Still watched: serialising a payload can print or raise too.
             try:
@@ -555,7 +558,7 @@ class PyriteCLIGroup(TyperGroup):
                     pass
         if held:
             if isinstance(raised, PyriteError | ValueError):
-                typer.echo(str(raised), err=True)
+                typer.echo(public_text(raised, log=logger), err=True)
             answer = _error_answer(
                 _no_outcome_payload(
                     f"the command wrote {len(held)} bytes to stdout itself (moved to stderr)"

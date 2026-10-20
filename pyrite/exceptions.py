@@ -53,6 +53,26 @@ path).
 """
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def public_text(
+    exc: BaseException,
+    *,
+    already_logged: bool = False,
+    log: logging.Logger | None = None,
+) -> str:
+    """The text a response may show for ``exc``, and the one place that decides it."""
+    public = getattr(exc, "public_message", None)
+    if public is None:
+        return str(exc)
+    if not already_logged:
+        (log or logger).warning("%s: %s", type(exc).__name__, exc)
+    return str(public)
+
+
 class PyriteError(Exception):
     """Base exception for all Pyrite errors.
 
