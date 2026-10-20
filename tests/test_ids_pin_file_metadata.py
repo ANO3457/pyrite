@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from pyrite.cli import app
-from pyrite.config import KBConfig, PyriteConfig, Settings
+from pyrite.config import KBConfig, PyriteConfig, Settings, save_config
 from pyrite.services import id_pin_service as pin
 
 
@@ -68,8 +68,8 @@ def test_cli_reports_group_restore_failure_without_changing_file(tmp_path, monke
         )
 
     monkeypatch.setattr(pin, "_rename", fail_rename)
-    with patch("pyrite.cli.context.load_config", return_value=config):
-        result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", fmt])
+    save_config(config)
+    result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", fmt])
     assert result.exit_code == 3, result.output
     if fmt == "json":
         refusal = json.loads(result.stdout)["refused"][0]
@@ -117,8 +117,8 @@ def test_cli_pin_keeps_real_mode_owner_and_group(tmp_path, different_group):
         knowledge_bases=[KBConfig(name="notes", path=path)],
         settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
     )
-    with patch("pyrite.cli.context.load_config", return_value=config):
-        result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", "json"])
+    save_config(config)
+    result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", "json"])
     assert result.exit_code == 0, result.output
     after = file.stat()
     assert (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) == (
