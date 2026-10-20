@@ -28,6 +28,7 @@ from ..models.protocols import (
     Statusable,
     Temporal,
 )
+from ..schema.field_aliases import lift_declared_fields, read_metadata, read_view
 from ..utils.metadata import parse_metadata
 from .database import PyriteDB
 from .repository import KBRepository
@@ -111,9 +112,6 @@ _READ_COLUMNS = (
     "coordinates",
 )
 
-#: Metadata keys the backend lifts to the top of a row (Tier A 1200, r1175).
-_LIFTED_METADATA_KEYS = ("rank", "effort", "kind", "status_reason", "parked_awaiting")
-
 #: The row's one-value columns, as the backend binds them
 #: (``base_backend._upsert_entry_main``): what ``row_for`` checks holds a
 #: scalar before a write is published (#955).
@@ -165,6 +163,29 @@ def _as_text(value: Any) -> Any:
     if isinstance(value, bool):
         return str(int(value))
     return str(value)
+
+
+def _read_value_is_the_bags(key: str, read_value: Any, bag_value: Any) -> bool:
+    """Whether a read's value for ``key`` is the bag's value, spelled as the
+    read spells it: a TEXT column holds the bag's ``2`` as ``"2"`` and its
+    ``true`` as ``"1"`` (``_as_column``); a timestamp the model parsed is the
+    bag's instant whatever the file's separator or zone spelling; anything
+    else (a value lifted from the bag itself) compares as JSON text. What
+    ``read_metadata`` asks to decide whether a bag key leaves the read's
+    ``metadata`` (#1025): a value the read does not carry stays."""
+    if key in _READ_COLUMNS:
+        return bool(_as_column(key, bag_value) == read_value)
+    if key in ("created_at", "updated_at"):
+        from ..models.base import _timestamp_instant
+
+        a, b = _timestamp_instant(read_value), _timestamp_instant(bag_value)
+        if a is not None and b is not None:
+            return a == b
+    from ..utils.json_utils import SafeEncoder
+
+    return json.dumps(read_value, sort_keys=True, cls=SafeEncoder) == json.dumps(
+        bag_value, sort_keys=True, cls=SafeEncoder
+    )
 
 
 def _one_text(value: Any) -> Any:
@@ -551,7 +572,11 @@ class IndexManager:
         # Use to_frontmatter() to capture all fields, then strip keys
         # already stored in their own DB columns
 
-        # Keys that map to actual DB columns (always excluded from metadata)
+        # Keys that map to actual DB columns (always excluded from metadata).
+        # `provenance` has no column: it rides in the bag like every other
+        # declared field without one, and a read lifts it to its own name
+        # (`lift_declared_fields`, #1025); it used to be dropped here, so no
+        # read carried it.
         db_column_keys = {
             "id",
             "type",
@@ -561,7 +586,6 @@ class IndexManager:
             "tags",
             "sources",
             "links",
-            "provenance",
             "metadata",
             "created_at",
             "updated_at",
@@ -822,23 +846,37 @@ class IndexManager:
         for key in _READ_COLUMNS:
             result[key] = _as_column(key, data.get(key))
         result["lifecycle"] = result["lifecycle"] or "active"
-        result["metadata"] = metadata
+        result["metadata"] = metadata  # replaced below, once the fields are lifted
         # Its own column (#1001, decision 5), read back through JSON like the
-        # row: a read spells `aliases` where the file does, never under
-        # `metadata` for a file that spells it at the top level.
+        # row: a read spells `aliases` at its own name, never under `metadata`.
         result["aliases"] = json.loads(json.dumps(list(data["aliases"] or []), cls=SafeEncoder))
         # A timestamp the file does not carry (or carries unparsed) is not the
         # file's: the model fills it with "now", which would change on every
         # read. The row's value stands, as before (#670).
         source = entry._source_frontmatter or {}
+        # "Carried" at any spelling (#1025): the view the model read.
+        view = read_view(source, type(entry), entry.entry_type) if source else {}
         for key in ("created_at", "updated_at"):
-            from_file = key in source and key not in entry._unparsed_timestamp_keys
+            from_file = key in view and key not in entry._unparsed_timestamp_keys
             result[key] = data.get(key) if from_file else row.get(key)
         for key in _ROW_ONLY_KEYS:
             result[key] = row.get(key)
-        for key in _LIFTED_METADATA_KEYS:
-            if key in metadata and key not in result:
-                result[key] = metadata[key]
+        # A declared field the row keeps in its bag is read at its own name
+        # (#1025): the one rule the backend's row shaping applies too.
+        lift_declared_fields(result, metadata, type(entry), entry.entry_type)
+        # The single-entry read spells a declared field once, at its own name
+        # (just lifted), and its `metadata` holds only keys the type does not
+        # declare (#1025, option B of the maintainer's decision of 2026-10-20).
+        # The row keeps the whole bag: the storage dict the plugins read
+        # declared fields from.
+        result["metadata"] = read_metadata(
+            metadata,
+            result,
+            type(entry),
+            entry.entry_type,
+            file_values=source,
+            agrees=_read_value_is_the_bags,
+        )
         # As _sync_tags stores them: falsy skipped, duplicates (by ==, so
         # ``1`` and ``true`` are one) dropped first-wins, names as TEXT.
         result["tags"] = [_one_text(t) for t in dict.fromkeys(t for t in data["tags"] if t)]

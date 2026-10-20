@@ -174,6 +174,98 @@ unchanged in both the model and the index row.
 7. **The repo KB's doubly spelled entries** are fixed by hand in a
    separate `kb/` PR to `dev`.
 
+## Amendment 2026-10-20: the single-entry read (proposed, #1025, PR #1039)
+
+> *Proposed* by the #1025 fix round for the maintainer to accept; the
+> accepted text above is unchanged. The maintainer's decisions of
+> 2026-10-20 on PR #1039 (option B; undeclared keys not lifted;
+> `parked_awaiting` declared) are what this amendment records.
+
+The decision above landed on the writers first: every write went to
+`spelling_in(file, field)`, while every class's `from_frontmatter` still
+read top-level keys only, so a field spelled only under `metadata:` was
+written where nothing read it (`update -f importance=8` then `get` showed
+5; `pyrite link` refused a file spelling `links` nested, #975). The reader
+holds the same invariant: **for every field, every reader takes its value
+from `spelling_in(file, field)`, the path the writer writes.** A file
+spelling a field only under `metadata:` reads exactly as if it spelled it at
+the top level: in the model, the index row, the single-entry read (CLI, MCP,
+REST), search and health.
+
+- **One lift**, `read_view(file_values, cls, entry_type)` in
+  `pyrite/schema/field_aliases.py`, called by the two loaders
+  (`entry_from_frontmatter`, `Entry.from_markdown`) in front of
+  `cls.from_frontmatter`: a declared field (`declared_fields`: the class's
+  public dataclass fields that are file keys, less alias names, plus alias
+  targets) that the file spells only nested is spelled at that name at the
+  top of the view the class reads. `capture_extra_frontmatter` keeps the
+  raw mapping. A structural test pins that every `from_frontmatter` call in
+  production code sits behind one of these two (`build_entry`, a create
+  from a request, is the third and folds its envelope itself).
+- **Decision 5, reworded (option B):** *a single-entry read spells each
+  field once, at its own name; its `metadata` holds only keys the type does
+  not declare. Where the file spells a field is the writer's concern
+  (`spelling_in`).* The scope is the single-entry read (`read_fields`:
+  `get`, REST `GET /api/entries/{id}`, MCP `kb_get`). The index row
+  (`base_backend._entry_to_dict`, the storage dict the plugins read declared
+  fields from) keeps its whole `metadata` bag, as does the model's; a
+  follow-up moves the plugins to top-level fields. Rationale (the decision
+  packet on PR #1039): the "both" shape made an ordinary echo of a read fail
+  (`metadata.provenance` sent back is a managed field) and spelled a field
+  twice in one read; "the file's spelling only" brought back "update says
+  done, get says no".
+- **The row's rule:** `lift_declared_fields(result, bag, cls, entry_type)`
+  replaces `_LIFTED_METADATA_KEYS` and the backend's copy of it. A declared
+  field the row keeps in its `metadata` bag (no column of its own: a
+  backlog item's `rank`/`effort`/`kind`, a task's `status_reason`, every
+  task's `evidence`, an entry's `provenance`, which used to be dropped from
+  every read) is read at its own name too, through `spelling_in` over the
+  bag. The read's `metadata` is then `read_metadata`: the bag less every key
+  that spells a declared field the read carries at its own name. A declared
+  field a class never reads from its frontmatter (`UNREAD` below) keeps its
+  bag spelling, so a read loses nothing.
+- **Undeclared keys are not lifted** (the maintainer's decision, 2026-10-20):
+  `rank` on an `actor` reads under `metadata` only. A key a tool reads at
+  the top of a read is declared instead: `parked_awaiting` is a field of
+  `TaskEntry`, read and emitted at the top level as before.
+- **Not read under `metadata`:** `type:` picks the class before any
+  spelling is read, and `id:` is the identity line (design principle 5).
+- **Migrations run before the lift**, on the file's own spellings:
+  `_load_entry` migrates the raw frontmatter and hands it to the loader;
+  `schema migrate` diffs a migration's result against the file.
+- **A double spelling** is left to the model (the top-level spelling wins,
+  decision 3) and to `index health`; the lift skips the field, and the
+  read keeps the reported second value under `metadata`: a read never
+  loses a value the file holds. The rule for a bag key (round 3): it leaves
+  `metadata` whenever the file has no top-level spelling of the field (the
+  field has one value, the lift's, whatever a column made of it:
+  `metadata: {importance: '8'}` reads `importance: 8` and no
+  `metadata.importance`); a key the file also spells at the top level, a
+  true double spelling, leaves only when the two values agree.
+- **Every key the read returns reaches every surface** (REST `GET`, MCP
+  `kb_get`, the CLI's JSON) with the same value. REST's `EntryResponse`
+  declares the stable core and passes every other key through; its fixed
+  field list dropped a lifted field with no slot (a task's `status_reason`,
+  a backlog item's `rank`, `provenance`). A parametrised test compares the
+  three surfaces for one entry of every registered type, and one test
+  compares the key sets of REST `GET` (as an anonymous reader of a public
+  KB) and MCP `kb_get`, bookkeeping fields (`created_by`, `modified_by`,
+  `indexed_at`, `assignee`) included. REST's one key of its own is the
+  `participants: []` default of `EntryResponse` on a type without that
+  field; the web client reads it unguarded, so whether REST drops it is
+  the maintainer's call (round 3).
+- A declared field a class never reads from its frontmatter at any
+  spelling (protocol mixin fields a class took but did not wire up: a
+  person's `location`, an event's `start_date`) has nothing to lift; the
+  grid pins the list (`UNREAD`) so it can only shrink.
+
+The grid: `tests/test_reader_reads_where_the_writer_writes.py`, every entry
+class × declared field × spelling, with a twin oracle (the file spelling the
+field at a spelling reads as the file spelling it at its own name) over the
+model, the row, `get`, search, health and the writers, plus the decision
+packet's round trips (a read echoed back through REST `PUT` and MCP
+`kb_update`, with a key added or a field edited, is written).
+
 ## Amends
 
 - **ADR-0042, decision 6**, "A key is written where the operation names

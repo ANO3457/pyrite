@@ -422,6 +422,7 @@ class TaskService:
                 except Exception:
                     continue
                 if entry:
+                    # A declared field of a task (#1025), read at its own name.
                     t["parked_awaiting"] = (entry.get("parked_awaiting") or "").strip()
 
         return tasks

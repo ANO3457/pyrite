@@ -73,7 +73,7 @@ from ..storage.repository import KBRepository
 from ..utils.atomic_write import HardLinked
 from ..utils.file_lock import LOCK_TIMEOUT, LockDirError, LockTimeout
 from ..utils.frontmatter import Frontmatter, NoFrontmatter, describe, split_frontmatter
-from ..utils.metadata import parse_metadata
+from ..utils.metadata import declared_over_bag, parse_metadata
 from ..utils.yaml import load_yaml
 from .access_policy import named_kb
 from .body_bounds import MARKER_KEYS, ensure_not_truncated
@@ -1998,21 +1998,6 @@ class KBService:
                 "equal pair, then update."
             ) from None
 
-        if field in _ITEM_LISTS and head[0] == "metadata":
-            # ADR-0051 makes `metadata.links` a spelling of `links`, but the
-            # model and the index read `links`/`sources` at the top level
-            # only (#1025), so an item written at `metadata.links` is never
-            # indexed, never seen by the duplicate check, and every retry
-            # adds a copy (#975 cold read). Until the reader reads that
-            # spelling, the writer refuses it with the reason, rather than
-            # write where nothing reads.
-            raise ValidationError(
-                f"Cannot write {field} on {entry_id!r}: the file spells it as "
-                f"`metadata.{head[-1]}`, a spelling of {field} (ADR-0051) that the reader "
-                f"does not read yet (#1025), so nothing there is indexed or deduplicated. "
-                "Move the list to the top level, then retry."
-            )
-
         # The output path is the tuple `field_at` decided on, with the file's
         # spelling in place of the field: never re-joined into a string that
         # `apply()` would parse again (#1001 review: a one-segment head
@@ -2572,7 +2557,11 @@ class KBService:
         entry = self.get_entry(collection_id, kb_name, readable_kbs=readable_kbs)
         if not entry or entry.get("entry_type") != "collection":
             raise EntryNotFoundError(f"Collection not found: {collection_id}")
-        metadata = parse_metadata(entry.get("metadata", {}))
+        # A single-entry read spells a declared field (`source_type`,
+        # `folder_path`, `query`, `entry_filter`) at its own name and keeps
+        # `metadata` for undeclared keys (#1025, option B); the bag is read
+        # second for a dict shaped like a row.
+        metadata = declared_over_bag(entry, ("source_type", "folder_path", "query", "entry_filter"))
 
         source_type = metadata.get("source_type", "folder")
 

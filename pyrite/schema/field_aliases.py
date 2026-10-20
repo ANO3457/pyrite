@@ -26,7 +26,7 @@ by ``field_aliases_findings`` (``pyrite schema validate``), never a crash.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from typing import Any
 
@@ -363,6 +363,191 @@ def double_spellings(
         if len(found) > 1:
             out[field] = found
     return out
+
+
+#: Dataclass fields of an entry class that are not frontmatter fields: the
+#: identity line (``id:``, design principle 5) and ``type:`` (which picks the
+#: class before any spelling is read) are read at the top level only; the
+#: rest are not file keys at all.
+_NOT_FIELDS = frozenset(
+    {"id", "type", "body", "metadata", "file_path", "kb_name", "extra_frontmatter"}
+)
+
+
+#: ``declared_fields`` per (class, type name): the alias map behind it walks
+#: the plugin registry, and a read asks for every entry. Cleared whenever a
+#: plugin is registered or discovered (``clear_declared_fields_cache``), the
+#: one event that changes a type's aliases.
+_DECLARED_FIELDS: dict[tuple[type, str], frozenset[str]] = {}
+
+
+def clear_declared_fields_cache() -> None:
+    """Forget the cached ``declared_fields``: the plugin registry changed."""
+    _DECLARED_FIELDS.clear()
+
+
+def declared_fields(cls: type, entry_type: str) -> frozenset[str]:
+    """The fields a type declares: the class's public dataclass fields that are
+    file keys, and every alias target. What the reader lifts (``read_view``,
+    ``lift_declared_fields``) and what a single-entry read keeps out of its
+    ``metadata`` (``read_metadata``): a key that is no field of the type is
+    the ``metadata`` bag's, at every spelling."""
+    import dataclasses
+
+    cached = _DECLARED_FIELDS.get((cls, entry_type))
+    if cached is not None:
+        return cached
+    if not dataclasses.is_dataclass(cls):
+        return frozenset()
+    aliases = class_field_aliases(cls, entry_type)
+    names = {
+        f.name
+        for f in dataclasses.fields(cls)
+        if not f.name.startswith("_") and f.name not in _NOT_FIELDS
+    }
+    # A dataclass field named like an alias (`participants`, the attribute
+    # `actors` is read into) is a spelling of its target, not a field.
+    names -= set(aliases)
+    names |= set(aliases.values())
+    result = frozenset(names)
+    _DECLARED_FIELDS[(cls, entry_type)] = result
+    return result
+
+
+def read_view(file_values: dict[str, Any], cls: type, entry_type: str) -> dict[str, Any]:
+    """The file's frontmatter as a class reads it: a declared field the file
+    spells only under ``metadata:`` is spelled at that name at the top level
+    too (#1025; ADR-0051, the reader half). The one place the reader reads a
+    spelling: every ``from_frontmatter`` reads top-level keys of this view,
+    and takes each field's value from ``spelling_in(file, field)``, the path
+    the writer writes (ADR-0042 decision 12).
+
+    The view adds the top-level key and leaves ``metadata`` as the file has
+    it (the model's bag, and the index row's, keep the nested spelling: the
+    storage shape); the single-entry read then spells the field once, at its
+    own name (``read_metadata``, option B of the maintainer's decision of
+    2026-10-20). ``capture_extra_frontmatter`` keeps the raw mapping as
+    ``_source_frontmatter``. A field spelled twice is left as it is: the
+    model reads the top-level spelling (decision 3) and ``double_spellings``
+    reports the file. A key the type does not declare is the bag's and is
+    not lifted. Returns ``file_values`` itself when there is nothing to
+    lift."""
+    nested = file_values.get(METADATA)
+    if not isinstance(nested, Mapping) or not nested:
+        return file_values
+    declared = declared_fields(cls, entry_type)
+    view: dict[str, Any] | None = None
+    for key in nested:
+        if not isinstance(key, str) or key == METADATA:
+            continue
+        try:
+            field, _rest = field_at(cls, entry_type, (METADATA, key))
+        except ValueError:
+            continue
+        if field not in declared:
+            continue
+        try:
+            path = spelling_in(file_values, cls, entry_type, field)
+        except SpelledTwiceError:
+            continue
+        if path != (METADATA, key):
+            continue
+        if view is None:
+            view = dict(file_values)
+        view[key] = nested[key]
+    return view if view is not None else file_values
+
+
+def lift_declared_fields(
+    result: dict[str, Any], bag: Mapping[str, Any] | None, cls: type, entry_type: str
+) -> None:
+    """The row's read shape: a declared field the row keeps in its ``metadata``
+    bag (a field with no column of its own: a backlog item's ``rank``, a
+    task's ``status_reason``) is read at its own name too; the bag keeps it,
+    and a key the type does not declare stays the bag's (#1025). One rule for
+    ``IndexManager.read_fields`` and the backend's row, in place of a
+    hand-written list of five keys. Where the bag spells the field is
+    ``spelling_in``'s answer (the field's name or an alias); a bag spelling
+    it twice reads the field's own name, the model's reading (decision 3)."""
+    if not isinstance(bag, Mapping) or not bag:
+        return
+    for field in sorted(declared_fields(cls, entry_type)):
+        if field in result:
+            continue
+        try:
+            path = spelling_in(bag, cls, entry_type, field)
+        except SpelledTwiceError:
+            path = (field,)
+        if path[0] != METADATA and path[-1] in bag:
+            result[field] = bag[path[-1]]
+
+
+def read_metadata(
+    bag: Mapping[str, Any] | None,
+    result: Mapping[str, Any],
+    cls: type,
+    entry_type: str,
+    *,
+    file_values: Mapping[str, Any] | None = None,
+    agrees: Callable[[str, Any, Any], bool] | None = None,
+) -> dict[str, Any]:
+    """The single-entry read's ``metadata``: the bag, less every key that spells
+    a declared field the read carries at its own name (``field_at`` folded,
+    so an alias of a declared field is a spelling of it). A read spells each
+    field once, at its own name, and ``metadata`` holds only keys the type
+    does not declare (option B of the maintainer's decision of 2026-10-20 on
+    #1025); the index row keeps the whole bag, the storage shape the plugins
+    read.
+
+    Which bag keys leave is decided by the file's spellings (``file_values``,
+    the raw frontmatter): a field the file does not spell at the top level
+    has one value, the one the lift carried to its own name, so its bag key
+    is removed whatever a column made of the value (``metadata: {importance:
+    '8'}`` reads ``importance: 8`` and nothing under ``metadata``; round-2
+    delta review). A field the file spells at the top level too is a double
+    spelling, or a declared field the class never reads from its frontmatter
+    (whose column is empty): there the value comparison decides, and a read
+    never loses a value the file holds (``importance: 7`` with ``metadata:
+    {importance: 8}`` reads 7 at its own name and keeps 8 under ``metadata``,
+    where ``index health`` reports it). ``agrees(field, read_value,
+    bag_value)`` says whether the read's value is the bag's; the caller knows
+    how its columns spell a value (a TEXT column holds ``2`` as ``"2"``), the
+    default compares the two as JSON text. Without ``file_values`` every key
+    is treated as a double spelling (the comparison alone decides)."""
+    if not isinstance(bag, Mapping) or not bag:
+        return {}
+    same = agrees or _same_json_text
+    declared = declared_fields(cls, entry_type)
+    source = file_values if isinstance(file_values, Mapping) else None
+    out: dict[str, Any] = {}
+    for key, value in bag.items():
+        if isinstance(key, str) and key != METADATA:
+            try:
+                field, _rest = field_at(cls, entry_type, (key,))
+            except ValueError:
+                field = key
+            if field in declared and field in result:
+                if source is not None and not _spelled_at_top(source, cls, entry_type, field):
+                    continue
+                if same(field, result[field], value):
+                    continue
+        out[key] = value
+    return out
+
+
+def _spelled_at_top(file_values: Mapping[str, Any], cls: type, entry_type: str, field: str) -> bool:
+    """Whether the file spells ``field`` at the top level, by its own name or
+    an alias (a spelling under ``metadata:`` does not count)."""
+    return any(
+        path[0] != METADATA for path in _spellings_present(file_values, cls, entry_type, field)
+    )
+
+
+def _same_json_text(_field: str, a: Any, b: Any) -> bool:
+    """Equal once both are spelled as JSON (a read is JSON on every surface)."""
+    import json
+
+    return json.dumps(a, sort_keys=True, default=str) == json.dumps(b, sort_keys=True, default=str)
 
 
 def _spellings_present(
