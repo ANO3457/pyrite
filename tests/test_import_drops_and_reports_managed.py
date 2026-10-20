@@ -150,6 +150,20 @@ def test_an_export_imports_through_the_cli_and_names_what_it_dropped(env):
         assert not (present & (DROPPED | TASK_MANAGED))
 
 
+def test_the_cli_does_not_print_its_own_rich_markup(env):
+    """#1096: the label is markup, the key list is data; neither may print tags."""
+    path = env["tmp_path"] / "export.json"
+    path.write_text(_export(env))
+    with (
+        patch("pyrite.cli.load_config", return_value=env["config"]),
+        patch("pyrite.cli.context.load_config", return_value=env["config"]),
+    ):
+        res = runner.invoke(cli_app, ["import", str(path), "-k", "dst"])
+    assert res.exit_code == 0, res.output
+    assert "[yellow]" not in res.output and "[/yellow]" not in res.output, res.output
+    assert "Ignored:" in res.output, res.output
+
+
 def test_a_direct_bulk_create_still_refuses_the_same_record(env):
     """Only import drops: MCP kb_bulk_create is a direct create and refuses."""
     from pyrite.server.mcp_server import PyriteMCPServer
