@@ -856,3 +856,54 @@ def test_hybrid_and_semantic_keep_their_published_no_embeddings_reasons(indexed)
         TestTheTraceAndTheWarningAgree._trace(db, "semantic")[0]["reason"]
         == "semantic_empty_no_embeddings"
     )
+
+
+class TestIndexEmbedUnavailableModel:
+    def test_model_load_failure_preserves_queue_and_reports_one_actionable_message(
+        self, tmp_path, monkeypatch
+    ):
+        from typer.testing import CliRunner
+
+        from pyrite.cli import app
+
+        kb_path = tmp_path / "kb"
+        kb_path.mkdir()
+        config = PyriteConfig(
+            knowledge_bases=[KBConfig(name="t", path=kb_path, kb_type=KBType.GENERIC)],
+            settings=Settings(
+                index_path=tmp_path / "i.db",
+                auto_embed=True,
+                embedding_model="configured-offline-model",
+            ),
+        )
+        db = PyriteDB(config.settings.index_path)
+        db.vec_available = True
+        db.backend.vec_available = True
+        kb_service = KBService(config, db)
+        kb_service.create_entry("t", "e1", "First", "note", "body one")
+        kb_service.create_entry("t", "e2", "Second", "note", "body two")
+
+        monkeypatch.setattr("pyrite.services.embedding_service.is_available", lambda: True)
+        load_model = MagicMock(side_effect=OSError("model unavailable offline"))
+        monkeypatch.setattr("pyrite.services.embedding_service._load_model", load_model)
+        monkeypatch.setattr("pyrite.cli.index_commands.get_config_and_db", lambda: (config, db))
+
+        try:
+            result = CliRunner().invoke(app, ["index", "embed"])
+
+            assert result.exit_code == 1, result.output  # nothing embedded: never 0
+            assert result.output.count("Could not load the embedding model") == 1
+            assert "'configured-offline-model'" in result.output
+            assert "cache" in result.output.lower()
+            assert "pending" in result.output.lower()
+            assert load_model.call_count == 1
+            assert _vector_count(db) == 0
+            rows = db._raw_conn.execute(
+                "SELECT entry_id, attempts, status FROM embed_queue ORDER BY entry_id"
+            ).fetchall()
+            assert [tuple(row) for row in rows] == [
+                ("e1", 0, "pending"),
+                ("e2", 0, "pending"),
+            ]
+        finally:
+            db.close()
