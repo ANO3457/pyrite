@@ -13,7 +13,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from importlib.metadata import EntryPoint
-from typing import Any
+from typing import Any, cast
 
 from ..exceptions import PluginError
 from .capabilities import Capability
@@ -28,7 +28,7 @@ def load_plugin_entry_point(ep: EntryPoint) -> PyritePlugin:
     plugin = ep.load()()
     if not hasattr(plugin, "name"):
         raise ValueError(f"Plugin {ep.name} has no 'name' attribute")
-    return plugin
+    return cast(PyritePlugin, plugin)
 
 
 # Probe arguments used only to check that a callable's signature *binds* the

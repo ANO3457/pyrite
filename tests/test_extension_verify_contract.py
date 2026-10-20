@@ -80,3 +80,17 @@ def test_named_plugin_verifies(distribution):
 def test_no_entry_points_are_refused(distribution):
     distribution("X = 1\n", plugins=False)
     assert "declares no 'pyrite.plugins' entry points" in _verify_distribution("verify-example")[0]
+
+
+def test_load_plugin_entry_point_returns_valid_plugin():
+    from unittest.mock import MagicMock
+    from pyrite.plugins.registry import load_plugin_entry_point
+
+    class DummyPlugin:
+        name = "dummy"
+
+    ep = MagicMock()
+    ep.name = "dummy"
+    ep.load.return_value = DummyPlugin
+    loaded = load_plugin_entry_point(ep)
+    assert loaded.name == "dummy"
