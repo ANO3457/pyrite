@@ -4,7 +4,7 @@ import re
 import pytest
 from tests import test_auth_event_loop_blocking as blocking
 
-pytest_plugins = ["tests.test_auth_event_loop_blocking"]
+from tests.test_auth_event_loop_blocking import _long_busy_timeout, oauth_env  # noqa: F401
 
 CASES = [
     ("GET", "/auth/me", None),
@@ -21,7 +21,7 @@ CASES = [
 
 @pytest.mark.parametrize(("method", "path", "body"), CASES)
 def test_auth_write_wait_keeps_concurrent_request_responsive(
-    oauth_env,
+    oauth_env,  # noqa: F811
     monkeypatch,
     method,
     path,
