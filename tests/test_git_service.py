@@ -478,3 +478,31 @@ class TestGitArgumentInjection:
             GitService.commit(tmp_path, "msg", paths=["--force"])
         add_cmd = next(c[0][0] for c in run.call_args_list if c[0][0][:2] == ["git", "add"])
         assert add_cmd == ["git", "add", "--", "--force"]
+
+
+class TestShow:
+    """#1049: a path at a revision is read in GitService, not by its callers."""
+
+    def test_show_returns_the_committed_text_and_none_for_an_uncommitted_path(self, tmp_path):
+        from tests.test_worktree_service import _clean_git_env, _init_git_repo
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        env = _clean_git_env()
+        (repo / "note.md").write_text("first\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "note.md"], cwd=repo, check=True, capture_output=True, env=env
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add the note"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        (repo / "note.md").write_text("second\n", encoding="utf-8")
+        (repo / "untracked.md").write_text("never committed\n", encoding="utf-8")
+
+        assert GitService.show(repo, "note.md") == "first\n"
+        assert GitService.show(repo, "untracked.md") is None
