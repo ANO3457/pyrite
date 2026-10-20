@@ -51,6 +51,47 @@ def kb_names_clause(
     return f"{column} IN ({', '.join(keys)})"
 
 
+#: A link row's identity: (target_id, target_kb, relation, target_prefix).
+LinkKey = tuple[Any, Any, Any, Any]
+
+
+def _link_rows(kb_name: str, links: list[dict[str, Any]]) -> dict[LinkKey, dict[str, Any]]:
+    """The link rows an entry's ``links`` make: one per written link (#1009).
+
+    Two links are one row when they have the same key: the target, KB and
+    relation as the TEXT their columns hold (``as_stored_text``, the one
+    conversion the write path's duplicate check uses too, #1022), and the
+    prefix as written. The prefix is part of the key, not a value: ``[[ops:x]]``
+    and ``[[ops-kb:x]]`` resolve to one KB but are two links, and each is
+    checked for a stale prefix on its own (``links_stale_kb``). The first link
+    with a key gives the row its note (``[[x]]`` before ``[[x#Part]]``).
+
+    Every value is converted here, so the row an insert writes is the key the
+    next sync compares. An explicit null stays None, so the refusals the index
+    already gave it are unchanged; a *missing* key is "" and stays storable.
+    """
+    from ...models.core_types import as_stored_text
+    from ...schema import get_inverse_relation
+
+    rows: dict[LinkKey, dict[str, Any]] = {}
+    for link in links:
+        relation = as_stored_text(link.get("relation", "related_to"))
+        key = (
+            as_stored_text(link.get("target", "")),
+            as_stored_text(link.get("kb", kb_name)),
+            relation,
+            as_stored_text(link.get("prefix")),
+        )
+        rows.setdefault(
+            key,
+            {
+                "note": as_stored_text(link.get("note", "")),
+                "inverse_relation": get_inverse_relation(relation),
+            },
+        )
+    return rows
+
+
 def _with_inverse_relation(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Add ``inverse_relation`` to backlink rows: the declared inverse of
     ``forward_relation``, or None when it is not a declared relationship type.
@@ -990,7 +1031,11 @@ class BaseBackend(ABC):
                 for r in link_rows:
                     src = (r["source_id"], r["source_kb"])
                     tgt = (r["target_id"], r["target_kb"])
-                    if src in nodes and tgt in nodes:
+                    # One edge per pair of entries, as the centred walk draws
+                    # it: a source writes one link row per link (#1009), and
+                    # two links between one pair are not two edges.
+                    if src in nodes and tgt in nodes and (*src, *tgt) not in edge_set:
+                        edge_set.add((*src, *tgt))
                         edges.append(r)
 
         node_list = []

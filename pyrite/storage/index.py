@@ -19,7 +19,7 @@ from typing import Any
 
 from ..config import KBConfig, PyriteConfig, load_config
 from ..models import Entry
-from ..models.core_types import id_text
+from ..models.core_types import as_stored_text, id_text
 from ..models.protocols import (
     PROTOCOL_COLUMN_KEYS,
     Assignable,
@@ -404,23 +404,25 @@ class IndexManager:
         self.config = config or load_config()
 
     def _link_kb(self, prefix: str | None, kb_name: str) -> str:
-        """The KB a link's ``prefix:`` names, as the index stores it: the
-        full name of the KB the prefix names (by full name, then shortname;
-        the indexer is unscoped), the owning KB when there is no prefix, or
-        the prefix as written when it names no KB, so the link counts as
-        broken, which it is. ADR-0049 / #952: the index stores the full
-        name, so backlinks, the graph and the broken-link count agree with
+        """The KB a link's ``prefix:`` names, as the index stores it
+        (``PyriteConfig.link_kb``, the rule the write path's duplicate check
+        uses too). ADR-0049 / #952: the index stores the full name, so
+        backlinks, the graph and the broken-link count agree with
         `resolve_entry` (#979)."""
-        if not prefix:
-            return kb_name
-        kb = self.config.readable_kb_named(prefix, readable_kbs=None)
-        return kb.name if kb is not None else prefix
+        return self.config.link_kb(prefix, kb_name)
 
     def _frontmatter_link(self, link: dict[str, Any], kb_name: str) -> dict[str, Any]:
         """A frontmatter ``links:`` item as the index stores it: its ``kb`` is
         a KB field in link position (a name or a shortname, like a ``[[kb:id]]``
         prefix), so it resolves the same way and the written value is kept
-        beside it (#980 review item 2)."""
+        beside it (#980 review item 2).
+
+        Its ``target`` is the text the index stores an entry id as
+        (``as_stored_text``), converted here, before ``crud.bindable`` spells
+        a YAML timestamp as ``isoformat()``: ``target: 2024-01-01 10:00:00``
+        then names the entry ``id: 2024-01-01 10:00:00`` is stored as, rather
+        than a ``T``-spelled id no entry has (#1022)."""
+        link = {**link, "target": as_stored_text(link.get("target"))}
         written = link.get("kb")
         if not written:
             return link
@@ -591,9 +593,18 @@ class IndexManager:
         # Extract body wikilinks as links with relation="wikilink"
         body = entry.body or ""
         scannable_body = _strip_code_regions(body) if body else ""
+        # Every link the file writes is kept, whatever else links to the same
+        # target: the backend's sync key (`_link_rows`) makes one row of two
+        # links only when they are one link, the same target, KB, relation
+        # and written prefix. Deduplicating here by the bare target dropped
+        # `[[kb:x]]` after `[[ka:x]]`, a link to a different entry, and the
+        # second prefix of one target, which health then never checked (#1009).
         if scannable_body:
-            existing_targets = {l.get("target") for l in data["links"]}
             for match in _WIKILINK_RE.finditer(scannable_body):
+                if match.start() and scannable_body[match.start() - 1] == "!":
+                    # The `[[x]]` inside `![[x]]`: that link is a
+                    # transclusion, extracted below, not a second link.
+                    continue
                 kb_prefix = match.group(1)  # Optional kb: prefix
                 target = match.group(2).strip()
                 heading = match.group(3)
@@ -603,12 +614,7 @@ class IndexManager:
                     note = f"#{heading}"
                 elif block_id:
                     note = f"^{block_id}"
-                if (
-                    target
-                    and _is_valid_link_target(target)
-                    and target != entry.id
-                    and target not in existing_targets
-                ):
+                if target and _is_valid_link_target(target) and target != entry.id:
                     data["links"].append(
                         {
                             "target": target,
@@ -618,7 +624,6 @@ class IndexManager:
                             "note": note,
                         }
                     )
-                    existing_targets.add(target)
 
         # Extract references from frontmatter (cross-KB structured links)
         # Format: references: ["kb_name:entry_id", "entry_id", ...]
@@ -651,7 +656,6 @@ class IndexManager:
                     exc_info=True,
                 )
         if isinstance(refs, list):
-            existing_targets = {l.get("target") for l in data["links"]}
             for ref in refs:
                 ref_str = str(ref).strip()
                 if not ref_str:
@@ -662,7 +666,7 @@ class IndexManager:
                     ref_kb = self._link_kb(ref_prefix, kb_name)
                 else:
                     ref_kb, ref_id = kb_name, ref_str
-                if ref_id and ref_id != entry.id and ref_id not in existing_targets:
+                if ref_id and ref_id != entry.id:
                     data["links"].append(
                         {
                             "target": ref_id,
@@ -672,7 +676,6 @@ class IndexManager:
                             "note": "",
                         }
                     )
-                    existing_targets.add(ref_id)
 
         # Extract transclusions as links with relation="transclusion"
         if scannable_body:
@@ -686,12 +689,7 @@ class IndexManager:
                     note = f"#{heading}"
                 elif block_id:
                     note = f"^{block_id}"
-                if (
-                    target
-                    and _is_valid_link_target(target)
-                    and target != entry.id
-                    and target not in existing_targets
-                ):
+                if target and _is_valid_link_target(target) and target != entry.id:
                     data["links"].append(
                         {
                             "target": target,
@@ -701,7 +699,6 @@ class IndexManager:
                             "note": note,
                         }
                     )
-                    existing_targets.add(target)
 
         # Extract object-ref fields for entry_ref table
         refs = []
