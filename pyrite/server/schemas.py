@@ -153,29 +153,6 @@ class SearchResponse(BaseModel):
 # =============================================================================
 
 
-class EntryBase(BaseModel):
-    """Base fields for entries."""
-
-    title: str
-    body: str | None = None
-    tags: list[str] = []
-    importance: int | None = Field(None, ge=1, le=10)
-
-
-class EventCreate(EntryBase):
-    """Fields for creating an event."""
-
-    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
-    participants: list[str] = []
-    status: str = "confirmed"
-
-
-class PersonCreate(EntryBase):
-    """Fields for creating a person entry."""
-
-    role: str | None = None
-
-
 class EntryResponse(BaseModel):
     """Full entry response.
 
