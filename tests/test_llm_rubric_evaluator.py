@@ -193,12 +193,34 @@ class TestResponseParsing:
         rows = [*json.loads(_reply()), {"item": ["stray"], "pass": False}]
         assert evaluator._parse_response(json.dumps(rows), sample_entry, SAMPLE_RUBRIC_ITEMS) == []
 
-    @pytest.mark.parametrize("confidence", ["high", None, True, [0.9]])
+    @pytest.mark.parametrize(
+        "confidence",
+        [
+            "high",
+            None,
+            True,
+            [0.9],
+            float("nan"),
+            float("inf"),
+            -0.1,
+            7,
+            pytest.param(10**400, id="int-too-big-for-a-float"),
+        ],
+    )
     def test_a_failed_item_needs_a_numeric_confidence(self, evaluator, sample_entry, confidence):
+        """A confidence that is NaN, infinite or not between 0 and 1 is not an answer (#1055)."""
         rows = json.loads(_reply({SAMPLE_RUBRIC_ITEMS[0]: (0.5, "no why")}))
         rows[0]["confidence"] = confidence
         with pytest.raises(EvaluationFailedError, match="not a number"):
             evaluator._parse_response(json.dumps(rows), sample_entry, SAMPLE_RUBRIC_ITEMS)
+
+    @pytest.mark.control(reason="the ends of the range were accepted before #1055 and still are")
+    @pytest.mark.parametrize("confidence", [0, 0.5, 1])
+    def test_a_confidence_from_0_to_1_is_kept(self, evaluator, sample_entry, confidence):
+        rows = json.loads(_reply({SAMPLE_RUBRIC_ITEMS[0]: (0.5, "no why")}))
+        rows[0]["confidence"] = confidence
+        issues = evaluator._parse_response(json.dumps(rows), sample_entry, SAMPLE_RUBRIC_ITEMS)
+        assert [issue["confidence"] for issue in issues] == [float(confidence)]
 
     @complete_reply
     def test_all_pass_no_issues(self, evaluator, sample_entry):

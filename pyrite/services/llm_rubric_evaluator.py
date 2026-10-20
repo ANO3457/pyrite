@@ -193,10 +193,18 @@ class LLMRubricEvaluator:
                 or passed is not False
             ):
                 continue
-            if isinstance(confidence, bool) or not isinstance(confidence, int | float):
+            # NaN compares false with everything, so the range check refuses
+            # NaN and infinity too (#1055). math.isfinite() is not used: it
+            # raises OverflowError on a JSON integer too big for a float.
+            if (
+                isinstance(confidence, bool)
+                or not isinstance(confidence, int | float)
+                or not 0 <= confidence <= 1
+            ):
                 raise EvaluationFailedError(
                     entry_id,
-                    f"the model's confidence for '{item_text}' is not a number: {confidence!r}",
+                    f"the model's confidence for '{item_text}' is not a number "
+                    f"between 0 and 1: {confidence!r}",
                 )
 
             issues.append(

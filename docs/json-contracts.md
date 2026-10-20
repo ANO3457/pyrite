@@ -1357,9 +1357,9 @@ result is `FAIL`.
 
 A model reply that is a list but does not answer counts as not run: an `item`
 that is not a string, a row that is not an object, a `pass` that is not a
-boolean, or a `confidence` on a failed item that is not a number. Any other
-error while one entry is evaluated is that entry's `evaluation_failed` (or its
-`failed` row); the run carries on.
+boolean, or a `confidence` on a failed item that is not a number or not
+between 0 and 1. Any other error while one entry is evaluated is that entry's
+`evaluation_failed` (or its `failed` row); the run carries on.
 
 **`qa fix`** adds `failed` and `failed_count` beside `fixed`, `manual` and
 `skipped`. A fix is in `fixed` only once its write returned. Each entry in
