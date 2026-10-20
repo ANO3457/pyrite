@@ -49,7 +49,9 @@ def test_replace_compares_the_temporary_file_group(same_group):
         chown.assert_called_once_with(10, 123, 456)
 
 
-def test_cli_reports_group_restore_failure_without_changing_file(tmp_path):
+@pytest.mark.skipif(os.name == "nt", reason="ids pin refuses to write on Windows")
+@pytest.mark.parametrize("fmt", ["json", "text"])
+def test_cli_reports_group_restore_failure_without_changing_file(tmp_path, monkeypatch, fmt):
     path = tmp_path / "kb"
     path.mkdir()
     file = path / "note.md"
@@ -59,35 +61,23 @@ def test_cli_reports_group_restore_failure_without_changing_file(tmp_path):
         knowledge_bases=[KBConfig(name="notes", path=path)],
         settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
     )
-    original = SimpleNamespace(st_mode=stat.S_IFREG | 0o640, st_uid=123, st_gid=456)
-    temporary = SimpleNamespace(st_uid=123, st_gid=789)
 
-    def replace(*args):
-        with (
-            patch.object(pin.os, "stat", return_value=original),
-            patch.object(pin.os, "open", return_value=10),
-            patch.object(pin.os, "fstat", return_value=temporary),
-            patch.object(pin.os, "fchmod", create=True),
-            patch.object(
-                pin.os, "fchown", side_effect=PermissionError("not a group member"), create=True
-            ),
-            patch.object(pin.os, "getuid", return_value=123, create=True),
-            patch.object(pin.os, "getgid", return_value=789, create=True),
-            patch.object(pin.os, "O_NOFOLLOW", 0, create=True),
-            patch.object(pin.os, "close"),
-            patch.object(pin.os, "unlink"),
-        ):
-            pin._replace_through(9, "note.md", b"pinned")
+    def fail_rename(dir_fd, tmp, name):
+        raise pin.PinMetadataRefusedError(
+            "cannot preserve owner 123 and group 456; ask the owner to pin it, or add the id by hand"
+        )
 
-    with (
-        patch("pyrite.cli.context.load_config", return_value=config),
-        patch.object(pin, "_write_pin", side_effect=replace),
-    ):
-        result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", "json"])
+    monkeypatch.setattr(pin, "_rename", fail_rename)
+    with patch("pyrite.cli.context.load_config", return_value=config):
+        result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", fmt])
     assert result.exit_code == 3, result.output
-    refusal = json.loads(result.stdout)["refused"][0]
-    assert "group 456" in refusal["reason"]
-    assert "by hand" in refusal["reason"]
+    if fmt == "json":
+        refusal = json.loads(result.stdout)["refused"][0]
+        assert "group 456" in refusal["reason"]
+        assert "by hand" in refusal["reason"]
+    else:
+        assert "refused note.md: cannot preserve owner 123 and group 456" in result.output
+        assert "by hand" in result.output
     assert file.read_bytes() == before
 
 
