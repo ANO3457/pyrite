@@ -511,6 +511,70 @@ class KBService:
             kept.append(err)
         return kept, excepted
 
+    def _schema_result(
+        self,
+        entry: Entry,
+        fields: dict[str, Any],
+        kb_name: str,
+        kb_config: KBConfig,
+        existing_entry: Entry | None,
+    ) -> dict[str, Any] | None:
+        """The KB schema's and plugin validators' verdict on ``fields``, or
+        ``None`` when a validator itself raised (validation is then skipped,
+        with a log line, as it always was)."""
+        try:
+            kb_schema = kb_config.kb_schema
+            return kb_schema.validate_entry(
+                entry.entry_type,
+                fields,
+                context={
+                    "kb_name": kb_name,
+                    "kb_schema": kb_schema,
+                    "kb_type": kb_config.kb_type,
+                    "_schema_version": getattr(entry, "_schema_version", 0),
+                    "existing_entry": copy.deepcopy(existing_entry),
+                },
+            )
+        except Exception:
+            logger.warning("Schema validation skipped for %s/%s", kb_name, entry.id, exc_info=True)
+            return None
+
+    @staticmethod
+    def _keep_on_disk_violations(
+        errors: list[dict[str, Any]],
+        prior: list[dict[str, Any]],
+        before: dict[str, Any],
+        after: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """``(errors, warnings)`` after excepting violations the file already had.
+
+        ADR-0042 decision 8, #676: a write is refused only for a violation it
+        causes. A finding is the file's, not the write's, when the loaded
+        entry has the same finding (field and rule) and the field's value is
+        the same after the write -- the request did not change it. It comes
+        back as a warning. A finding the write introduces (a cross-field rule
+        its change triggers, a field set to another bad value) stays an error.
+        A finding with no ``field`` cannot be matched to a request key, so it
+        always stays an error.
+        """
+        had = {(e.get("field"), e.get("rule")) for e in prior if e.get("field")}
+        kept: list[dict[str, Any]] = []
+        excepted: list[dict[str, Any]] = []
+        for err in errors:
+            name = err.get("field")
+            if name and (name, err.get("rule")) in had and before.get(name) == after.get(name):
+                excepted.append(
+                    {
+                        **err,
+                        "severity": "warning",
+                        "note": "violation already on disk, in a field this write did not "
+                        "change; kept, not re-validated",
+                    }
+                )
+            else:
+                kept.append(err)
+        return kept, excepted
+
     def _validate_write(
         self,
         entry: Entry,
@@ -535,26 +599,19 @@ class KBService:
         is always strict.
         """
         fields = self._validated_fields(entry)
-        try:
-            kb_schema = kb_config.kb_schema
-            result = kb_schema.validate_entry(
-                entry.entry_type,
-                fields,
-                context={
-                    "kb_name": kb_name,
-                    "kb_schema": kb_schema,
-                    "kb_type": kb_config.kb_type,
-                    "_schema_version": getattr(entry, "_schema_version", 0),
-                    "existing_entry": copy.deepcopy(existing_entry),
-                },
-            )
-        except Exception:  # a broken validator must not make every write fail
-            logger.warning("Schema validation skipped for %s/%s", kb_name, entry.id, exc_info=True)
+        result = self._schema_result(entry, fields, kb_name, kb_config, existing_entry)
+        if result is None:  # a broken validator must not make every write fail
             return []
         errors = result.get("errors") or []
         warnings = list(result.get("warnings") or [])
         if before is not None and errors:
             errors, excepted = self._keep_on_disk_enum_values(errors, before, fields)
+            warnings.extend(excepted)
+        if before is not None and errors and existing_entry is not None:
+            prior = self._schema_result(existing_entry, before, kb_name, kb_config, None)
+            errors, excepted = self._keep_on_disk_violations(
+                errors, (prior or {}).get("errors") or [], before, fields
+            )
             warnings.extend(excepted)
         if not errors:
             return warnings
@@ -1075,6 +1132,7 @@ class KBService:
         resolve_type: bool = True,
         pending_ids: set[str] | None = None,
         pending_paths: set[Path] | None = None,
+        owns: frozenset[str] = frozenset(),
     ) -> tuple[Entry, list[dict[str, Any]]]:
         """Decide whether ``spec`` is a valid new entry; build it if so.
 
@@ -1097,9 +1155,18 @@ class KBService:
         dry run would have created -- needed because a `file_pattern` type's
         filename comes from FIELDS, not the id, so two different ids can
         collide on the same path (#391 cold read).
+
+        A caller's spec never sets a field Pyrite or the type manages, at any
+        spelling (#1010). ``owns`` names the managed fields an in-process
+        owner sets itself (``sw new-adr``'s ``adr_number``); only those are
+        exempt, and only on that call.
         """
         from ..schema import generate_entry_id
 
+        if not isinstance(owns, frozenset):
+            raise ValidationError(
+                f"owns must be a frozenset of field names, got {type(owns).__name__}"
+            )
         ensure_not_truncated(spec)
         # MARKER_KEYS are ADR-0034 read transport, never entry content: an
         # allowed `body_truncated: false` must not be persisted as frontmatter.
@@ -1133,7 +1200,7 @@ class KBService:
         if resolve_type:
             entry_type = self._resolve_entry_type(entry_type, kb_config.kb_type)
         if builder is None:
-            self._refuse_managed_in_envelope(entry_type, kb_config, fields)
+            self._refuse_managed_on_create(entry_type, kb_config, fields, owns)
             entry = build_entry(entry_type, entry_id=entry_id, title=title, body=body, **fields)
         else:
             entry = builder(entry_type, entry_id, title, body, fields)
@@ -1196,6 +1263,7 @@ class KBService:
         embed: bool = True,
         builder: Callable[[str, str, str, str, dict[str, Any]], Entry] | None = None,
         resolve_type: bool = True,
+        owns: frozenset[str] = frozenset(),
     ) -> WriteResult:
         """The one create pipeline: :meth:`_prepare`, then hooks, save, index, embed."""
         entry, warnings = self._prepare(
@@ -1205,6 +1273,7 @@ class KBService:
             allow_undeclared=allow_undeclared,
             builder=builder,
             resolve_type=resolve_type,
+            owns=owns,
         )
         ctx = hook_ctx or self._hook_ctx(kb_name, kb_config, "create")
         entry = self._run_hooks("before_save", entry, ctx)
@@ -1233,7 +1302,12 @@ class KBService:
         return WriteResult(entry=entry, warnings=warnings)
 
     def create(
-        self, kb_name: str, spec: dict[str, Any], *, allow_undeclared: bool = True
+        self,
+        kb_name: str,
+        spec: dict[str, Any],
+        *,
+        allow_undeclared: bool = True,
+        owns: frozenset[str] = frozenset(),
     ) -> WriteResult:
         """Create one entry from a spec, returning the entry and its warnings.
 
@@ -1248,7 +1322,9 @@ class KBService:
         they asked, which is what applies the undeclared-type refusal.
         """
         kb_config = self._writable_kb(kb_name)
-        return self._prepare_and_save(kb_name, kb_config, spec, allow_undeclared=allow_undeclared)
+        return self._prepare_and_save(
+            kb_name, kb_config, spec, allow_undeclared=allow_undeclared, owns=owns
+        )
 
     def create_entry(
         self,
@@ -1259,6 +1335,7 @@ class KBService:
         body: str = "",
         *,
         allow_undeclared: bool = True,
+        owns: frozenset[str] = frozenset(),
         **kwargs,
     ) -> Entry:
         """
@@ -1271,6 +1348,9 @@ class KBService:
             entry_type: Type (event, person, organization, note, topic, etc.)
             body: Markdown body content
             allow_undeclared: False applies the undeclared-type refusal
+            owns: managed fields this in-process caller sets itself (``sw
+                new-adr``: ``{"adr_number"}``); every other managed field,
+                at any spelling, is refused as on every surface (#1010)
             **kwargs: Additional fields (date, importance, tags, etc.)
 
         Returns:
@@ -1282,7 +1362,7 @@ class KBService:
             ValidationError: (or a subclass) if the pipeline refuses the entry
         """
         spec = {**kwargs, "id": entry_id, "title": title, "entry_type": entry_type, "body": body}
-        return self.create(kb_name, spec, allow_undeclared=allow_undeclared).entry
+        return self.create(kb_name, spec, allow_undeclared=allow_undeclared, owns=owns).entry
 
     def bulk_create_entries(
         self,
@@ -1291,6 +1371,7 @@ class KBService:
         *,
         allow_undeclared: bool = True,
         validate_only: bool = False,
+        drop_managed: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Create multiple entries in a single batch, through the same pipeline as
@@ -1310,6 +1391,12 @@ class KBService:
 
         ``validate_only`` runs every check without writing; a passing item is
         reported as {"created": False, "valid": True, "entry_id": "..."}.
+
+        ``drop_managed`` is for an import (a file an export wrote): the keys an
+        export adds about the index and location, and the type's managed
+        fields, are dropped from each record and named in its ``ignored``.
+        Without it (a direct create such as MCP ``kb_bulk_create``) they are
+        refused.
         """
         if validate_only:
             kb_config = self.require_kb(kb_name)
@@ -1326,7 +1413,10 @@ class KBService:
         would_create_paths: set[Path] = set()
 
         for spec in entries:
+            ignored: list[str] = []
             try:
+                if drop_managed:
+                    spec, ignored = self._drop_managed_for_import(kb_config, spec)
                 if validate_only:
                     entry, warnings = self._prepare(
                         kb_name,
@@ -1356,6 +1446,8 @@ class KBService:
                     item = {"created": True, "entry_id": entry.id}
                 if warnings:
                     item["warnings"] = warnings
+                if ignored:
+                    item["ignored"] = ignored
                 results.append(item)
             except Exception as e:
                 result = _refusal_result(e)
@@ -1545,6 +1637,23 @@ class KBService:
         naming fields on its own (``{importance: 5}``) is the caller's values,
         each written as sent; the CLI's ``-f`` never passes through here.
         """
+        # `kb_get` answers `{"entry": {...}}`; sent back whole, that is one
+        # undeclared key holding the read, which an update would write into
+        # the file (#1024). Refused, not unwrapped: the caller sends the
+        # entry's own fields (ADR-0042 decision 9, fail closed). An `entry`
+        # mapping with no read-result key is a declared field's value; `id`
+        # alone is not one (a declared field's value may have an `id`), but
+        # `entry_type`, `file_path` or an index column is.
+        envelope = fields.get("metadata")
+        wrapped = fields.get("entry")
+        if wrapped is None and isinstance(envelope, dict):
+            wrapped = envelope.get("entry")  # REST's only spelling of it
+        if isinstance(wrapped, dict) and not (_READ_RESULT_MARKERS - {"id"}).isdisjoint(wrapped):
+            raise ValidationError(
+                "Cannot update: `entry` holds a whole read result (the envelope `kb_get` "
+                "answers with). Send the entry's fields at the top level instead: "
+                "the contents of `result['entry']`, with your changes."
+            )
         updatable = self.updatable_fields(entry_id, kb_name)
         # The reading an echo is compared with is the read a get returns -- the
         # file now -- not the row, which may lag it: a value the read
@@ -1842,37 +1951,116 @@ class KBService:
             fields["metadata"] if isinstance(fields.get("metadata"), dict) else {},
         )
 
-    def _refuse_managed_in_envelope(
-        self, entry_type: str, kb_config: KBConfig, fields: dict[str, Any]
-    ) -> None:
-        """A create's ``metadata`` envelope (REST POST, MCP ``kb_create``, the
-        service) names fields by a second spelling (Andon #994, decision A);
-        a field Pyrite or the type manages is refused there, as an update
-        refuses it (#1001, decision 6). ``links`` and ``sources`` are a new
-        entry's own content and stay creatable, as at the top level."""
+    def _managed_spellings(
+        self,
+        entry_type: str,
+        kb_config: KBConfig,
+        fields: dict[str, Any],
+        owns: frozenset[str] = frozenset(),
+    ) -> list[tuple[str, str, bool]]:
+        """``(key, field, in_envelope)`` for every key of a create's ``fields``
+        that spells a field Pyrite or the type manages, at every spelling
+        ADR-0051 treats as the same field: the top-level key, a dotted
+        top-level key (``metadata.evidence``), an alias, and the key under the
+        ``metadata`` envelope -- all resolved by ``field_at``. ``links`` and
+        ``sources`` are a new entry's own content and are not listed;
+        ``owns`` names the managed fields an in-process owner sets itself.
+        Raises ``ValidationError`` for an envelope key no parser reads (not a
+        key a new file gets, decision A)."""
         from ..models.core_types import get_entry_class
         from ..schema.field_aliases import NotAFieldError, field_at, path_segments
 
-        envelope = fields.get("metadata")
-        if not isinstance(envelope, dict):
-            return
         cls = get_entry_class(entry_type)
-        managed = self._field_sets(entry_type, kb_config)[2] - _ITEM_LISTS
-        for key in envelope:
-            if not isinstance(key, str):
+        managed = self._field_sets(entry_type, kb_config)[2] - _ITEM_LISTS - owns
+        envelope = fields.get("metadata")
+        keyed: list[tuple[str, tuple[Any, ...], bool]] = []
+        for k in fields:
+            if not isinstance(k, str) or k == "metadata":
                 continue
             try:
-                field, _rest = field_at(cls, entry_type, ("metadata", *path_segments(key)))
+                keyed.append((k, path_segments(k), False))
+            except ValueError:
+                continue  # a key no parser reads is a literal custom key
+        if isinstance(envelope, dict):
+            for k in envelope:
+                if isinstance(k, str):
+                    keyed.append((k, ("metadata", *path_segments(k)), True))
+        found: list[tuple[str, str, bool]] = []
+        for key, path, in_envelope in keyed:
+            try:
+                field, _rest = field_at(cls, entry_type, path)
             except (NotAFieldError, ValueError) as e:
-                # `metadata.k` inside the envelope, an unreadable path: not
-                # a field, so not a key a new file gets (decision A).
-                raise ValidationError(f"Cannot create a {entry_type}: {e}") from None
+                if in_envelope:
+                    raise ValidationError(f"Cannot create a {entry_type}: {e}") from None
+                continue  # a custom top-level key: written as sent
             if field in managed:
-                raise ValidationError(
-                    f"Cannot set {field} on a new {entry_type} through `metadata`: Pyrite "
-                    "maintains these fields. To keep a field of your own under that name, "
-                    f"name it differently (for example `{entry_type}_{field}`)."
-                )
+                found.append((key, field, in_envelope))
+        return found
+
+    def _refuse_managed_on_create(
+        self,
+        entry_type: str,
+        kb_config: KBConfig,
+        fields: dict[str, Any],
+        owns: frozenset[str] = frozenset(),
+    ) -> None:
+        """A create refuses a field Pyrite or the type manages, at every
+        spelling (:meth:`_managed_spellings`; #1010, #1001 decision 6). One
+        message naming the field, on every surface. A key the build would
+        drop (``file_path``, ``provenance``, ``extra_frontmatter``) is
+        managed, so it is refused here and never silently dropped (ADR-0042
+        decision 3). The top-level ``id`` and title are popped before this
+        runs; ``id`` in the envelope is refused."""
+        found = self._managed_spellings(entry_type, kb_config, fields, owns)
+        if found:
+            key, name, _in_envelope = found[0]
+            spelled = f" (sent as `{key}`)" if key != name else ""
+            raise ValidationError(
+                f"Cannot set {name} on a new {entry_type}{spelled}: Pyrite maintains "
+                "this field. To keep a field of your own under that name, "
+                f"name it differently (for example `{entry_type}_{name}`)."
+            )
+
+    def _drop_managed_for_import(
+        self, kb_config: KBConfig, spec: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[str]]:
+        """``(spec, ignored)`` for an import record: an export carries keys
+        about the index and the location (``kb_name``, ``file_path``,
+        ``indexed_at``, ``content_hash``, ``outlinks``, ``backlinks``, ...) and
+        a type's managed fields (a task's ``assigned_at``,
+        ``status_change_log``). None of them is a request, so an import
+        drops them and names each in ``ignored`` -- never silently (the
+        maintainer's decision, 2026-10-20). A direct create refuses them
+        instead. The entry's ``id`` and ``entry_type`` are kept."""
+        if not isinstance(spec, dict):
+            return spec, []
+        named = spec.get("entry_type") or spec.get("type") or "note"
+        try:
+            entry_type = self._resolve_entry_type(named, kb_config.kb_type)
+            managed = self._managed_spellings(entry_type, kb_config, spec)
+        except Exception:  # an unknown type or bad envelope key: the create says why
+            return spec, []
+        index_only = (_INDEX_ONLY_KEYS - {"entry_type", "type"}) | {"file_path", "kb_name"}
+        out = dict(spec)
+        ignored: list[str] = []
+        for key in list(out):
+            if key in index_only or any(key == k and not env for k, _f, env in managed):
+                if key == "id":
+                    continue
+                ignored.append(key)
+                del out[key]
+        envelope = out.get("metadata")
+        if isinstance(envelope, dict):
+            kept = dict(envelope)
+            for key, _field, in_env in managed:
+                if in_env and key in kept:
+                    ignored.append(f"metadata.{key}")
+                    del kept[key]
+            if kept:
+                out["metadata"] = kept
+            else:
+                out.pop("metadata")
+        return out, sorted(ignored)
 
     def _resolve_operation(
         self,
