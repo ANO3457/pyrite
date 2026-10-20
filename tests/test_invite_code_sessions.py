@@ -3,9 +3,8 @@
 import pytest
 from fastapi.testclient import TestClient
 from pyrite.config import AuthConfig, PyriteConfig, Settings
-from pyrite.server.api import create_app, get_db
+from pyrite.server.api import create_app
 from pyrite.services.auth_service import AuthService
-from pyrite.storage.database import PyriteDB
 from tests.auth_seed import seed_user
 
 
@@ -14,15 +13,15 @@ def env(tmp_path):
     config = PyriteConfig(
         settings=Settings(index_path=tmp_path / "index.db", auth=AuthConfig(enabled=True))
     )
-    db = PyriteDB(config.settings.index_path)
+    app = create_app(config=config)
+    db = app.state.pyrite_db
     seed_user(db, "root", "password123", role="admin")
     seed_user(db, "reader", "password123", role="read")
-    app = create_app(config=config)
-    app.dependency_overrides[get_db] = lambda: db
-    client = TestClient(app)
-    yield client, AuthService(db, config.settings.auth)
-    client.close()
-    db.close()
+    try:
+        with TestClient(app) as client:
+            yield client, AuthService(db, config.settings.auth)
+    finally:
+        db.close()
 
 
 @pytest.mark.parametrize("operation", ["create", "list", "delete"])
