@@ -255,8 +255,8 @@ without a `default_role`. Changing a user's role does not change this; an
 admin grants or removes it explicitly, for now only through the role API
 (`"global_access": true|false` in `PUT /auth/users/{id}/role`; `GET
 /auth/users` shows each user's value). Users inserted by the
-`deploy/*/create-user.py` scripts get public-KB access only until an admin
-grants it. Migration v26 marks every user that existed before it with global
+`deploy/*/create-user.py` scripts (since replaced by `pyrite-admin user
+create`) get public-KB access only until an admin grants it. Migration v26 marks every user that existed before it with global
 access; its rollback is a no-op, so rolling back and migrating up again grants
 global access to every user present at that time, self-registered ones
 included. To share a KB with every signed-in user,
@@ -322,10 +322,10 @@ Limits on what the setting can do:
 `config.yaml` also lists `embedding_model` (default `all-MiniLM-L6-v2`, ~90 MB,
 downloaded on first use).
 
-**The Postgres backend is experimental in 0.25.x.** It has no migration for
+**The Postgres backend is experimental.** It has no migration for
 columns added after alembic revision 006, so an existing Postgres database may
 not upgrade between releases
-([#718](https://github.com/pyrite-wiki/pyrite/issues/718)). Nothing in 0.25.x
+([#718](https://github.com/pyrite-wiki/pyrite/issues/718)). Nothing
 reads the `search_backend` and `database_url` keys yet: the index is always
 SQLite, and only the test suite builds a Postgres backend. If code does
 construct it, Pyrite says so once per process, on stderr and in the server log
@@ -376,7 +376,7 @@ API keys for providers are the providers' own variables (`OPENAI_API_KEY`,
 ## Seeing the effective configuration
 
 ```bash
-pyrite-admin config show    # merged config with secrets masked
+pyrite-admin config show    # merged config with secrets masked (index path included)
 pyrite kb list              # registered KBs and their paths
-curl localhost:8088/health  # server: index path, embedding readiness
+curl localhost:8088/health  # server liveness; embeddings.ready when PYRITE_PREWARM_EMBEDDINGS is on
 ```
