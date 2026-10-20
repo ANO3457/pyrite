@@ -1011,12 +1011,11 @@ def _task_validate_transition(entry: Entry, context: dict) -> Entry:
             if (
                 entry.entry_type == "task"
                 and new_status == "open"
-                and old_status in {"claimed", "in_progress", "blocked"}
+                and old_status in {"in_progress", "blocked"}
             ):
                 refusal.suggestion = (
                     "Use `pyrite task reset` to release a stale claim with an audit trail."
                 )
-                refusal.args = (str(refusal) + " " + refusal.suggestion,)
             raise refusal
         raise ValidationError(err)
 
