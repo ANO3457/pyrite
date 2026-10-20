@@ -941,3 +941,110 @@ def test_assess_refuses_a_kb_whose_files_cannot_be_read(broken_plain, surface, t
     assert code == "KB_UNREADABLE", body
     # A missing folder is not recreated to hold a record.
     assert folder.exists() == (fault != "missing")
+
+
+# =========================================================================
+# #960 item 15: `ci` resolves KBs through the one resolver, as `qa validate` does
+# =========================================================================
+
+
+def _only_registered(tmp_path: Path) -> PyriteConfig:
+    """config.yaml lists no KB; `judged` exists only as a `kb add` registry row."""
+    full = _required_world(tmp_path)
+    path = full.get_kb(JUDGED).path
+    db = PyriteDB(full.settings.index_path)
+    db.register_kb(name=JUDGED, kb_type="generic", path=str(path), description="", source="user")
+    db.close()
+    return PyriteConfig(knowledge_bases=[], settings=full.settings)
+
+
+@pytest.mark.parametrize("named", [True, False], ids=["kb-named", "kb-not-named"])
+def test_ci_with_only_a_registered_kb_validates_it(tmp_path, named):
+    config = _only_registered(tmp_path)
+    args = ["ci", "--severity", "error", "--format", "json"] + (["--kb", JUDGED] if named else [])
+    code, body = _cli(config, args)
+    assert (code, body["result"]) == (1, "fail"), body
+    assert JUDGED in [kb["kb_name"] for kb in body["kbs"]], body
+    assert "schema_violation" in {i["rule"] for kb in body["kbs"] for i in kb["issues"]}, body
+
+
+def test_ci_with_only_a_registered_kb_finds_what_qa_validate_finds(tmp_path):
+    config = _only_registered(tmp_path)
+    code, validated = _cli(config, ["qa", "validate", JUDGED, "--format", "json"])
+    assert validated["issues"], validated  # the world really has issues
+    _, body = _cli(config, ["ci", "--severity", "info", "--format", "json"])
+    ci_kb = next(kb for kb in body["kbs"] if kb["kb_name"] == JUDGED)
+    assert len(ci_kb["issues"]) == len(validated["issues"]), (body, validated)
+
+
+@pytest.mark.control(reason="a config.yaml KB was already validated; the fix must keep it so")
+def test_ci_with_a_configured_kb_validates_it(tmp_path):
+    config = _required_world(tmp_path)
+    code, body = _cli(config, ["ci", "--severity", "error", "--format", "json"])
+    assert (code, body["result"]) == (1, "fail"), body
+    assert JUDGED in [kb["kb_name"] for kb in body["kbs"]], body
+
+
+@pytest.mark.parametrize("fmt", ["json", "text"])
+def test_ci_that_read_no_kb_does_not_pass(tmp_path, fmt):
+    """Zero KBs anywhere: nothing was read, so the gate cannot say pass."""
+    config = PyriteConfig(knowledge_bases=[], settings=Settings(index_path=tmp_path / "i.db"))
+    result = _invoke(config, ["ci", "--format", fmt])
+    assert result.exit_code != 0, result.stdout
+    assert '"pass"' not in result.stdout, result.stdout
+    assert "no KBs" in result.stdout + result.stderr, result.stdout + result.stderr
+
+
+# ---- round 1: ci never passes a KB whose files it did not read ----------
+
+
+def _registered_unindexed(tmp_path: Path, *, files: bool) -> PyriteConfig:
+    """`kb add`ed (a registry row) but never indexed: the index has no entries."""
+    folder = tmp_path / "q"
+    folder.mkdir()
+    if files:
+        (folder / "a.md").write_text(_note("a", "Alpha note", links=[], tags=["x"]))
+    settings = Settings(index_path=tmp_path / "index.db")
+    db = PyriteDB(settings.index_path)
+    db.register_kb(name="q", kb_type="generic", path=str(folder), description="", source="user")
+    db.close()
+    return PyriteConfig(knowledge_bases=[], settings=settings)
+
+
+def _rules(body: dict) -> set[str]:
+    return {i["rule"] for kb in body["kbs"] for i in kb["issues"]}
+
+
+def test_ci_fails_a_registered_kb_whose_files_are_not_indexed(tmp_path):
+    config = _registered_unindexed(tmp_path, files=True)
+    code, body = _cli(config, ["ci", "--kb", "q", "--severity", "error", "--format", "json"])
+    assert (code, body["result"]) == (1, "fail"), body
+    assert "index_out_of_date" in _rules(body), body
+    messages = " ".join(i["message"] for kb in body["kbs"] for i in kb["issues"])
+    assert "pyrite index sync -k q" in messages, body
+
+
+def test_ci_fails_a_kb_whose_index_is_stale(tmp_path):
+    config = _build(tmp_path, model=False)
+    path = config.get_kb(PLAIN).path
+    (path / "solo.md").write_text(_note("solo", "Edited title", links=[], tags=["x"]))
+    (path / "late.md").write_text(_note("late", "Late note", links=[], tags=["x"]))
+    code, body = _cli(config, ["ci", "--kb", PLAIN, "--severity", "error", "--format", "json"])
+    assert (code, body["result"]) == (1, "fail"), body
+    assert "index_out_of_date" in _rules(body), body
+
+
+@pytest.mark.control(reason="an empty KB has no files to have missed; it may pass")
+def test_ci_passes_an_empty_registered_kb(tmp_path):
+    config = _registered_unindexed(tmp_path, files=False)
+    code, body = _cli(config, ["ci", "--kb", "q", "--severity", "error", "--format", "json"])
+    assert (code, body["result"]) == (0, "pass"), body
+
+
+def test_ci_text_for_zero_kbs_is_prose_not_a_json_object(tmp_path):
+    config = PyriteConfig(knowledge_bases=[], settings=Settings(index_path=tmp_path / "i.db"))
+    result = _invoke(config, ["ci"])
+    out = result.stdout + result.stderr
+    assert result.exit_code == 1, out
+    assert "{" not in out, out
+    assert "no KBs" in out and "pyrite kb add" in out, out
