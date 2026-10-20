@@ -117,8 +117,9 @@ def test_qa_reports_json_preserves_stale_entry_title(
 @pytest.mark.parametrize(
     "error_kind", ["sqlite", "sqlalchemy", "storage", "locked", "wrapped_locked"]
 )
+@pytest.mark.parametrize("failure_target", ["list_entries", "get_entry"])
 def test_check_urls_reports_database_failure(
-    monkeypatch, pyrite_config, pyrite_db, output_format, error_kind
+    monkeypatch, pyrite_config, pyrite_db, output_format, error_kind, failure_target, caplog
 ):
     import sqlite3
 
@@ -139,11 +140,15 @@ def test_check_urls_reports_database_failure(
         ),
     }
 
-    def fail_list_entries(self, **kwargs):
+    def fail_call(*args, **kwargs):
         raise errors[error_kind]
 
     monkeypatch.setattr(cli_context_module, "load_config", lambda: pyrite_config)
-    monkeypatch.setattr(PyriteDB, "get_distinct_types", fail_list_entries)
+    if failure_target == "list_entries":
+        monkeypatch.setattr(PyriteDB, "list_entries", fail_call)
+    else:
+        monkeypatch.setattr(PyriteDB, "list_entries", lambda self, **kwargs: [{"id": "entry-1"}])
+        monkeypatch.setattr(PyriteDB, "get_entry", fail_call)
 
     result = runner.invoke(app, ["qa", "check-urls", "test-research", "--format", output_format])
 
@@ -160,6 +165,7 @@ def test_check_urls_reports_database_failure(
         assert data["retryable"] is busy
     else:
         assert "STORAGE_ERROR" in result.stdout
+    assert "URL collection failed" in caplog.text
 
 
 @pytest.mark.parametrize("bare_sources", [False, True])
@@ -207,18 +213,16 @@ def test_check_urls_finds_sources_on_document_entries(
     assert data["broken_details"][0]["entry_ids"] == ["document-source"]
 
 
-@pytest.mark.control
 def test_url_collection_preserves_other_types_when_documents_fill_query_limit():
     from unittest.mock import MagicMock
 
     db = MagicMock()
     documents = [{"id": f"document-{i}"} for i in range(10000)]
-    db.get_distinct_types.return_value = ["document", "note"]
 
-    def list_entries(*, kb_name, entry_type=None, limit):
+    def list_entries(*, kb_name, entry_type=None, limit=10000, offset=0):
         # Documents are newer than the note, so an unfiltered query hides it.
-        entries = documents if entry_type in {None, "document"} else [{"id": "old-note"}]
-        return entries[:limit]
+        entries = documents + [{"id": "old-note"}]
+        return entries[offset : offset + limit]
 
     db.list_entries.side_effect = list_entries
     url = "https://example.invalid/older-note"
@@ -227,3 +231,22 @@ def test_url_collection_preserves_other_types_when_documents_fill_query_limit():
     }
 
     assert URLChecker(db).collect_urls("test") == {url: ["old-note"]}
+
+
+@pytest.mark.parametrize("command", ["stale", "compact"])
+def test_qa_reports_empty_csv_outputs_formatted_empty(
+    monkeypatch, pyrite_config, pyrite_db, command
+):
+    from pyrite.cli import app
+    from pyrite.cli import context as cli_context_module
+
+    kb = pyrite_config.get_kb("test-research")
+    pyrite_db.register_kb(kb.name, kb.kb_type, str(kb.path))
+    monkeypatch.setattr(cli_context_module, "load_config", lambda: pyrite_config)
+
+    result = runner.invoke(app, ["qa", command, "test-research", "--format", "csv"])
+
+    assert result.exit_code == 0, result.output
+    assert "No stale entries" not in result.stdout
+    assert "No archival candidates" not in result.stdout
+    assert "\x1b" not in result.stdout

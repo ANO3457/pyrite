@@ -650,7 +650,7 @@ def qa_stale(
     }
 
     formatted = _format_output(data, output_format)
-    if formatted:
+    if formatted is not None:
         typer.echo(formatted)
         return
 
@@ -702,7 +702,7 @@ def qa_compact(
     }
 
     formatted = _format_output(data, output_format)
-    if formatted:
+    if formatted is not None:
         typer.echo(formatted)
         return
 

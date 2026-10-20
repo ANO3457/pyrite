@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from ..exceptions import StorageError
 from .search_service import storage_error_from
 
 logger = logging.getLogger(__name__)
@@ -75,41 +76,44 @@ class URLChecker:
     ) -> dict[str, list[str]]:
         """Collect all source URLs from KB entries.
 
-        Returns {url: [entry_id, ...]} mapping. With no type filter, scans
-        every stored entry type. Each type retains the existing 10,000-entry limit.
-        Database failures propagate rather than claiming there are no URLs.
+        Returns {url: [entry_id, ...]} mapping.
         """
+        # None means all indexed types, including core and plugin-defined types.
+        filters = [None] if entry_types is None else entry_types
+        url_entries: dict[str, list[str]] = defaultdict(list)
+
         try:
-            types_to_scan = (
-                entry_types
-                if entry_types is not None
-                else self.db.get_distinct_types(kb_name=kb_name)
-            )
+            for etype in filters:
+                offset = 0
+                while True:
+                    results = self.db.list_entries(
+                        kb_name=kb_name, entry_type=etype, limit=10000, offset=offset
+                    )
 
-            url_entries: dict[str, list[str]] = defaultdict(list)
+                    for r in results:
+                        entry_id = r.get("id", "")
+                        # list_entries doesn't include sources; fetch full entry
+                        full = self.db.get_entry(entry_id, kb_name)
+                        if not full:
+                            continue
+                        sources = full.get("sources") or []
 
-            for etype in types_to_scan:
-                results = self.db.list_entries(kb_name=kb_name, entry_type=etype, limit=10000)
+                        for src in sources:
+                            url = ""
+                            if isinstance(src, dict):
+                                url = src.get("url", "")
+                            elif isinstance(src, str):
+                                url = src
+                            if url and url.startswith("http"):
+                                url_entries[url].append(entry_id)
 
-                for r in results:
-                    entry_id = r.get("id", "")
-                    # list_entries doesn't include sources; fetch full entry
-                    full = self.db.get_entry(entry_id, kb_name)
-                    if not full:
-                        continue
-                    sources = full.get("sources") or []
-
-                    for src in sources:
-                        url = ""
-                        if isinstance(src, dict):
-                            url = src.get("url", "")
-                        elif isinstance(src, str):
-                            url = src
-                        if url and url.startswith("http"):
-                            url_entries[url].append(entry_id)
+                    if len(results) < 10000:
+                        break
+                    offset += len(results)
 
             return dict(url_entries)
-        except (SQLAlchemyError, sqlite3.Error) as exc:
+        except (SQLAlchemyError, sqlite3.Error, StorageError) as exc:
+            logger.error("URL collection failed: %s", exc, exc_info=True)
             raise storage_error_from(getattr(exc, "orig", exc), "URL collection failed") from exc
 
     def check_url(self, url: str) -> URLCheckResult:
