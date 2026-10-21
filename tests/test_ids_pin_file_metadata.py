@@ -90,6 +90,44 @@ def test_documented_metadata_and_race_limits():
 
 
 @pytest.mark.skipif(not hasattr(os, "fchown"), reason="POSIX metadata operation")
+def test_cli_reports_actual_fchown_permission_error(tmp_path, monkeypatch):
+    path = tmp_path / "kb"
+    path.mkdir()
+    file = path / "note.md"
+    before = b"---\ntitle: Note\ntype: note\n---\nBody.\n"
+    file.write_bytes(before)
+    original = file.stat()
+    groups = [group for group in os.getgroups() if group != original.st_gid]
+    if not groups and os.geteuid() != 0:
+        pytest.skip("User has no second group for a setgid-folder fixture")
+    folder_group = groups[0] if groups else original.st_gid + 1
+    os.chown(path, -1, folder_group)
+    path.chmod(0o2770)
+    config = PyriteConfig(
+        knowledge_bases=[KBConfig(name="notes", path=path)],
+        settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+    )
+    calls = []
+
+    def refuse_chown(fd, uid, gid):
+        calls.append((uid, gid))
+        assert os.fstat(fd).st_gid == folder_group
+        raise PermissionError("synthetic fchown refusal")
+
+    monkeypatch.setattr(os, "fchown", refuse_chown)
+    save_config(config)
+    result = CliRunner().invoke(app, ["ids", "pin", "-k", "notes", "--format", "json"])
+    assert calls == [(original.st_uid, original.st_gid)]
+    assert result.exit_code == 3, result.output
+    refused = json.loads(result.stdout)["refused"]
+    assert len(refused) == 1
+    assert refused[0]["path"] == "note.md"
+    assert f"group {original.st_gid}" in refused[0]["reason"]
+    assert file.read_bytes() == before
+    assert not list(path.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(not hasattr(os, "fchown"), reason="POSIX metadata operation")
 @pytest.mark.parametrize(
     "different_group",
     [

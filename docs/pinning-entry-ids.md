@@ -91,6 +91,9 @@ default):
 `ids missing` gives `missing` (`path`, `id`, `status`), `collisions` (`id`,
 `claimants` with `path` and `explicit`) and `skipped` (`path`, `reason`);
 `ids pin` gives `pinned`, `refused`, `skipped`, `dry_run` and `synced`.
+Rows in `refused` are either collision groups (`id`, `claimants`) or
+individual write refusals (`path`, `reason`), including metadata preservation
+failures. Inspect the row's keys before reading the corresponding fields.
 Branch on the exit code: `0` done, `3` files are left (the output says which
 and why), `1` an error such as an unknown KB or an invalid `--rename`, in
 which case nothing was written.
