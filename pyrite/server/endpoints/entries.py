@@ -848,6 +848,13 @@ def update_entry(
     resolver=Depends(get_worktree_resolver),
 ):
     """Update an existing entry."""
+    if req.model_extra:
+        unknown = ", ".join(sorted(req.model_extra))
+        raise refusal_http(
+            ValidationError(
+                f"Unknown update field(s): {unknown}. Send type-specific fields inside metadata."
+            )
+        )
     # Route writes through worktree for authenticated users
     auth_user = getattr(request.state, "auth_user", None)
     if auth_user and auth_user.get("role") != "admin":
@@ -856,9 +863,8 @@ def update_entry(
         except ValueError:
             pass  # KB not in a git repo — fall back to main
 
-    # `id` is not a field `UpdateEntryRequest` can carry (FastAPI drops an
-    # unknown key before this handler sees it, Pydantic's default
-    # extra="ignore"), so a client that reads an entry and PUTs it straight
+    # `id` is not a field `UpdateEntryRequest` accepts (unknown keys are
+    # refused above), so a client that reads an entry and PUTs it straight
     # back cannot trip `split_echoed_update`'s own "this looks like an
     # echoed read" heuristic (`id`/`file_path`/index-only keys) the way MCP
     # `kb_update` does. A REST PUT to `/entries/{id}` is always that

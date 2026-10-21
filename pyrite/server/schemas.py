@@ -456,6 +456,10 @@ class CreateEntryRequest(BaseModel):
 class UpdateEntryRequest(BaseModel):
     """JSON body for updating an entry."""
 
+    # Preserve unknown names until the endpoint can issue the same domain
+    # refusal as create, rather than silently dropping them or returning 422.
+    model_config = {"extra": "allow"}
+
     kb: str
     title: str | None = None
     body: str | None = None
