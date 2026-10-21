@@ -142,12 +142,11 @@ missing entry with `ENTRY_NOT_FOUND` and a KB that does not exist with
 `KB_NOT_FOUND`, both `retryable: false`, as `kb_get` and `kb_update` do. A
 missing entry keeps `NOT_FOUND` in `legacy_error_code` on both tools: that
 was `kb_read_body`'s answer for everything, and `kb_delete`'s own answer for
-an entry it did not find. A missing KB keeps `DELETE_FAILED` in
-`legacy_error_code` for an unscoped `kb_delete` only, the caller whose call
-used to reach the handler that answered `retryable: true`; a scoped caller
-is refused by the resolver with `legacy_error_code: NOT_FOUND`, as on every
-other tool (#952). Any other `kb_delete` failure is still `DELETE_FAILED`,
-`retryable: true`.
+an entry it did not find. A missing KB keeps `NOT_FOUND` on `kb_delete` too:
+the resolver refused that call before it reached the handler, for every
+caller, so `DELETE_FAILED` was never that caller's answer (unlike an
+unscoped `kb_update`, which keeps `UPDATE_FAILED`). Any other `kb_delete`
+failure is still `DELETE_FAILED`, `retryable: true`.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape

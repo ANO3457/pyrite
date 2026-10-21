@@ -50,19 +50,16 @@ def _call(server, tool, arguments, *, scoped=False):
 
 
 #: The code MCP answered for a missing *entry* before #981/#984, beside the
-#: class's own code for one release (ADR-0037 theme 2).
+#: class's own code for one release (ADR-0037 theme 2). The same table holds
+#: for a missing *KB*: an unscoped write tool reached its handler, whose
+#: catch-all answered that tool's failure code (UPDATE_FAILED); kb_delete was
+#: refused by the resolver with NOT_FOUND for every caller, so it keeps that.
 _LEGACY_MISSING_CODE = {
-    "kb_delete": "NOT_FOUND",  # its handler answered a missing entry itself
+    "kb_delete": "NOT_FOUND",
     "kb_get": "NOT_FOUND",
     "kb_read_body": "NOT_FOUND",
     "kb_update": "UPDATE_FAILED",
 }
-
-#: A missing *KB* on an unscoped write tool reached its handler, whose
-#: catch-all answered that tool's failure code rather than NOT_FOUND; the
-#: dispatcher keeps it for one release (#981: UPDATE_FAILED, #984:
-#: DELETE_FAILED).
-_LEGACY_MISSING_KB_CODE = {**_LEGACY_MISSING_CODE, "kb_delete": "DELETE_FAILED"}
 
 
 @pytest.mark.parametrize("tool", sorted(_LEGACY_MISSING_CODE))
@@ -84,7 +81,7 @@ def test_missing_kb_has_domain_code(mcp_server, tool):
         {"kb_name": "missing", "entry_id": "missing", "title": "New title"},
     )
     assert result["error_code"] == "KB_NOT_FOUND", result
-    assert result["legacy_error_code"] == _LEGACY_MISSING_KB_CODE[tool], result
+    assert result["legacy_error_code"] == _LEGACY_MISSING_CODE[tool], result
     assert result["retryable"] is False
 
 

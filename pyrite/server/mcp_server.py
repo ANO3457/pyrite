@@ -2569,14 +2569,14 @@ class PyriteMCPServer:
             refusal = _kb_refusal(self.svc, kb_name, readable_kbs)
             if refusal is not None:
                 # The one refusal, with the code the old algorithm gave this
-                # caller: an unscoped kb_update and kb_delete reached their
-                # handlers, which answered a missing KB with UPDATE_FAILED and
-                # DELETE_FAILED (both retryable: true) before #761 and #984
-                # typed them; a scoped caller was refused here, with
-                # NOT_FOUND, as every other tool still is.
-                legacy = {"kb_update": "UPDATE_FAILED", "kb_delete": "DELETE_FAILED"}
-                if readable_kbs is None and name in legacy:
-                    refusal["legacy_error_code"] = legacy[name]
+                # caller: an unscoped kb_update reached its handler, which
+                # answered a missing KB with UPDATE_FAILED (retryable: true)
+                # before #761 typed it; a scoped caller was refused here, with
+                # NOT_FOUND, as every other tool still is. kb_delete answered
+                # NOT_FOUND here for every caller (#984), so its legacy code is
+                # the resolver's, not the handler's DELETE_FAILED.
+                if name == "kb_update" and readable_kbs is None:
+                    refusal["legacy_error_code"] = "UPDATE_FAILED"
                 return refusal
 
         takes_readable = readable_kbs is not None and self._handler_takes_readable_kbs(name)
