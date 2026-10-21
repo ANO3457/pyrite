@@ -2157,16 +2157,14 @@ class TestNewAdrGoesThroughPipeline:
             "new-adr must not create ./adrs in the current directory"
         )
 
-    def test_existing_adr_number_is_refused_with_entry_exists(self, env):
-        """An existing ADR's id (adr-0001) is refused; the file is untouched."""
+    def test_unindexed_existing_adr_advances_number_and_keeps_original(self, env):
+        """A file still reserves its number when its index row is missing."""
         first = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
         assert first.exit_code == 0, first.output
         expected_file = env["kb_path"] / "adrs" / "0001-original-title.md"
         original = expected_file.read_bytes()
 
-        # A second ADR that resolves to the SAME id (adr-0001) is refused.
-        # The numbering query only sees indexed ADRs, so this simulates a
-        # race/duplicate rather than the auto-increment's normal path.
+        # Removing an index row does not remove its file or free its number.
         from pyrite.storage.database import PyriteDB
 
         db = PyriteDB(env["db_path"])
@@ -2179,8 +2177,10 @@ class TestNewAdrGoesThroughPipeline:
             db.close()
 
         result = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
-        assert result.exit_code != 0, result.output
-        assert "ENTRY_EXISTS" in result.output, result.output
+        assert result.exit_code == 0, result.output
+        assert "ADR-0002" in result.output
+        second_file = env["kb_path"] / "adrs" / "0002-original-title.md"
+        assert "id: adr-0002" in second_file.read_text(encoding="utf-8")
         assert expected_file.read_bytes() == original
 
     def test_create_failure_prints_str_e_not_the_masked_public_message(self, env):
