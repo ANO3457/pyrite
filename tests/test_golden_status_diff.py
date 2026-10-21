@@ -11,7 +11,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/golden_status_diff.py"
 
 
 def _git(root, *args):
-    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    return subprocess.check_output(["git", "-C", str(root), *args], text=True, timeout=60).strip()
 
 
 def _write(root, filename, data):
