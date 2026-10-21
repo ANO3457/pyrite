@@ -981,30 +981,24 @@ class BaseBackend(ABC):
                 frontier = next_frontier
         else:
             params: dict[str, Any] = {}
-            if readable_kbs is None:
-                sql = """
-                    SELECT e.id, e.kb_name, e.title, e.entry_type
-                    FROM entry e
-                    WHERE (e.id IN (SELECT source_id FROM link)
-                       OR e.id IN (SELECT target_id FROM link))
-                """
-            else:
-                # A node earns its place by a link the caller can see: one it
-                # makes itself, or one made to it from a readable source.
-                # Otherwise a readable entry linked only from a private KB
-                # would appear, and take a slot of `limit`, because of it.
-                inbound = kb_names_clause("l.source_kb", readable_kbs, params)
-                entry_scope = kb_names_clause("e.kb_name", readable_kbs, params)
-                sql = f"""
-                    SELECT e.id, e.kb_name, e.title, e.entry_type
-                    FROM entry e
-                    WHERE (EXISTS (SELECT 1 FROM link l
-                                   WHERE l.source_id = e.id AND l.source_kb = e.kb_name)
-                       OR EXISTS (SELECT 1 FROM link l
-                                  WHERE l.target_id = e.id AND l.target_kb = e.kb_name
-                                    AND {inbound}))
-                      AND {entry_scope}
-                """
+            # A node earns its place by a link that names it by id *and* KB:
+            # one it makes itself, or one made to it from a readable source
+            # (when the caller is scoped). The id alone pulled in `kb:x`
+            # because `ka:x` was linked (#1058), and a readable entry linked
+            # only from a private KB would appear, and take a slot of
+            # `limit`, because of it.
+            inbound = kb_names_clause("l.source_kb", readable_kbs, params)
+            entry_scope = kb_names_clause("e.kb_name", readable_kbs, params)
+            sql = f"""
+                SELECT e.id, e.kb_name, e.title, e.entry_type
+                FROM entry e
+                WHERE (EXISTS (SELECT 1 FROM link l
+                               WHERE l.source_id = e.id AND l.source_kb = e.kb_name)
+                   OR EXISTS (SELECT 1 FROM link l
+                              WHERE l.target_id = e.id AND l.target_kb = e.kb_name
+                                {f"AND {inbound}" if inbound else ""}))
+                  {f"AND {entry_scope}" if entry_scope else ""}
+            """
             if kb_name:
                 sql += " AND e.kb_name = :kb_name"
                 params["kb_name"] = kb_name
