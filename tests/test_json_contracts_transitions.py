@@ -42,6 +42,12 @@ def test_transition_row_matches_real_mcp_not_found(tool, missing, cli_world):
     assert refusal["retryable"] is False
 
 
-def test_removal_versions_are_not_promised_without_a_decision():
+def test_removal_versions_follow_the_maintainer_decision():
     text = PAGE.read_text(encoding="utf-8")
     assert not re.search(r"for one\s+release|this release|next release", text)
+    for line in text.splitlines():
+        if line.startswith(
+            ("- `legacy_error_code`", "- Search `distance`", "- `-f`", "- `export --format`")
+        ):
+            assert "0.27" in line
+    assert "a later release" not in text

@@ -1,4 +1,7 @@
-"""Rules about how the test suite itself is wired (test-architecture review, rule 11)."""
+"""Rules about how the test suite itself is wired (test-architecture review, rule 11).
+
+Rule and contributor guidance: ../CONTRIBUTING.md#writing-tests
+"""
 
 from pathlib import Path
 

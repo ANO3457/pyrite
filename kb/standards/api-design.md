@@ -21,6 +21,11 @@ Every MCP tool must have:
 
 ## Error Handling
 
+`pyrite.exceptions.public_text(exc)` is the one place that selects public
+exception text and logs a hidden cause when a fixed public message replaces
+it. Other modules do not read `.public_message` directly. This is enforced by
+[test_public_message_logged_once.py](../../tests/test_public_message_logged_once.py).
+
 Codes live on the exception class (ADR-0037 theme 2): every `PyriteError`
 subclass (`pyrite/exceptions.py`) carries an `error_code`, and every surface
 derives its code from the class, with no per-transport lookup table. The

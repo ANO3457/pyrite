@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..config import PyriteConfig, load_config
-from ..exceptions import PyriteError
+from ..exceptions import PyriteError, StorageError
 from ..services.kb_registry_service import KBRegistryService
 from ..services.kb_service import KBService
 from ..storage.database import PyriteDB
@@ -178,7 +178,10 @@ def open_index_for_validation(
     The returned database belongs to the caller, which must close it. If
     opening or checking the index fails, the returned config is freshly loaded
     from YAML so partially merged DB-only KBs cannot leak into validation.
-    File-system errors while checking KB contents still propagate.
+    File-system errors while checking KB contents still propagate. A
+    ``StorageError`` (a corrupt or truncated index, #922) propagates too: the
+    caller is a check command, and a check that cannot be made is a refusal
+    (exit 1, ``STORAGE_ERROR``), not a clean verdict from the YAML alone.
     """
     try:
         config, db = get_config_and_db(config)
@@ -228,7 +231,7 @@ def get_config_with_registered_kbs(
             db.merge_registered_kbs(config)
         finally:
             db.close()
-    except (OSError, sqlite3.Error, SQLAlchemyError) as exc:
+    except (OSError, sqlite3.Error, SQLAlchemyError, StorageError) as exc:
         logger.warning(
             "Could not read KB registry from index database %s while resolving %r; "
             "using YAML config: %s",

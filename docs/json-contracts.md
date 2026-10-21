@@ -93,28 +93,29 @@ MCP reports the class-level `error_code`. Where its old code differed,
 `legacy_error_code` carries that old spelling; an unchanged code has no
 transition field. The CLI has no transition field. This table is the single
 reference for the tool-specific transitions still accepted in 0.26.0.
-Removal versions have not been decided; “a later release” is not a deadline.
+The maintainer set removal to 0.27; these compatibility spellings remain
+accepted in 0.26 (see `changelog.d/deprecations-retargeted.changed.md`).
 The evidence column records the introduction where known, rather than
 inventing a release date for older class-level transitions.
 
 | Tool or refusal | Condition | `error_code` | `legacy_error_code` | `retryable` | Added / evidence | Leaves in |
 |---|---|---|---|---|---|---|
-| `kb_get` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | 0.25.8 (#761) | a later release |
-| `kb_get` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | 0.25.8 (#761) | a later release |
-| `kb_update` | Missing entry | `ENTRY_NOT_FOUND` | `UPDATE_FAILED` | false | 0.25.8 (#761) | a later release |
-| `kb_update` | Unknown KB, unscoped caller | `KB_NOT_FOUND` | `UPDATE_FAILED` | false | 0.25.8 (#761) | a later release |
-| `kb_update` | Unknown KB, scoped caller | `KB_NOT_FOUND` | `NOT_FOUND` | false | KB resolver (#952) | a later release |
-| `kb_update` | File changed during update | `CONFLICT` | `UPDATE_FAILED` | true | #990 | a later release |
-| `kb_update` | Storage fault | `STORAGE_ERROR` | `UPDATE_FAILED` | only for a busy database | #990 | a later release |
-| `kb_read_body` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | a later release |
-| `kb_read_body` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | a later release |
-| `kb_delete` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | a later release |
-| `kb_delete` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | a later release |
-| KB resolver (including `kb_orient`) | Unknown or unreadable KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | 0.25.7 (#66), unified by #952 | a later release |
-| Domain refusal | Read-only KB | `KB_READ_ONLY` | `READ_ONLY` | false | ADR-0037 theme 2 | a later release |
-| Domain refusal | Invalid frontmatter | `INVALID_FRONTMATTER` | `VALIDATION_FAILED` | false | ADR-0037 theme 2 | a later release |
-| Domain refusal | Conflicting / refused config save | `CONFIG_CONFLICT` / `CONFIG_SAVE_REFUSED` | `CONFIG_ERROR` | false | ADR-0037 theme 2 | a later release |
-| Domain refusal | Storage / plugin fault | `STORAGE_ERROR` / `PLUGIN_ERROR` | `REQUEST_REFUSED` | only busy storage is retryable | ADR-0037 theme 2 | a later release |
+| `kb_get` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | 0.25.8 (#761) | 0.27 |
+| `kb_get` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | 0.25.8 (#761) | 0.27 |
+| `kb_update` | Missing entry | `ENTRY_NOT_FOUND` | `UPDATE_FAILED` | false | 0.25.8 (#761) | 0.27 |
+| `kb_update` | Unknown KB, unscoped caller | `KB_NOT_FOUND` | `UPDATE_FAILED` | false | 0.25.8 (#761) | 0.27 |
+| `kb_update` | Unknown KB, scoped caller | `KB_NOT_FOUND` | `NOT_FOUND` | false | KB resolver (#952) | 0.27 |
+| `kb_update` | File changed during update | `CONFLICT` | `UPDATE_FAILED` | true | #990 | 0.27 |
+| `kb_update` | Storage fault | `STORAGE_ERROR` | `UPDATE_FAILED` | only for a busy database | #990 | 0.27 |
+| `kb_read_body` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| `kb_read_body` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| `kb_delete` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| `kb_delete` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| KB resolver (including `kb_orient`) | Unknown or unreadable KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | 0.25.7 (#66), unified by #952 | 0.27 |
+| Domain refusal | Read-only KB | `KB_READ_ONLY` | `READ_ONLY` | false | ADR-0037 theme 2 | 0.27 |
+| Domain refusal | Invalid frontmatter | `INVALID_FRONTMATTER` | `VALIDATION_FAILED` | false | ADR-0037 theme 2 | 0.27 |
+| Domain refusal | Conflicting / refused config save | `CONFIG_CONFLICT` / `CONFIG_SAVE_REFUSED` | `CONFIG_ERROR` | false | ADR-0037 theme 2 | 0.27 |
+| Domain refusal | Storage / plugin fault | `STORAGE_ERROR` / `PLUGIN_ERROR` | `REQUEST_REFUSED` | only busy storage is retryable | ADR-0037 theme 2 | 0.27 |
 
 The scoped update refusal happens before the old handler; its legacy code
 therefore differs from the unscoped update row. A base `ValidationError`
@@ -131,13 +132,13 @@ blank means no name. These details apply equally to CLI and REST resolution.
 
 ### Deprecated, still accepted
 
-- `legacy_error_code`: match `error_code` instead. Leaves in a later release.
-- Search `distance`: read `similarity` instead. Leaves in a later release.
-- `-f` as `--format`: spell `--format` explicitly. Leaves in a later release.
-- `export --format`: use `export --target`. Leaves in a later release.
+- `legacy_error_code`: match `error_code` instead. Leaves in 0.27.
+- Search `distance`: read `similarity` instead. Leaves in 0.27.
+- `-f` as `--format`: spell `--format` explicitly. Leaves in 0.27.
+- `export --format`: use `export --target`. Leaves in 0.27.
 
-The CLI's existing deprecation warnings do not define a removal version;
-that version needs a maintainer decision. No warning string is changed here.
+The CLI warnings also name 0.27. This reference follows that maintainer
+decision; it does not change warning strings.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape
@@ -199,10 +200,14 @@ stands, pending the maintainer's explicit OK: `pyrite add FILE` adopts a
 hand-written file's own values (an ADR keeps its `adr_number`, a task its audit
 trail), which are not a request (#1010).
 
-REST `POST /api/entries` refuses the `metadata` envelope spelling; its body
-model ignores any other extra key, so a managed field sent as a top-level key
-there is silently dropped (200, created, nothing written). A follow-up makes
-it refuse.
+REST `POST /api/entries` refuses both spellings. The `metadata` envelope
+spelling of a managed field is refused by the service, as on every surface. A
+managed field sent as a top-level key, or any other top-level key the body
+model does not declare, is refused before the service with 400
+`VALIDATION_FAILED` naming the key(s) and listing what a create accepts; it is
+no longer dropped with `created: true` (#1090). A field the model has no
+top-level key for, such as the web New Entry form's Status, travels in
+`metadata`.
 
 This is the one table of codes an agent meets while writing; the
 how-to (`docs/agent-write-path.md`) links here instead of repeating it. Each row
@@ -1015,7 +1020,7 @@ full or found nothing strong, not that the KB lacks an answer: read
 Ordering fields are not scores. `rank` is a raw BM25 value and `rrf_score` is
 rank arithmetic (a few fixed values, whatever the query); neither compares
 across queries. `distance` is **backend-specific**: sqlite-vec's L2 distance on
-SQLite, pgvector's cosine distance on Postgres. It remains accepted until a later release; read `similarity`
+SQLite, pgvector's cosine distance on Postgres. It is removed in 0.27; read `similarity`
 instead (see [Deprecated, still accepted](#deprecated-still-accepted)). On SQLite, candidates are the
 L2-nearest vectors, then ordered by cosine: with a model that does not
 normalise its output, a long vector with a high cosine can be missed (the
