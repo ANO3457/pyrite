@@ -286,11 +286,18 @@ class WorktreeService:
 
         status = GitService.get_status(worktree_path)
         if not status.get("clean", True):
-            GitService.commit(
+            ok, result = GitService.commit(
                 worktree_path,
                 message=f"Submit changes from {wt.username}",
                 paths=None,
             )
+            if not ok:
+                err_msg = (
+                    result.get("error", "Git commit failed")
+                    if isinstance(result, dict)
+                    else str(result)
+                )
+                raise StorageError(f"Cannot submit worktree for user '{wt.username}': {err_msg}")
 
         # Update status
         now = datetime.now(UTC).isoformat()
@@ -318,6 +325,11 @@ class WorktreeService:
         repo_path = Path(wt.repo_path)
 
         from pyrite.services.git_service import GitService
+
+        # Refuse to merge if nothing was committed on the user's branch
+        diff_ok, diff_out = GitService.diff_branches(repo_path, base="main", head=wt.branch)
+        if not diff_ok or not diff_out.strip():
+            return False, f"Nothing committed on branch '{wt.branch}' to merge"
 
         # Merge user branch into main
         success, msg = GitService.merge_branch(repo_path, wt.branch, into="main")

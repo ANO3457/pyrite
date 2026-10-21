@@ -551,3 +551,172 @@ class TestWorktreeService:
         assert svc.get_worktree("test-kb", user_id=99) is None
         assert svc.get_user_kb_config("test-kb", user_id=99) is None
         assert svc.get_user_diff_db("test-kb", user_id=99) is None
+
+    def test_submit_fails_and_leaves_unsubmitted_when_commit_fails(
+        self, setup, monkeypatch, tmp_path
+    ):
+        svc = setup["svc"]
+        repo = setup["repo"]
+        wt = svc.ensure_worktree("test-kb", user_id=1, username="alice")
+        wt_path = Path(wt.worktree_path)
+
+        # Make commit fail by unsetting git identity and forcing config only
+        empty_cfg = tmp_path / "empty_gitconfig"
+        empty_cfg.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        for target in (repo, wt_path):
+            subprocess.run(
+                ["git", "config", "--unset-all", "user.name"], cwd=str(target), env=_clean_git_env()
+            )
+            subprocess.run(
+                ["git", "config", "--unset-all", "user.email"],
+                cwd=str(target),
+                env=_clean_git_env(),
+            )
+            subprocess.run(
+                ["git", "config", "user.useConfigOnly", "true"],
+                cwd=str(target),
+                env=_clean_git_env(),
+                check=True,
+            )
+
+        # Make a change in the worktree
+        (wt_path / "kb" / "fail.md").write_text("uncommitted edit\n")
+
+        from pyrite.exceptions import StorageError
+
+        with pytest.raises(StorageError):
+            svc.submit("test-kb", user_id=1)
+
+        wt_after = svc.get_worktree("test-kb", user_id=1)
+        assert wt_after.status == "active"
+        assert wt_after.submitted_at is None
+
+    def test_merge_refuses_when_nothing_committed(self, setup):
+        svc = setup["svc"]
+        wt = svc.ensure_worktree("test-kb", user_id=1, username="alice")
+
+        # Status set to submitted, but nothing committed on branch
+        setup["db"]._raw_conn.execute(
+            "UPDATE worktree SET status = 'submitted' WHERE id = ?",
+            (wt.id,),
+        )
+        setup["db"]._raw_conn.commit()
+
+        success, msg = svc.merge("test-kb", user_id=1)
+        assert not success
+        assert "nothing committed" in msg.lower()
+        wt_after = svc.get_worktree("test-kb", user_id=1)
+        assert wt_after.status != "merged"
+
+    def test_worktree_rest_flow_identity_unset(self, tmp_path, monkeypatch):
+        """REST flow: POST /api/worktree/submit fails with STORAGE_ERROR when git
+        identity is unset and leaves worktree unsubmitted; admin merge does not report
+        merged: true (#1174)."""
+        from fastapi.testclient import TestClient
+        from tests.auth_seed import SESSION_COOKIE, seed_and_sign_in
+
+        from pyrite.config import AuthConfig, KBConfig, PyriteConfig, Settings
+        from pyrite.server.api import create_app, get_config, get_db
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+
+        # Unset git identity so commit fails
+        empty_cfg = tmp_path / "empty_gitconfig"
+        empty_cfg.write_text("")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        subprocess.run(
+            ["git", "config", "--unset-all", "user.name"], cwd=str(repo), env=_clean_git_env()
+        )
+        subprocess.run(
+            ["git", "config", "--unset-all", "user.email"], cwd=str(repo), env=_clean_git_env()
+        )
+        subprocess.run(
+            ["git", "config", "user.useConfigOnly", "true"],
+            cwd=str(repo),
+            env=_clean_git_env(),
+            check=True,
+        )
+
+        kb_dir = repo / "kb"
+        kb_dir.mkdir()
+        (kb_dir / "root.md").write_text("# Root\n")
+        subprocess.run(
+            ["git", "-c", "user.name=Setup", "-c", "user.email=setup@example.com", "add", "."],
+            cwd=str(repo),
+            check=True,
+            env=_clean_git_env(),
+            timeout=120,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Setup",
+                "-c",
+                "user.email=setup@example.com",
+                "commit",
+                "-m",
+                "Add kb",
+            ],
+            cwd=str(repo),
+            check=True,
+            env=_clean_git_env(),
+            timeout=120,
+        )
+
+        db_path = tmp_path / "index.db"
+        config = PyriteConfig(
+            knowledge_bases=[KBConfig(name="test-kb", path=kb_dir, kb_type="generic")],
+            settings=Settings(
+                index_path=db_path,
+                auth=AuthConfig(enabled=True, allow_registration=True),
+            ),
+        )
+
+        app = create_app(config=config)
+        db = PyriteDB(db_path)
+        app.dependency_overrides[get_config] = lambda: config
+        app.dependency_overrides[get_db] = lambda: db
+
+        admin_client = TestClient(app)
+        seed_and_sign_in(admin_client, "admin", role="admin")
+
+        alice_client = TestClient(app)
+        alice_user = seed_and_sign_in(alice_client, "alice", role="write")
+
+        # Create alice's worktree and make an uncommitted edit
+        wt_svc = WorktreeService(config, db)
+        wt = wt_svc.ensure_worktree("test-kb", alice_user["id"], "alice")
+        wt_path = Path(wt.worktree_path)
+        (wt_path / "kb" / "alice-draft.md").write_text("# Draft\n")
+
+        # 1. User calls POST /api/worktree/submit
+        res = alice_client.post("/api/worktree/submit", json={"kb": "test-kb"})
+        assert res.status_code == 500, res.text
+        assert res.json()["detail"]["code"] == "STORAGE_ERROR"
+
+        # Assert worktree is left unsubmitted
+        wt_status = alice_client.get("/api/worktree/status", params={"kb": "test-kb"})
+        assert wt_status.status_code == 200
+        assert wt_status.json()["status"] == "active"
+        assert wt_svc.get_worktree("test-kb", alice_user["id"]).status == "active"
+
+        # 2. Admin calls POST /api/admin/merge-queue/alice/merge
+        merge_res = admin_client.post("/api/admin/merge-queue/alice/merge", json={"kb": "test-kb"})
+        assert merge_res.status_code == 400
+        assert "not 'submitted'" in merge_res.json()["detail"]
+        assert merge_res.json().get("merged") is not True
+
+        # And direct service merge also refuses when nothing is committed
+        ok, msg = wt_svc.merge("test-kb", alice_user["id"])
+        assert not ok
+        assert "nothing committed" in msg.lower()
+
+        # The uncommitted change never reached main
+        assert not (kb_dir / "alice-draft.md").exists()
+        db.close()

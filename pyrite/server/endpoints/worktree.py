@@ -5,7 +5,6 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from ...exceptions import PyriteError
 from ...services.access_policy import AccessPolicy
 from ..api import get_access_policy, get_worktree_resolver, limiter, requires_tier
 from ..authz import resolve_named_kb
@@ -151,10 +150,7 @@ def worktree_submit(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     wt_svc = resolver.worktree_service
-    try:
-        wt = wt_svc.submit(req.kb, auth_user["id"])
-    except PyriteError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    wt = wt_svc.submit(req.kb, auth_user["id"])
 
     return SubmitResponse(
         submitted=True,
@@ -228,10 +224,7 @@ def worktree_reset(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     wt_svc = resolver.worktree_service
-    try:
-        wt = wt_svc.reset_to_main(req.kb, auth_user["id"])
-    except PyriteError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    wt = wt_svc.reset_to_main(req.kb, auth_user["id"])
 
     return {"reset": True, "status": wt.status}
 
