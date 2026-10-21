@@ -865,6 +865,13 @@ jobs:
             fi
           done
 
+      - name: Install Hugo (pinned to 0.151.2 for frontmatter oracle)
+        run: |
+          HUGO_VERSION="0.151.2"
+          ARCH="$(dpkg --print-architecture)"
+          curl -sSL "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-${ARCH}.tar.gz" | sudo tar -xz -C /usr/local/bin hugo
+          hugo version
+
       - name: Live-process smoke tests (REST, MCP over SSE, MCP over stdio)
         env:
           # Offline: the smoke layer must not download a ~90 MB model. Tests
@@ -896,6 +903,10 @@ jobs:
           path: junit-smoke.xml
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Live Hugo splitter oracle tests (issue #1050)
+        run: |
+          pytest tests/test_frontmatter_splitter.py -k test_oracle_matches_live_hugo -v
 
       - name: Getting-started tutorial (docs-as-tests)
         run: bash scripts/run_tutorial.sh
