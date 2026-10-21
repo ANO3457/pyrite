@@ -30,6 +30,7 @@ operator action for an abandoned in-progress or blocked task: it clears the
 assignee and records why. It is not a routine way to steal a live agent's work.
 
 ```bash
+pyrite task update write-intro -k test-kb --status in_progress
 pyrite task checkpoint write-intro -k test-kb --message "Outline ready" --confidence 0.7
 pyrite task reset write-intro -k test-kb --reason "Worker stopped" --operator reviewer
 ```
