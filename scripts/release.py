@@ -489,20 +489,32 @@ def mask_fenced_blocks(text: str) -> str:
     return "".join(out)
 
 
-def _section_span(text: str, version: str) -> tuple[re.Match, int]:
+def current_day() -> date:
+    """The day this release run is for.
+
+    Every date check reads the day captured once on `Context` (#1128). A run
+    that starts at 23:59:59 and checks after midnight used to compare the
+    changelog against a different day for each check; tests pin this function
+    to freeze the clock.
+    """
+    return date.today()
+
+
+def _section_span(text: str, version: str, day: date | None = None) -> tuple[re.Match, int]:
     """Return the heading match for `## [<version>]` and where its body ends.
 
     Headings are found in a fence-masked copy (`mask_fenced_blocks`), but the
     offsets index the original text position-for-position, so the body sliced
     out is verbatim -- fences included.
     """
+    day = current_day() if day is None else day
     masked = mask_fenced_blocks(text)
     pattern = re.compile(rf"^##\s*\[{re.escape(version)}\](?P<rest>[^\n]*)$", re.M)
     matches = list(pattern.finditer(masked))
     if not matches:
         raise ReleaseError(
             f"CHANGELOG.md has no `## [{version}]` section. Add one on dev, "
-            f"dated today: `## [{version}] - {date.today().isoformat()}`."
+            f"dated today: `## [{version}] - {day.isoformat()}`."
         )
     if len(matches) > 1:
         lines = ", ".join(str(masked.count("\n", 0, m.start()) + 1) for m in matches)
@@ -516,11 +528,17 @@ def _section_span(text: str, version: str) -> tuple[re.Match, int]:
     return heading, following.start() if following else len(text)
 
 
-def check_changelog(repo: Path, version: str) -> None:
+def check_changelog(repo: Path, version: str, day: date | None = None) -> None:
     """The section exists, is dated today, has content, and nothing is
-    stranded under `[Unreleased]` below it."""
+    stranded under `[Unreleased]` below it.
+
+    ``day`` is the run's own day (``Context.day``); the wall clock is read
+    only when a caller names none, so a rehearsal that starts before midnight
+    and checks after it still compares one day (#1128).
+    """
+    day = current_day() if day is None else day
     text = _read_changelog(repo)
-    heading, end = _section_span(text, version)
+    heading, end = _section_span(text, version, day)
 
     rest = heading.group("rest")
     dated = re.search(r"(\d{4}-\d{2}-\d{2})", rest)
@@ -529,10 +547,10 @@ def check_changelog(repo: Path, version: str) -> None:
             f"`## [{version}]` is undated. The runbook wants "
             f"`## [{version}] - YYYY-MM-DD` so the release notes and the tag agree."
         )
-    if dated.group(1) != date.today().isoformat():
+    if dated.group(1) != day.isoformat():
         raise ReleaseError(
             f"`## [{version}]` is dated {dated.group(1)}, today is "
-            f"{date.today().isoformat()}. Re-date it on dev (and let CI pass on "
+            f"{day.isoformat()}. Re-date it on dev (and let CI pass on "
             "that commit) before releasing."
         )
 
@@ -904,6 +922,10 @@ class Context:
     # Not failures, but things a "looks releasable" must not be silent about.
     cautions: list[str] = field(default_factory=list)
     step_key: str = ""
+    # The day this run is for, captured once when the run starts (#1128).
+    # Every date check reads it, never the wall clock, so a run that starts
+    # before midnight and checks after it still compares one day.
+    day: date = field(default_factory=lambda: current_day())
 
     def attempt(self, check: Callable[[], object]) -> bool:
         """Run one check; True when it passed.
@@ -958,10 +980,8 @@ def step_preconditions(ctx: Context) -> None:
     if ctx.attempt(lambda: check_version_matches(ctx.repo, ctx.version)):
         ctx.runner.note(f"pyproject.toml version == {ctx.version}")
 
-    if ctx.attempt(lambda: check_changelog(ctx.repo, ctx.version)):
-        ctx.runner.note(
-            f"CHANGELOG has `## [{ctx.version}] - {date.today().isoformat()}` with content"
-        )
+    if ctx.attempt(lambda: check_changelog(ctx.repo, ctx.version, ctx.day)):
+        ctx.runner.note(f"CHANGELOG has `## [{ctx.version}] - {ctx.day.isoformat()}` with content")
     # Asked unconditionally, as before: the notes are read out of the CHANGELOG
     # section, and `_print_notes` stays silent when there is no section to read,
     # so a missing section is still named once, by the check above (#889). Every
@@ -1013,7 +1033,7 @@ def _print_notes(ctx: Context) -> None:
     # dated for another day, or empty -- and those notes still print, because
     # reading them before the cut is the rehearsal's main purpose.
     try:
-        _section_span(_read_changelog(ctx.repo), ctx.version)
+        _section_span(_read_changelog(ctx.repo), ctx.version, ctx.day)
     except ReleaseError:
         return
 
