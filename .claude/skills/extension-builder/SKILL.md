@@ -70,7 +70,7 @@ packages = ["src/pyrite_<snake_name>"]
 
 #### Optionally generated:
 
-**`src/pyrite_<snake_name>/hooks.py`** — If hooks requested. before_save/after_save functions following the hook pattern.
+**`src/pyrite_<snake_name>/hooks.py`** — If hooks requested. Scaffold refusal-only hooks without assignments to `entry` fields; follow [the protocol contract](../../../pyrite/plugins/protocol.py).
 
 **`src/pyrite_<snake_name>/tables.py`** — If custom tables requested. Table definitions with extension-prefixed names.
 
@@ -121,7 +121,7 @@ For working examples, read these existing extensions:
 3. `from_frontmatter()` MUST call `generate_entry_id(title)` when `meta.get("id")` is empty
 4. Validators MUST return `[]` for unrelated types
 5. Prefix custom DB table names with extension name
-6. Hooks MUST return the entry (before_save) or None (after_save). A before_save hook may refuse by raising; on update its changes are ignored, only create keeps them
+6. `before_save` may raise to refuse; do not set fields in it. Follow [the protocol contract](../../../pyrite/plugins/protocol.py).
 7. Declare `capabilities` for every method the plugin implements; the registry skips methods whose capability is missing
 8. All list/dict fields MUST handle None → default: `meta.get("field", []) or []`
 9. Tests MUST pass before claiming completion

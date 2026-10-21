@@ -326,23 +326,20 @@ MY_TABLES = [
 
 ## Hooks Pattern
 
+Hooks may refuse a write, not set fields; follow [the protocol contract](../../../pyrite/plugins/protocol.py).
+
 ```python
 from pyrite.models.base import Entry
 from typing import Any
 
 def before_save_check(entry: Entry, context: dict[str, Any]) -> Entry:
-    """before_save hooks receive (entry, context) and must return the entry."""
+    """Refuse invalid state without changing the entry."""
     if entry.entry_type != "my_type":
         return entry  # Don't interfere with other types
 
     # context keys: kb_name, user, kb_schema, operation ("create"|"update"|"delete")
-    # A before_save hook may refuse by raising. On update its changes are
-    # ignored; only create keeps them (ADR-0042 decision 4).
-    if context.get("operation") == "create":
-        # Set defaults, validate state, etc.
-        pass
-
-    return entry  # MUST return entry
+    # Check state here and raise ValidationError to refuse if necessary.
+    return entry
 
 def after_save_update(entry: Entry, context: dict[str, Any]) -> None:
     """after_save hooks receive (entry, context) and return nothing."""
