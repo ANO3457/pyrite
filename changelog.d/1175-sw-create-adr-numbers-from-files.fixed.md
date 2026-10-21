@@ -1,0 +1,1 @@
+- `sw_create_adr` numbers a new ADR from the files on disk rather than the index, matching `pyrite sw new-adr` and resolving the single configured KB when `kb_name` is omitted (#1175).

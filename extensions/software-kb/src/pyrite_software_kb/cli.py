@@ -14,7 +14,7 @@ from pyrite.config import load_config
 from pyrite.services.access_policy import UNSCOPED
 from pyrite.storage.database import PyriteDB
 
-from .adr_listing import adr_relations, adr_sort_key, format_adr_relations
+from .adr_listing import adr_relations, adr_sort_key, format_adr_relations, next_adr_number
 
 sw_app = typer.Typer(help="Software KB commands (ADRs, backlog, standards, components)")
 console = Console()
@@ -72,6 +72,11 @@ def _query_entries(db: PyriteDB, entry_type: str, kb_name: str | None = None) ->
         item["_meta"] = meta
         results.append(item)
     return results
+
+
+def _next_adr_number(_db: Any, kb_conf: Any) -> int:
+    """One past the highest ADR number the files hold (#1082, #1175)."""
+    return next_adr_number(kb_conf)
 
 
 def _json_output(items: list[dict]) -> None:
@@ -212,13 +217,7 @@ def sw_new_adr(
 
     db = PyriteDB(config.settings.index_path)
     try:
-        rows = _query_entries(db, "adr", kb_conf.name)
-        max_num = 0
-        for row in rows:
-            num = row["_meta"].get("adr_number", 0)
-            if isinstance(num, int) and num > max_num:
-                max_num = num
-        next_num = max_num + 1
+        next_num = next_adr_number(kb_conf)
         today = date.today().isoformat()
 
         body = (
