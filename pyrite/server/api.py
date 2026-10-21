@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # The central PyriteError -> HTTP handler lives in server/errors.py
-# (ADR-0037 theme 2, §3: "one mapping table per transport, in one module
+# (ADR-0037 theme 2, Â§3: "one mapping table per transport, in one module
 # each"). Re-exported here for existing importers
 # (`from pyrite.server.api import register_pyrite_exception_handler`);
 # server/errors.py is the source of truth.
@@ -76,7 +76,7 @@ from .errors import register_pyrite_exception_handler  # noqa: E402  # isort:ski
 def _anonymized_key_func(request: Request) -> str:
     """Hash the client IP for rate limiting without storing the raw address.
 
-    Uses SHA-256 truncated to 16 chars — sufficient for rate limiting,
+    Uses SHA-256 truncated to 16 chars â€” sufficient for rate limiting,
     not reversible to the original IP address.
     """
     raw_ip = get_remote_address(request)
@@ -88,7 +88,7 @@ def _anonymized_key_func(request: Request) -> str:
 #
 # Service state lives on ``app.state.pyrite_*`` attributes, initialised by
 # ``create_app()``.  DI functions read from app.state so each FastAPI app
-# instance is fully isolated — no cross-test contamination via module globals.
+# instance is fully isolated â€” no cross-test contamination via module globals.
 # =============================================================================
 
 
@@ -102,7 +102,7 @@ def _init_app_state(application: FastAPI, config: PyriteConfig) -> None:
     application.state.pyrite_kb_service = None
     application.state.pyrite_kb_registry = None
     application.state.pyrite_llm_service = None
-    application.state.pyrite_diff_db_cache = {}  # (user_id, kb_name) → PyriteDB
+    application.state.pyrite_diff_db_cache = {}  # (user_id, kb_name) â†’ PyriteDB
 
 
 def get_config() -> PyriteConfig:
@@ -375,7 +375,7 @@ def get_access_policy(
     config: PyriteConfig = Depends(get_config),
     db: PyriteDB = Depends(get_db),
 ) -> AccessPolicy:
-    """The access policy, for this request's config and DB handle (ADR-0037 §1).
+    """The access policy, for this request's config and DB handle (ADR-0037 Â§1).
 
     What `authz.authorize(...)` asks; one per request, like every provider here.
     """
@@ -467,14 +467,14 @@ async def verify_api_key(
     1. X-API-Key header / api_key query param (existing behaviour)
     2. Session cookie (web UI auth)
     3. Anonymous tier (configurable public access)
-    4. No auth configured → admin (backwards-compatible)
+    4. No auth configured â†’ admin (backwards-compatible)
 
     This dependency is ``async``, so its body runs on the event-loop thread.
-    Everything here must therefore be non-blocking — the one synchronous DB
+    Everything here must therefore be non-blocking â€” the one synchronous DB
     call (``AuthService.verify_session``) is offloaded with
     ``run_in_threadpool`` below (#131 criterion 4). Calling it inline both
     blocked the loop for the duration of the query and put event-loop DB work
-    in the same session as the threadpool handlers' — the second, distinct
+    in the same session as the threadpool handlers' â€” the second, distinct
     exposure of the shared-session bug, specifically on the auth-enabled path.
     """
     # 1. API key (header or query param)
@@ -495,7 +495,7 @@ async def verify_api_key(
 
             def _verify() -> dict | None:
                 # Runs on a worker thread. `db` is this request's handle, so
-                # the lookup uses this request's session — no scope to open,
+                # the lookup uses this request's session â€” no scope to open,
                 # and nothing shared with a concurrent request.
                 auth_service = AuthService(db, config.settings.auth)
                 return auth_service.verify_session(token)
@@ -513,7 +513,7 @@ async def verify_api_key(
         request.state.anonymous = True
         return
 
-    # 4. No auth configured → admin (existing behavior)
+    # 4. No auth configured â†’ admin (existing behavior)
     if (
         not config.settings.api_key
         and not config.settings.api_keys
@@ -714,9 +714,9 @@ async def resolve_effective_kb_role(
     Resolution chain:
     1. Global admins always pass (returns "admin")
     2. No user identity and not anonymous (an operator API key, or auth
-       disabled) → global `request.state.api_role`
-    3. A signed-in user or the anonymous visitor: explicit KB grant → KB
-       default_role → user global role / anonymous tier
+       disabled) â†’ global `request.state.api_role`
+    3. A signed-in user or the anonymous visitor: explicit KB grant â†’ KB
+       default_role â†’ user global role / anonymous tier
 
     Returns None only if no role could be determined at all (e.g. no
     `api_role` set on the request, which normally means auth failed
@@ -810,7 +810,7 @@ def readable_kbs_for_user(
     `scoped=False` to say so.
 
     Scoped: `user_id` is resolved per KB through the same chain the REST
-    routes use (explicit grant → KB default_role → the user's global role),
+    routes use (explicit grant â†’ KB default_role â†’ the user's global role),
     and the KB is readable when that effective role is at least "read".
     `user_id=None` with `scoped=True` is the anonymous visitor on an
     auth-enabled instance: the same walk with no grants.
@@ -823,7 +823,7 @@ async def readable_kbs(request: Request, config: PyriteConfig, db: PyriteDB) -> 
 
     For in-process callers that want a plain set; a route declares
     `authz.authorize(Action.KB_READ, KB | AnyKB)` and takes a `ReadScope`
-    instead (ADR-0037 §2). The caller comes from `authz.get_principal`, the
+    instead (ADR-0037 Â§2). The caller comes from `authz.get_principal`, the
     one place REST reads identity off the request, and the rule is the shared
     `readable_kbs_for_user` -- the helper the MCP transport uses too, so the
     two surfaces cannot drift (#201).
@@ -885,7 +885,7 @@ async def _enforce_kb_tier(
     or, when None, the resolver's refusal for the KB the request named,
     with its suggestion (#952).
     """
-    # The policy checks existence before role (ADR-0037 §4): a missing KB
+    # The policy checks existence before role (ADR-0037 Â§4): a missing KB
     # answers exactly like a private one, for every caller and on every write
     # route -- not with whatever the handler behind this guard says.
     decision = AccessPolicy(config, db).authorize(
@@ -910,7 +910,7 @@ def requires_kb_tier(tier: str, *, resolve_kb=None):
 
     Resolution chain, per KB:
     1. Global admins always pass
-    2. Explicit KB grant → KB default_role → user global role → anonymous tier
+    2. Explicit KB grant â†’ KB default_role â†’ user global role â†’ anonymous tier
 
     A KB the caller cannot read answers 404 exactly like a KB that does not
     exist; a KB the caller can read but not reach `tier` on answers 403.
@@ -1083,7 +1083,7 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
         return application.state.pyrite_config
 
     def _app_db() -> PyriteDB:
-        """The app's shared ``PyriteDB`` — engine and pool, no session.
+        """The app's shared ``PyriteDB`` â€” engine and pool, no session.
 
         Plain accessor for the other app-state builders below (index manager,
         KB registry, index worker), which need the object, not a request
@@ -1099,7 +1099,7 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
     def _app_get_db():
         """Per-request database session (#131).
 
-        The ``PyriteDB`` — and so the engine and its connection pool — is still
+        The ``PyriteDB`` â€” and so the engine and its connection pool â€” is still
         built once and cached on app state; what is now per-request is the
         SQLAlchemy ``Session``. ``session_scope()`` binds a fresh one for the
         duration of this request and closes it in its ``finally``, on every
@@ -1107,8 +1107,8 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
 
         Being a generator dependency, FastAPI opens the handle before the
         handler and closes it after the response is produced. The handler
-        receives a per-request *handle* onto the same database — same engine,
-        pool, raw connection and backend — whose ``db.session`` and backend
+        receives a per-request *handle* onto the same database â€” same engine,
+        pool, raw connection and backend â€” whose ``db.session`` and backend
         ``self._session`` resolve to this request's own Session. That is why no
         service or endpoint signature had to change.
 
@@ -1305,7 +1305,7 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
             await asyncio.wait({sweep}, timeout=5)
         unbind_loop(application.state.pyrite_ws_loop)
 
-    # CORS — use configured origins; disable credentials with wildcard (spec compliance)
+    # CORS â€” use configured origins; disable credentials with wildcard (spec compliance)
     origins = config.settings.cors_origins
     application.add_middleware(
         CORSMiddleware,
@@ -1343,12 +1343,12 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
 
     application.include_router(auth_router)
 
-    # Branding router (public — the login page needs it before auth)
+    # Branding router (public â€” the login page needs it before auth)
     from .branding_endpoints import branding_router
 
     application.include_router(branding_router)
 
-    # MCP SSE transport (mounted outside /api — handles its own Bearer auth)
+    # MCP SSE transport (mounted outside /api â€” handles its own Bearer auth)
     from .mcp_routes import mount_mcp_routes
 
     # The shared PyriteDB, not the `_app_get_db` generator dependency: the MCP
@@ -1365,7 +1365,7 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
         api_router.include_router(r)
     application.include_router(api_router)
 
-    # Health check (not behind /api — used for infra probes, no rate limit)
+    # Health check (not behind /api â€” used for infra probes, no rate limit)
     @application.get("/health", tags=["Admin"])
     def health_check():
         """Health check endpoint."""
@@ -1455,7 +1455,20 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
 # Default application instance (used by uvicorn / existing imports)
 # =============================================================================
 
-app = create_app()
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """The uvicorn import-string entry point owns logging; the factory does not."""
+    global _default_app
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _default_app is None:
+        from ..logging import configure_entry_point_logging
+
+        configure_entry_point_logging(default="INFO")
+        _default_app = create_app()
+    return _default_app
 
 
 # =============================================================================
