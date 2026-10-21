@@ -1275,7 +1275,7 @@ class KBService:
 
     def _with_declared_fields(
         self, entry_type: str, kb_config: KBConfig, fields: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, str]]:
+    ) -> tuple[dict[str, Any], dict[str, str | None]]:
         """A create's request with every field the type's schema declares
         (#86), and the declared fields the model holds as attributes.
 
@@ -1295,7 +1295,8 @@ class KBService:
         Left out: base Entry fields (``RESERVED_FIELD_NAMES``) and the fields
         a create refuses (``_field_sets``' managed set, #1010). An alias is
         added at its target's name. The second value maps each declared
-        attribute field to its attribute, for ``Entry._create_fields``.
+        declared field to its attribute (None for a metadata-held field), for
+        ``Entry._create_fields``.
         """
         from ..models.core_types import get_entry_class
         from ..schema.field_aliases import class_field_aliases, field_at, spellings_of
@@ -1307,7 +1308,7 @@ class KBService:
         envelope = fields.get("metadata")
         envelope = envelope if isinstance(envelope, Mapping) else {}
         added: dict[str, Any] = {}
-        attributes: dict[str, str] = {}
+        attributes: dict[str, str | None] = {}
         for name, schema in kb_config.kb_schema.type_fields(entry_type).items():
             if name in skip:
                 continue
@@ -1327,6 +1328,8 @@ class KBService:
                     added[field] = schema.empty_value()
             elif not sent:
                 added[field] = schema.empty_value()
+            if attribute is None:
+                attributes[field] = None
         return {**fields, **added}, attributes
 
     def _prepare_and_save(
