@@ -505,46 +505,18 @@ def index_health(
     orphaned_entries = health.get("orphaned_entries", [])
     invalid_statuses = health.get("invalid_statuses", [])
     off_list_values = health.get("off_list_values", [])
-    # Off-list enum values roll up by row severity (#555): `error` (a kb.yaml
-    # enum in a KB with `validation.enforce_enums` on -- writes refuse it) is
-    # unhealthy; `warning` (switch off, or a plugin enum) is a warning; `info`
-    # (an `allow_other` field) does not move the status.
-    off_list_severities = {row.get("severity") for row in off_list_values}
     duplicates = health.get("duplicates", [])
     removed_extensions = health.get("removed_extensions", [])
     unmodellable_frontmatter = health.get("unmodellable_frontmatter", [])
     double_spellings = health.get("double_spellings", [])
-    is_unhealthy = (
-        health["missing_files"]
-        or health["unindexed_files"]
-        or health["stale_entries"]
-        or health.get("content_changed")
-        # Two files claiming one id: only the first path is indexed, so the
-        # other is invisible to search. Unhealthy, named loudly (maintainer,
-        # 2026-10-03, ADR-0038 decided question 3).
-        or duplicates
-        or unreadable_files
-        or orphaned_entries
-        or "error" in off_list_severities
-    )
-    has_warning = (
-        bool(broken_links)
-        or bool(undeclared_types)
-        or bool(health.get("type_name_drift_total"))
-        or bool(health.get("schema_errors"))
-        or bool(missing_required)
-        or bool(subdirectory_mismatches)
-        or bool(malformed_frontmatter)
-        or bool(invalid_statuses)
-        or "warning" in off_list_severities
-        or bool(removed_extensions)
-        or bool(unmodellable_frontmatter)
-        or bool(double_spellings)
-        # A link row a rebuild would point at a different KB (a shortname
-        # renamed since the file was indexed, or a row from before #980).
-        or bool(health.get("links_stale_kb"))
-    )
-    status = "unhealthy" if is_unhealthy else ("warning" if has_warning else "healthy")
+    # One verdict for every surface that reads this report (#1119); `status`
+    # also rolls off-list enum values up by row severity (#555).
+    from ..services.index_health import health_verdict
+
+    verdict = health_verdict(health)
+    is_unhealthy = verdict["is_unhealthy"]
+    has_warning = verdict["has_warning"]
+    status = verdict["status"]
 
     formatted = _format_output(
         {
