@@ -271,6 +271,22 @@ class QAService:
             "duplicate": len(health["duplicates"]),
             "off-list": len(off_list_errors),
         }
+        if off_list_errors and not any(n for key, n in counts.items() if key != "off-list"):
+            issues.append(
+                {
+                    "entry_id": "",
+                    "kb_name": kb_name,
+                    "rule": "index_unhealthy",
+                    "severity": "error",
+                    "field": "index",
+                    "message": (
+                        f"KB '{kb_name}': {len(off_list_errors)} enforced enum value(s) are invalid; "
+                        "run `pyrite index health`, correct the reported values in their files, "
+                        f"then run `pyrite index sync -k {kb_name}`"
+                    ),
+                }
+            )
+            return
         found = ", ".join(f"{n} {what}" for what, n in counts.items() if n)
         issues.append(
             {

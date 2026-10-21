@@ -314,8 +314,13 @@ def index_health():
         # (#1119): this command used to ignore duplicates, content_changed and
         # error-severity off-list values, so it called an index healthy that
         # the main command called unhealthy.
-        if health_verdict(health)["status"] != "unhealthy":
+        verdict = health_verdict(health)
+        if verdict["status"] == "healthy":
             console.print("[green]Index is healthy.[/green]")
+        elif verdict["status"] == "warning":
+            console.print(
+                "[yellow]Index has warnings; run `pyrite index health` for details.[/yellow]"
+            )
         else:
             console.print("[yellow]Index has issues:[/yellow]")
             if health["missing_files"]:
