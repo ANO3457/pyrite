@@ -251,11 +251,25 @@ def require_input_file(path: Path | str, what: str = "File") -> Path:
     """
     from ..exceptions import EntryNotFoundError, ValidationError
 
+    if isinstance(path, str) and not path.strip():
+        raise ValidationError(f"{what}: no path given")
     p = Path(path)
     if not p.exists():
         raise EntryNotFoundError(f"{what} not found: {path}")
     if p.is_dir():
         raise ValidationError(f"{what} is a directory, not a file: {path}")
+    if not p.is_file():
+        import stat
+
+        mode = p.stat().st_mode
+        kind = (
+            "FIFO"
+            if stat.S_ISFIFO(mode)
+            else "device"
+            if stat.S_ISCHR(mode) or stat.S_ISBLK(mode)
+            else "non-regular file"
+        )
+        raise ValidationError(f"{what} is a {kind}, not a regular file: {path}")
     return p
 
 
