@@ -1573,10 +1573,6 @@ EXIT_CALLS = {
 # PRINTS: a printed failure (red text, "failed", "Error") with no exit after it in its block,
 #         which is how a failure inside a result dict hides from the first scan.
 HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
-    ("pyrite/services/qa_service.py", "_get_rubric_action"): (
-        "safe",
-        "unreadable KBs still report kb_unreadable; severity selection defaults to fail, never pass",
-    ),
     ("extensions/encyclopedia/src/pyrite_encyclopedia/cli.py", "wiki_quality"): (
         "safe",
         "bad metadata reads as empty",
