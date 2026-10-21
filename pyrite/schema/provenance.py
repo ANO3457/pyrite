@@ -170,6 +170,8 @@ RELATIONSHIP_TYPES: dict[str, dict[str, Any]] = {
     "located_at": {"inverse": "location_of", "description": "Location relationship"},
     "location_of": {"inverse": "located_at", "description": "Location of"},
     "related_to": {"inverse": "related_to", "description": "General relationship"},
+    # Legacy spelling: canonical inverse remains related_to; stored links are not rewritten.
+    "related": {"inverse": "related_to", "description": "Legacy alias of related_to"},
     # Zettelkasten note relationships
     "supports": {"inverse": "supported_by", "description": "Evidence supporting a claim"},
     "supported_by": {"inverse": "supports", "description": "Supported by evidence"},
@@ -187,6 +189,11 @@ RELATIONSHIP_TYPES: dict[str, dict[str, Any]] = {
     "answers_question": {"inverse": "asks_question", "description": "Answers a question"},
     "is_part_of": {"inverse": "contains_part", "description": "Part of a larger whole"},
     "contains_part": {"inverse": "is_part_of", "description": "Contains a part"},
+    # Relations emitted by the indexer, with their reverse directions (#621).
+    "transclusion": {"inverse": "transcluded_by", "description": "Embeds the target entry"},
+    "transcluded_by": {"inverse": "transclusion", "description": "Embedded by another entry"},
+    "references": {"inverse": "referenced_by", "description": "Object-reference field target"},
+    "referenced_by": {"inverse": "references", "description": "Referenced by an object field"},
     # Body wikilink references
     "wikilink": {"inverse": "wikilinked_by", "description": "Inline wikilink reference"},
     "wikilinked_by": {"inverse": "wikilink", "description": "Referenced by inline wikilink"},
