@@ -2224,15 +2224,8 @@ class TestNewAdrGoesThroughPipeline:
         expected_file = env["kb_path"] / "adrs" / "0001-original-title.md"
         original = expected_file.read_bytes()
 
-        from pyrite_software_kb.cli import sw_app
-        from typer.testing import CliRunner
-
-        runner = CliRunner()
-        with (
-            patch("pyrite_software_kb.cli.load_config", return_value=env["config"]),
-            patch("pyrite_software_kb.cli._next_adr_number", lambda db, kb: 1),
-        ):
-            result = runner.invoke(sw_app, ["new-adr", "Collides", "--kb", "sw-kb"])
+        with patch("pyrite_software_kb.cli._next_adr_number", lambda db, kb: 1):
+            result = self._run(env, ["new-adr", "Collides", "--kb", "sw-kb"])
 
         assert result.exit_code != 0, result.output
         assert "ENTRY_EXISTS" in result.output, result.output

@@ -1596,6 +1596,12 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
+    ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_adr_numbers_in_files"): (
+        "safe",
+        "a file that cannot be read adds no number; the index rows and the "
+        "readable files still decide, and a collision the unread file hides is "
+        "refused by the write (ENTRY_EXISTS, #1082)",
+    ),
     ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_resolve_adr_kb"): (
         "safe",
         "tries the next KB",
