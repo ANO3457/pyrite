@@ -15,8 +15,10 @@ from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..exceptions import IndexUnreadableError
 from .backends.sqlite_backend import SQLiteBackend
 from .models import Base
 from .virtual_tables import create_fts_tables, create_vec_table
@@ -62,6 +64,38 @@ sqlite3.register_adapter(date, lambda d: d.isoformat())
 sqlite3.register_converter("timestamp", lambda b: datetime.fromisoformat(b.decode()))
 
 
+#: The SQLite codes an unreadable index raises: not a database, a corrupt
+#: image, and a path that cannot be opened as one (a directory). Each means
+#: "the file is not a usable index", never "another writer holds the lock".
+_UNREADABLE_INDEX_CODES = {
+    sqlite3.SQLITE_NOTADB,
+    sqlite3.SQLITE_CORRUPT,
+    sqlite3.SQLITE_CANTOPEN,
+}
+
+
+def _index_is_unreadable(exc: BaseException) -> bool:
+    """Whether ``exc`` is SQLite refusing the file itself (#922).
+
+    A lock or a busy database is a different condition: it is retryable and
+    must not send the user to rebuild a healthy index. Extended result codes
+    keep their primary code in the low byte.
+    """
+    orig = getattr(exc, "orig", exc)
+    code = getattr(orig, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        return (code & 0xFF) in _UNREADABLE_INDEX_CODES
+    text = str(orig).lower()
+    return any(
+        marker in text
+        for marker in (
+            "file is not a database",
+            "database disk image is malformed",
+            "unable to open database file",
+        )
+    )
+
+
 class ConnectionMixin:
     """Database connection, extensions, migrations, and plugin table creation."""
 
@@ -95,8 +129,18 @@ class ConnectionMixin:
             cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             cursor.close()
 
-        # Create ORM tables
-        Base.metadata.create_all(self.engine)
+        # Create ORM tables. This is the first connection to the file, so an
+        # index that is not a SQLite database (overwritten, truncated, a
+        # directory) fails here (#922). It is derived data: refuse in one
+        # structured shape naming the rebuild command, never the driver's
+        # text or a traceback.
+        try:
+            Base.metadata.create_all(self.engine)
+        except (SQLAlchemyError, sqlite3.DatabaseError) as exc:
+            if not _index_is_unreadable(exc):
+                raise
+            self.engine.dispose()
+            raise IndexUnreadableError(str(self.db_path)) from exc
 
         # Session factory. There is deliberately no long-lived *shared*
         # Session: one Session used by concurrent threads corrupts SQLAlchemy's

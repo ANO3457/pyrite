@@ -380,6 +380,29 @@ class IndexSyncRecoveryHintError(StorageError):
     public_message = None
 
 
+class IndexUnreadableError(StorageError):
+    """The index file is not a readable SQLite database (#922).
+
+    The index is built from the KB files, so an unreadable one loses nothing:
+    ``pyrite index build`` recreates it. The message names the configured
+    index path and that command; it never interpolates the driver's text (the
+    caught exception is logged by the raiser), so it is safe by construction
+    and, like :class:`IndexSyncRecoveryHintError`, reaches every transport
+    (``public_message = None``).
+    """
+
+    public_message = None
+
+    def __init__(self, path: str):
+        self.path = path
+        super().__init__(
+            f"The index database at {path} is not readable. "
+            "It is built from the KB files, so nothing is lost: "
+            "run `pyrite index build` to rebuild it."
+        )
+        self.suggestion = "Run `pyrite index build` to rebuild the index."
+
+
 class StorageBusyError(StorageError):
     """A transient storage fault: the database was locked or busy (#431).
 

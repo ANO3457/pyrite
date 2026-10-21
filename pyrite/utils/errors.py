@@ -32,7 +32,7 @@ from typing import Any, cast
 import typer
 from typer.core import TyperGroup
 
-from ..exceptions import PyriteError, public_text, refusal_fields
+from ..exceptions import IndexUnreadableError, PyriteError, public_text, refusal_fields
 
 logger = logging.getLogger(__name__)
 
@@ -726,6 +726,13 @@ class PyriteCLIGroup(TyperGroup):
             if not guard.entered:
                 if isinstance(exc, ConfigSaveRefusedError):
                     cli_error(str(exc), error_code="CONFIG_SAVE_REFUSED")
+                if isinstance(exc, IndexUnreadableError):
+                    # This one refusal can come from opening the context,
+                    # before a legacy command (get, backlinks, index health)
+                    # starts rendering itself; it must not be a traceback just
+                    # because the command returns None (#922). Other legacy
+                    # exceptions keep their own path.
+                    cli_error_from(exc, _format_in(_ARGV.get()))
                 raise
             raised = exc
 

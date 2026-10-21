@@ -31,6 +31,7 @@ from typer.testing import CliRunner
 
 from pyrite.cli import app
 from pyrite.config import KBConfig, PyriteConfig, Settings
+from pyrite.storage.database import PyriteDB
 from tests.search_verdict_seed import cli_world, make_cli_world, seed_entry_world
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -249,11 +250,17 @@ def test_the_rich_fallback_to_file_search_says_so_without_naming_files(tmp_path)
     """When the index search fails in Rich mode the command falls back to file search; a user
     who never passed `--files` must not be told about `--files`.
 
-    The index here is not a database, so the failure is the real one; the KB's files are
-    on disk, so the fallback really searches them."""
+    The FTS table's data is dropped, so opening the index works and the search itself fails
+    on the real table; the KB's files are on disk, so the fallback really searches them. (A
+    file that is not a database is refused instead, #922.)"""
     config = make_cli_world(tmp_path)
     assert (tmp_path / "kb" / "notes" / "entry-1.md").exists()  # the fallback has a file to find
-    (tmp_path / "index.db").write_bytes(b"not a database" * 100)
+    db = PyriteDB(config.settings.index_path)
+    try:
+        db._raw_conn.execute("DROP TABLE entry_fts_data")
+        db._raw_conn.commit()
+    finally:
+        db.close()
     with cli_world(config):
         result = CliRunner().invoke(
             app, ["search", "excluded", "--fields", "status", "--format", "rich"]
