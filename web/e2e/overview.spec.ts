@@ -21,6 +21,8 @@ test('overview displays the seeded data and is reachable from the landing page',
 	const nav = page.getByRole('navigation', { name: 'Main navigation' });
 	await nav.locator('a[href="/overview"]').click();
 	await expect(page).toHaveURL(/\/overview$/);
+	// Wait for the layout's keyed fade transition to remove the outgoing node.
+	await expect(page.locator('h1.page-title').filter({ hasText: /^Overview$/ })).toHaveCount(1);
 	await expect(page.locator('h1.page-title').filter({ hasText: /^Overview$/ })).toBeVisible();
 	await expect(card(page, 'Knowledge Bases')).toHaveText('1');
 	await expect(card(page, 'Total Entries')).toHaveText(String(seededTotal));
@@ -42,6 +44,8 @@ test('overview displays the seeded data and is reachable from the landing page',
 test('a broken stats backend cannot satisfy the seeded count assertion', async ({ page }) => {
 	await page.route('**/api/stats', route => route.abort('connectionrefused'));
 	await page.goto('/overview');
+	// Wait for the layout's keyed fade transition to remove the outgoing node.
+	await expect(page.locator('h1.page-title').filter({ hasText: /^Overview$/ })).toHaveCount(1);
 	await expect(page.locator('h1.page-title').filter({ hasText: /^Overview$/ })).toBeVisible();
 	await expect(card(page, 'Total Entries')).toHaveText('-');
 	await expect(card(page, 'Total Entries')).not.toHaveText(String(seededTotal));
