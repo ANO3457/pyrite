@@ -13,7 +13,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import load_config
-from ..exceptions import QuerySyntaxError, QueryTooLongError, ValidationError
+from ..exceptions import QuerySyntaxError, QueryTooLongError, StorageError, ValidationError
 from ..services.read_shaping import (
     IDENTITY_FIELDS,
     SEARCH_FIELDS_ENV,
@@ -354,6 +354,10 @@ def register_search_command(app: typer.Typer):
                 ),
                 retryable=False,
             )
+        except StorageError as e:
+            from ..utils.errors import cli_error_from
+
+            cli_error_from(e, output_format)
         except Exception as e:
             # Log the full exception (with traceback) so operators can tell a
             # corrupt index from a bad query from a locked DB — the one-line
