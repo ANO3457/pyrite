@@ -580,6 +580,41 @@ sub-agent's.
 Commit messages use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
 `refactor:`, `ci:`, `kb:`).
 
+### Maintainer-only landing with a merge commit
+
+Ordinary contributor PRs use the configured merge method. A maintainer who
+needs a merge commit for a landing branch must coordinate **three independent
+settings** (#1036); green checks and `MERGEABLE` alone do not prove the queue
+can use that method:
+
+1. Repository **Settings → General → Pull Requests → Allow merge commits**.
+2. The `dev` ruleset's **Require merge queue → Merge method**.
+3. The same ruleset's **Require a pull request → Allowed merge methods**.
+
+Before changing anything, record all three original values and the queue's
+full parameters, particularly `max_entries_to_merge`, `min_entries_to_merge`
+and its wait timeout. Use the repository's ruleset settings or a read-only
+snapshot (replace the ID with the `dev` ruleset's ID):
+
+```bash
+gh api repos/pyrite-wiki/pyrite/rulesets
+gh api repos/pyrite-wiki/pyrite/rulesets/<dev-ruleset-id> > dev-ruleset-before.json
+```
+
+The repository-level permission is separate from that ruleset snapshot;
+record it too. If the maintainer approves a temporary merge-commit landing,
+enable it at all three gates, then use the normal PR and CI queue. This is
+not permission to bypass checks or push directly to `dev`.
+
+After the landing, restore the **recorded pre-change values**, including
+every queue parameter, and read the settings back. Do not take a new snapshot
+of the temporary state as the restoration source. In the #1036 incident,
+restoring `max_entries_to_merge: 0` and `min_entries_to_merge: 2` held a green
+PR for 30 minutes; the cited normal values were max **5**, min **1**. Prefer
+the actual pre-change snapshot over assuming those values forever. If a
+green PR stalls, inspect all three merge-method gates and these group-size
+parameters before rerunning CI or changing the PR.
+
 ## Where work is tracked
 
 Two places, one rule — an item lives in exactly one of them (ADR-0033):
