@@ -492,7 +492,12 @@ class TestShow:
         env = _clean_git_env()
         (repo / "note.md").write_text("first\n", encoding="utf-8")
         subprocess.run(
-            ["git", "add", "note.md"], cwd=repo, check=True, capture_output=True, env=env
+            ["git", "add", "note.md"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            env=env,
+            timeout=30,
         )
         subprocess.run(
             ["git", "commit", "-m", "add the note"],
@@ -500,6 +505,7 @@ class TestShow:
             check=True,
             capture_output=True,
             env=env,
+            timeout=30,
         )
         (repo / "note.md").write_text("second\n", encoding="utf-8")
         (repo / "untracked.md").write_text("never committed\n", encoding="utf-8")
