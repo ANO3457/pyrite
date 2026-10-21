@@ -1616,6 +1616,29 @@ class QAService:
                     issues.append(finding)
                     existing.append(finding)
 
+    def _get_rubric_action(
+        self, kb_name: str, item: dict[str, Any] | None = None, entry_type: str = ""
+    ) -> str:
+        """Determine whether named rubric findings fail or warn (default 'fail', #1166)."""
+        if item and isinstance(item, dict):
+            for key in ("action", "mode"):
+                if key in item and str(item[key]).lower() in ("warn", "fail"):
+                    return str(item[key]).lower()
+            if "severity" in item and str(item["severity"]).lower() in ("warn", "fail"):
+                return str(item["severity"]).lower()
+        kb_config = self.config.get_kb(kb_name)
+        if kb_config and kb_config.kb_schema:
+            schema = kb_config.kb_schema
+            if entry_type and schema.types.get(entry_type):
+                ts = schema.types[entry_type]
+                if getattr(ts, "rubric_action", None):
+                    return str(ts.rubric_action).lower()
+            if getattr(schema, "rubric_action", None):
+                return str(schema.rubric_action).lower()
+            if isinstance(schema.validation, dict) and "rubric" in schema.validation:
+                return str(schema.validation["rubric"]).lower()
+        return "fail"
+
     def _check_rubric_evaluation(self, entry: dict[str, Any], issues: list[dict[str, Any]]) -> None:
         """Run rubric checks on a single entry."""
         entry_id = entry["id"]
@@ -1680,6 +1703,7 @@ class QAService:
             try:
                 issue = fn(enriched, kb_schema, params)
                 if issue is not None:
+                    issue["rubric_action"] = self._get_rubric_action(kb_name, item, entry_type)
                     issues.append(issue)
             except Exception as exc:
                 # The item was not checked: report it, like an unknown checker
@@ -1823,6 +1847,7 @@ class QAService:
 
     def _check_rubric_all(self, issues: list[dict[str, Any]], kb_name: str) -> None:
         """Bulk SQL rubric checks across all entries in a KB."""
+        kb_action = self._get_rubric_action(kb_name)
         # 1. Missing tags
         no_tag_rows = self.db.execute_sql(
             "SELECT e.id, e.kb_name, e.entry_type, e.title FROM entry e "
@@ -1837,6 +1862,7 @@ class QAService:
                     "kb_name": row["kb_name"],
                     "rule": "rubric_violation",
                     "severity": "warning",
+                    "rubric_action": kb_action,
                     "field": "tags",
                     "message": f"Entry '{row['id']}' has no tags",
                     "rubric_item": "Entry has at least one tag",
@@ -1861,6 +1887,7 @@ class QAService:
                         "kb_name": row["kb_name"],
                         "rule": "rubric_violation",
                         "severity": "warning",
+                        "rubric_action": kb_action,
                         "field": "links",
                         "message": f"Entry '{row['id']}' has no outgoing links",
                         "rubric_item": "Entry links to at least one related entry (unless a stub)",

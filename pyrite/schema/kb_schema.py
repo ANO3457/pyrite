@@ -45,6 +45,7 @@ class KBSchema:
     guidelines: dict[str, str] = field(default_factory=dict)
     goals: dict[str, str] = field(default_factory=dict)
     evaluation_rubric: list[str | dict[str, Any]] = field(default_factory=list)
+    rubric_action: str = "fail"
 
     @classmethod
     def from_yaml(cls, path: Path) -> "KBSchema":
@@ -104,6 +105,12 @@ class KBSchema:
                     guidelines=type_data.get("guidelines", ""),
                     goals=type_data.get("goals", ""),
                     evaluation_rubric=type_data.get("evaluation_rubric", []),
+                    rubric_action=type_data.get("rubric_action")
+                    or (
+                        type_data.get("rubric")
+                        if isinstance(type_data.get("rubric"), str)
+                        else None
+                    ),
                     edge_type=type_data.get("edge_type", False),
                     endpoints=endpoints,
                     state_machine=type_data.get("state_machine"),
@@ -112,17 +119,26 @@ class KBSchema:
             else:
                 types[type_name] = TypeSchema(name=type_name)
 
+        validation = data.get("validation", {})
+        rubric_action = (
+            data.get("rubric_action")
+            or (validation.get("rubric") if isinstance(validation, dict) else None)
+            or (data.get("rubric") if isinstance(data.get("rubric"), str) else None)
+            or "fail"
+        )
+
         return cls(
             name=data.get("name", ""),
             description=data.get("description", ""),
             kb_type=data.get("kb_type", ""),
             types=types,
             policies=data.get("policies", {}),
-            validation=data.get("validation", {}),
+            validation=validation,
             schema_version=data.get("schema_version", 0),
             guidelines=data.get("guidelines", {}),
             goals=data.get("goals", {}),
             evaluation_rubric=data.get("evaluation_rubric", []),
+            rubric_action=str(rubric_action).lower(),
         )
 
     def get_type_schema(self, entry_type: str) -> TypeSchema | None:
