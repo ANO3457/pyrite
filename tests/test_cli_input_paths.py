@@ -110,16 +110,31 @@ NOT_INPUT_FILE: dict[tuple[tuple[str, ...], str], str] = {
     (("social", "vote"), "direction"): "not a path",
 }
 
+NOT_INPUT_FILE.update(
+    {
+        (("pyrite-admin", "kb", "add"), "path"): "a KB directory to register",
+        (("pyrite-admin", "kb", "discover"), "path"): "a directory to discover KBs in",
+        (("pyrite-admin", "repo", "add"), "path"): "a repository directory",
+        (("pyrite-read", "search"), "use_files"): "a boolean",
+    }
+)
+
 _NAME = re.compile(r"file|input|backup|cache|config|schema|alias|path|dir", re.I)
 
 
 def _candidates():
     from pyrite.cli import app
+    from pyrite.admin_cli import app as admin_app
+    from pyrite.read_cli import app as read_app
 
-    for path, command in leaves(typer.main.get_command(app)):
-        for param in command.params:
-            if _NAME.search(param.name) and "output" not in param.name:
-                yield tuple(path), param.name
+    for prefix, root in [((), app), (("pyrite-admin",), admin_app), (("pyrite-read",), read_app)]:
+        for path, command in leaves(typer.main.get_command(root)):
+            for param in command.params:
+                is_path_type = any(
+                    base.__name__ in {"Path", "File"} for base in type(param.type).__mro__
+                )
+                if (_NAME.search(param.name) or is_path_type) and "output" not in param.name:
+                    yield (*prefix, *path), param.name
 
 
 @pytest.mark.control(
