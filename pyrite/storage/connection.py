@@ -15,6 +15,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -167,7 +168,7 @@ class ConnectionMixin:
             index_path_for_errors = str(self.db_path)
 
             @event.listens_for(self.engine, "handle_error")
-            def handle_db_error(exception_context):
+            def handle_db_error(exception_context: ExceptionContext) -> None:
                 orig = exception_context.original_exception
                 if is_index_corruption(orig):
                     err = StorageError(f"Database error at {index_path_for_errors}: {orig}")
