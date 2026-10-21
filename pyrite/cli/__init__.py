@@ -18,6 +18,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..config import (
@@ -951,9 +952,7 @@ def import_entries(
                         "    [yellow]Warning:[/yellow]", _json.dumps(warning, default=str)
                     )
                 if r.get("ignored"):
-                    console.print(
-                        "    [yellow]Ignored:[/yellow]", ", ".join(r["ignored"]), markup=False
-                    )
+                    console.print("    [yellow]Ignored:[/yellow]", escape(", ".join(r["ignored"])))
             else:
                 failed += 1
                 console.print(_refusal_line("Failed", record, r))
