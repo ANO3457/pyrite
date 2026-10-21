@@ -52,6 +52,9 @@ The inventory checks use the shared entry-point list
 (`tests/_surface_inventory.py`, ADR-0037): every REST operation and MCP
 tool handler is in a module this scan covers, or in an installed plugin
 package (extension code is #384's, and outside this ratchet).
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#architecture
 """
 
 from __future__ import annotations

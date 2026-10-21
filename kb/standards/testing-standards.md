@@ -9,6 +9,24 @@ tags: [testing, pytest]
 
 ## Framework
 - pytest with rich output
+
+## Deadlines and waits
+
+Every test subprocess call, `Popen` wait, thread join and barrier has an
+explicit finite deadline. `timeout=None` is an unbounded wait, not a deadline;
+pytest's overall timeout is a backstop, not a replacement. Read test
+websockets through `tests.ws_helpers.receive_json` rather than an unbounded
+receive. [The test-rules guard](../../tests/test_test_rules.py) enforces this.
+
+## CLI rendering
+
+Use the session-pinned environment and `_plain_cli_environment` in
+`tests/conftest.py`; CLI assertions use plain deterministic rendering.
+Colour-specific cases opt into the `terminal_colour` fixture instead of changing
+every test's rendering. Subprocesses need their own explicit environment.
+See [the colour environment tests](../../tests/test_cli_color_environment.py).
+
+## Framework and isolation rules
 - The commit hooks run no tests; the pre-push hook runs the core plus the
   affected tests (`scripts/test-affected --run`); CI is the authority
 - The pre-push hook does not run when the pushed tree already passed here

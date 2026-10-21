@@ -14,6 +14,9 @@ subprocess with a planted command body that raises (``tests/outcome_walk.py``),
 Two source scans: none reads
 ``.public_message`` but the helper, and every logger passed as ``log=`` is under
 ``pyrite`` (so ``configure_logging`` controls it).
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#architecture
 """
 
 from __future__ import annotations
