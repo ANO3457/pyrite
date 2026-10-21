@@ -62,6 +62,9 @@ It can only shrink, and every number is pinned with `==` (as in tests/test_layer
 a file not on it that violates fails, a file on it that no longer violates fails (remove the
 line), a file whose count differs fails (lower it; raising it is the fix this rule refuses), and
 `ALLOWLIST_SIZE` must equal the number of files.
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#writing-tests
 """
 
 from __future__ import annotations

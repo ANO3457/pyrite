@@ -3,6 +3,9 @@
 Each test drives the real Typer app against a temporary index and pins
 what the command prints or returns, so the move behind services is
 checked against behaviour rather than against the diff.
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#architecture
 """
 
 import contextlib

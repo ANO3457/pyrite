@@ -52,6 +52,9 @@ The inventory checks use the shared entry-point list
 (`tests/_surface_inventory.py`, ADR-0037): every REST operation and MCP
 tool handler is in a module this scan covers, or in an installed plugin
 package (extension code is #384's, and outside this ratchet).
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#architecture
 """
 
 from __future__ import annotations
@@ -193,13 +196,12 @@ ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
         1,
         "backup/restore of the index file; " + _FOLLOW,
     ),
-    ("pyrite/cli/db_commands.py::db_backup", "sqlite3"): (2, "sqlite3 backup API; " + _FOLLOW),
     ("pyrite/cli/db_commands.py::db_restore", "sqlite3"): (
         2,
         "sqlite3 integrity check; " + _FOLLOW,
     ),
 }
-ALLOWLIST_SIZE = 23  # lower it with every entry removed; never raise it
+ALLOWLIST_SIZE = 22  # lower it with every entry removed; never raise it
 
 SURFACES = (
     "pyrite/server/",
