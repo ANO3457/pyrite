@@ -402,8 +402,10 @@ class KBRegistryService:
         its row. A KB the server itself wrote into config.yaml (ephemeral,
         repo-subscribed) has its entry there, which the server rewrites with
         the row. A KB an operator wrote into config.yaml by hand is theirs:
-        the change is refused (`KBDefinedInConfigError`, naming the file)
-        rather than reported as done and overridden by the file.
+        any metadata edit is refused (`KBDefinedInConfigError`, naming the
+        file) rather than reported as done and overridden by the file. Every
+        entry save and sync rewrites such a row from that file, so accepting
+        the edit would only make the value vanish on the next reindex (#1116).
         """
         from ..config import CONFIG_WRITE_LOCK, current_config_file, save_config
         from ..storage.models import KB
@@ -427,10 +429,11 @@ class KBRegistryService:
             raise KBNotFoundError(f"KB '{name}' not found")
 
         origin = self._yaml_origin(name, kb.repo_id)
-        if "default_role" in updates and origin == "hand":
+        if origin == "hand" and updates:
             raise KBDefinedInConfigError(
-                f"KB '{name}' is defined by hand in {current_config_file().name}, which sets "
-                "its default_role. Change default_role there and restart the server."
+                f"KB '{name}' is defined by hand in {current_config_file().name}, which is "
+                f"the source of truth for its metadata. Change {', '.join(sorted(updates))} "
+                "there and restart the server."
             )
         if "default_role" in updates and (
             self.config.confined_default_role(updates["default_role"]) != updates["default_role"]
