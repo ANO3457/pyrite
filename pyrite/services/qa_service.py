@@ -249,16 +249,43 @@ class QAService:
         (#960 item 15, review of #1061).
         """
         from ..storage.index import IndexManager
+        from .index_health import health_verdict
 
         if self.config.get_kb(kb_name) is None:
             return
         health = IndexManager(self.db, self.config).check_health(kb_name)
+        # The same verdict every other reader of this report uses (#1119):
+        # this check used to look only at unindexed/stale/missing, so an index
+        # whose only defect was orphaned entries (or duplicates) passed.
+        if not health_verdict(health)["is_unhealthy"]:
+            return
+        off_list_errors = [
+            row for row in health.get("off_list_values") or [] if row.get("severity") == "error"
+        ]
         counts = {
             "unindexed": len(health["unindexed_files"]),
             "stale": len(health["stale_entries"]) + len(health["content_changed"]),
             "missing": len(health["missing_files"]),
+            "unreadable": len(health["unreadable_files"]),
+            "orphaned": len(health["orphaned_entries"]),
+            "duplicate": len(health["duplicates"]),
+            "off-list": len(off_list_errors),
         }
-        if not any(counts.values()):
+        if off_list_errors and not any(n for key, n in counts.items() if key != "off-list"):
+            issues.append(
+                {
+                    "entry_id": "",
+                    "kb_name": kb_name,
+                    "rule": "index_unhealthy",
+                    "severity": "error",
+                    "field": "index",
+                    "message": (
+                        f"KB '{kb_name}': {len(off_list_errors)} enforced enum value(s) are invalid; "
+                        "run `pyrite index health`, correct the reported values in their files, "
+                        f"then run `pyrite index sync -k {kb_name}`"
+                    ),
+                }
+            )
             return
         found = ", ".join(f"{n} {what}" for what, n in counts.items() if n)
         issues.append(

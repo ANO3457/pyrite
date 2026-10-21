@@ -308,16 +308,19 @@ def index_health():
         kb_svc = KBService(config, db)
 
         health = kb_svc.check_index_health()
-        is_healthy = not (
-            health["missing_files"]
-            or health["unindexed_files"]
-            or health["stale_entries"]
-            or health["unreadable_files"]
-            or health["orphaned_entries"]
-        )
+        from .services.index_health import health_verdict
 
-        if is_healthy:
+        # The same verdict `pyrite index health` and QA's index check use
+        # (#1119): this command used to ignore duplicates, content_changed and
+        # error-severity off-list values, so it called an index healthy that
+        # the main command called unhealthy.
+        verdict = health_verdict(health)
+        if verdict["status"] == "healthy":
             console.print("[green]Index is healthy.[/green]")
+        elif verdict["status"] == "warning":
+            console.print(
+                "[yellow]Index has warnings; run `pyrite index health` for details.[/yellow]"
+            )
         else:
             console.print("[yellow]Index has issues:[/yellow]")
             if health["missing_files"]:
@@ -326,10 +329,19 @@ def index_health():
                 console.print(f"  Unindexed files: {len(health['unindexed_files'])}")
             if health["stale_entries"]:
                 console.print(f"  Stale entries: {len(health['stale_entries'])}")
+            if health.get("content_changed"):
+                console.print(f"  Content changed: {len(health['content_changed'])}")
+            if health.get("duplicates"):
+                console.print(f"  Duplicate ids: {len(health['duplicates'])}")
             if health["unreadable_files"]:
                 console.print(f"  Unreadable files: {len(health['unreadable_files'])}")
             if health["orphaned_entries"]:
                 console.print(f"  Orphaned index entries: {len(health['orphaned_entries'])}")
+            off_list_errors = [
+                row for row in health.get("off_list_values") or [] if row.get("severity") == "error"
+            ]
+            if off_list_errors:
+                console.print(f"  Off-list values: {len(off_list_errors)}")
             raise typer.Exit(1)  # as `pyrite index health` does (#526)
 
 

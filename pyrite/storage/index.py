@@ -946,8 +946,16 @@ class IndexManager:
             try:
                 # Follow symlinks to preserve existing reads from regular-file targets.
                 file_stat = file_path.stat()
-            except OSError:
-                continue  # removed while walking: as if never seen
+            except OSError as e:
+                # Not "removed while walking": a dangling symlink, a symlink
+                # loop or a folder this process cannot search is listed by the
+                # walk and cannot be read. Health must say so (#1119); sync
+                # already reports it as malformed.
+                error = f"{type(e).__name__}: {e}"
+                plan.malformed.append({"path": str(file_path), "error": error})
+                plan.unreadable[str(file_path)] = error
+                logger.warning("Could not stat %s: %s", file_path, e)
+                continue
             if not stat_module.S_ISREG(file_stat.st_mode):
                 plan.skipped.append({"path": str(file_path), "reason": "not a regular file"})
                 logger.warning("Skipping %s: not a regular file", file_path)
@@ -1501,6 +1509,17 @@ class IndexManager:
             # rule as `pyrite index sync` (ADR-0038 step 2).
             plan = self.plan_reconcile(kb, force=True, indexed=indexed)
             health["duplicates"].extend(plan.duplicates)
+            # A path sync lists and skips because it is not a regular file
+            # (a directory named `x.md`, a FIFO) used to vanish from health
+            # while sync reported it in `skipped` (#1119).
+            for skipped_file in plan.skipped:
+                health["unreadable_files"].append(
+                    {
+                        "kb": kb.name,
+                        "path": skipped_file["path"],
+                        "error": skipped_file["reason"],
+                    }
+                )
             for bad in plan.malformed:
                 if bad["path"] in plan.unreadable:
                     # A present file that cannot be decoded/read is neither

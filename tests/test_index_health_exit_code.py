@@ -362,3 +362,124 @@ class TestFolderTheProcessCannotSearch:
             assert result.exit_code == 1
         finally:
             sub.chmod(0o755)
+
+
+class TestAPathSyncCannotReadIsNeverHealthy:
+    def test_a_stat_failure_during_the_walk_is_reported_by_both_commands(
+        self, cli_world, monkeypatch
+    ):
+        """A stat failure used to `continue` as "removed while walking", so a
+        symlink loop or a dangling new symlink reported healthy (#1119)."""
+        from pathlib import Path
+
+        _, kb_path = _collection_world(cli_world)
+        bad = kb_path / "loop.md"
+        bad.write_text("---\nid: loop\ntype: note\ntitle: Loop\n---\nBody\n", encoding="utf-8")
+        real_stat = Path.stat
+
+        def failing(self, *args, **kwargs):
+            if self == bad:
+                raise OSError(40, "Too many levels of symbolic links")
+            return real_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", failing)
+
+        result, data = _health_json()
+
+        assert [row["path"] for row in data["unreadable_files"]] == [str(bad)], data
+        assert data["status"] == "unhealthy", data
+        assert result.exit_code == 1
+        admin = _admin_health()
+        assert admin.exit_code == 1, admin.output
+        assert "Unreadable files: 1" in admin.output
+
+    def test_a_non_regular_path_is_reported_not_dropped(self, cli_world):
+        """`sync` lists it and skips it; health must say so too (#1119)."""
+        _, kb_path = _collection_world(cli_world)
+        folder = kb_path / "not-an-entry.md"
+        folder.mkdir()
+
+        result, data = _health_json()
+
+        assert [row["path"] for row in data["unreadable_files"]] == [str(folder)], data
+        assert data["status"] == "unhealthy", data
+        assert result.exit_code == 1
+        admin = _admin_health()
+        assert admin.exit_code == 1, admin.output
+        assert "Unreadable files: 1" in admin.output
+
+
+class TestTheVerdictIsOneFunction:
+    @pytest.mark.parametrize(
+        "only",
+        [
+            {"duplicates": [{"id": "x"}]},
+            {"content_changed": [{"id": "x"}]},
+            {"orphaned_entries": [{"id": "x"}]},
+            {"unreadable_files": [{"path": "x", "error": "OSError"}]},
+            {"off_list_values": [{"field": "status", "severity": "error"}]},
+        ],
+    )
+    def test_each_finding_alone_is_unhealthy(self, only):
+        from pyrite.services.index_health import health_verdict
+
+        verdict = health_verdict(only)
+
+        assert verdict["is_unhealthy"] is True
+        assert verdict["status"] == "unhealthy"
+
+    def test_a_warning_alone_is_not_unhealthy(self):
+        from pyrite.services.index_health import health_verdict
+
+        verdict = health_verdict({"broken_links": 2})
+
+        assert verdict["is_unhealthy"] is False
+        assert verdict["status"] == "warning"
+
+    def test_an_empty_report_is_healthy(self):
+        from pyrite.services.index_health import health_verdict
+
+        verdict = health_verdict({})
+
+        assert verdict["is_unhealthy"] is False
+        assert verdict["status"] == "healthy"
+
+    def test_pyrite_admin_is_unhealthy_for_a_content_change_alone(self, cli_world):
+        """The admin verdict ignored content_changed (#1119). Same-size text and
+        a restored mtime keep `stale_entries` empty, so only the hash differs."""
+        import os
+
+        _, kb_path = _collection_world(cli_world)
+        target = kb_path / "a.md"
+        original = target.read_text(encoding="utf-8")
+        before = target.stat()
+        target.write_text(original.replace("Body a", "Body A"), encoding="utf-8")
+        os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        _, data = _health_json()
+        assert data["checks"]["content_changed"], data
+        assert not data["checks"]["stale_entries"], data
+
+        admin = _admin_health()
+        assert admin.exit_code == 1, admin.output
+        assert "Content changed: 1" in admin.output
+
+    def test_qa_calls_an_index_with_only_orphans_out_of_date(self, cli_world):
+        """QA's index check ignored orphaned_entries (#1119)."""
+        from pyrite.services.qa_service import QAService
+
+        world, _ = _collection_world(cli_world)
+        conn = world.db._raw_conn
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(entry)")]
+        select = ", ".join("'ghost'" if column == "id" else column for column in cols)
+        conn.execute(
+            f"INSERT INTO entry ({', '.join(cols)}) SELECT {select} "
+            f"FROM entry WHERE id = 'a' AND kb_name = '{KB}'"
+        )
+        conn.commit()
+        issues = []
+
+        QAService(world.config, world.db)._report_index_out_of_date(issues, KB)
+
+        assert [issue["rule"] for issue in issues] == ["index_out_of_date"], issues
+        assert "orphan" in issues[0]["message"], issues
