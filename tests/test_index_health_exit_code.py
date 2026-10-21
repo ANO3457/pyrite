@@ -10,6 +10,8 @@ this project's verdict.
 """
 
 import json
+import re
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -67,6 +69,28 @@ def _break_kb(env, kb_name):
 def _run(config, *args):
     with _patch_config(config):
         return runner.invoke(app, ["index", "health", *args])
+
+
+class TestEveryHealthKeyIsDocumented:
+    def test_the_docs_table_lists_every_top_level_key(self, two_kb_env):
+        """A new finding key must get a row, not ship undocumented (#1034)."""
+        result = _run(two_kb_env["config"], "--format", "json")
+        reported = set(json.loads(result.stdout))
+
+        docs = (Path(__file__).resolve().parent.parent / "docs" / "json-contracts.md").read_text(
+            encoding="utf-8"
+        )
+        section = docs.split("**`index health` keys.**", 1)[1].split("\n**", 1)[0]
+        rows = {
+            match.group(1)
+            for line in section.splitlines()
+            if (match := re.match(r"\| `([a-z_]+)`", line))
+        }
+
+        assert rows == reported, {
+            "undocumented": sorted(reported - rows),
+            "stale rows": sorted(rows - reported),
+        }
 
 
 class TestExitCodeReflectsStatus:
