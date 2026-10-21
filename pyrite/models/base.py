@@ -372,8 +372,8 @@ class Entry(ABC):
     # restyling the whole block (#46). Never read as data -- only as style.
     _source_frontmatter: Any = field(default=None, init=False, repr=False, compare=False)
 
-    # The declared fields a create holds in model attributes, ``{file key:
-    # attribute}`` (#86): set by ``KBService._prepare`` from the type's schema
+    # A create's declared fields, ``{file key: attribute | None}`` (#86,
+    # #1108), where None identifies a metadata-held field. Set from the schema
     # for an entry built from a request, empty for one loaded from a file.
     # ``_frontmatter_for_file`` writes each one the class's ``to_frontmatter``
     # leaves out when empty (``if self.kind:``), so a new file carries every
@@ -382,7 +382,7 @@ class Entry(ABC):
     # entry (``dataclasses.replace``) drops it, and the model-held empties then
     # leave the file and the index row together, never one of them. Shipped
     # hooks return the entry they were given.
-    _create_fields: dict[str, str] = field(
+    _create_fields: dict[str, str | None] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
 
@@ -613,9 +613,11 @@ class Entry(ABC):
         }
 
     def declared_frontmatter(self) -> dict[str, Any]:
-        """``to_frontmatter()`` plus each ``_create_fields`` entry it does not
-        spell (by name, alias or under ``metadata:``), at its attribute's
-        value: the empty value the class leaves out (#86).
+        """A create's declared fields, at their canonical file spelling.
+
+        An attribute name supplies a model-held value the class omits (#86).
+        None means the schema-declared field lives in metadata; promote its
+        serialized value without changing the entry's metadata (#1108).
 
         The one field set of a new entry: the file (``_frontmatter_for_file``),
         the index row (``IndexManager``) and a create's validation
@@ -631,6 +633,16 @@ class Entry(ABC):
         nested = meta.get("metadata")
         nested = nested if isinstance(nested, Mapping) else {}
         for key, attribute in self._create_fields.items():
+            if attribute is None:
+                if key in nested:
+                    meta[key] = nested[key]
+                    nested = dict(nested)
+                    del nested[key]
+                    if nested:
+                        meta["metadata"] = nested
+                    else:
+                        meta.pop("metadata", None)
+                continue
             if not any(
                 path[-1] in (nested if len(path) > 1 else meta)
                 for path in spellings_of(type(self), self.entry_type, key)
