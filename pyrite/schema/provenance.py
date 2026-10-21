@@ -170,8 +170,6 @@ RELATIONSHIP_TYPES: dict[str, dict[str, Any]] = {
     "located_at": {"inverse": "location_of", "description": "Location relationship"},
     "location_of": {"inverse": "located_at", "description": "Location of"},
     "related_to": {"inverse": "related_to", "description": "General relationship"},
-    # Legacy spelling: canonical inverse remains related_to; stored links are not rewritten.
-    "related": {"inverse": "related_to", "description": "Legacy alias of related_to"},
     # Zettelkasten note relationships
     "supports": {"inverse": "supported_by", "description": "Evidence supporting a claim"},
     "supported_by": {"inverse": "supports", "description": "Supported by evidence"},
@@ -271,6 +269,9 @@ class Provenance:
         )
 
 
+RELATIONSHIP_ALIASES = {"related": "related_to"}
+
+
 def get_all_relationship_types() -> dict[str, dict[str, Any]]:
     """Get all relationship types: core + plugin-provided."""
     all_types = dict(RELATIONSHIP_TYPES)
@@ -290,7 +291,7 @@ def known_inverse_relation(relation: str) -> str | None:
     which is right for writing a link on the other side (vague but true) and
     wrong for reporting what the relation is. Use this to tell the two apart.
     """
-    declared = get_all_relationship_types().get(relation)
+    declared = get_all_relationship_types().get(RELATIONSHIP_ALIASES.get(relation, relation))
     return declared["inverse"] if declared else None
 
 
@@ -302,6 +303,7 @@ def get_inverse_relation(relation: str) -> str:
     the fallback must stay a claim that is true in both directions (#527).
     """
     all_types = get_all_relationship_types()
+    relation = RELATIONSHIP_ALIASES.get(relation, relation)
     if relation in all_types:
         return all_types[relation]["inverse"]
     return "related_to"

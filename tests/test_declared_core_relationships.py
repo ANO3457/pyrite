@@ -121,5 +121,10 @@ def test_declared_relations_are_discoverable_on_rest(make_client, endpoint):
 def _assert_declarations(relationships):
     from pyrite.schema.provenance import RELATIONSHIP_TYPES
 
-    for name in ("transclusion", "transcluded_by", "references", "referenced_by", "related"):
+    assert "related" not in relationships
+    assert known_inverse_relation("related") == "related_to"
+    from pyrite.schema.provenance import get_inverse_relation
+
+    assert get_inverse_relation("related") == "related_to"
+    for name in ("transclusion", "transcluded_by", "references", "referenced_by"):
         assert relationships[name] == RELATIONSHIP_TYPES[name]["description"]
