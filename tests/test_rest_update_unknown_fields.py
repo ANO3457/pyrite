@@ -45,6 +45,9 @@ def test_declared_put_fields_and_create_metadata_keep_working(make_client):
     )
     assert created.status_code == 200, created.text
     entry_id = created.json()["id"]
+    original = client.get(f"/api/entries/{entry_id}", params={"kb": "test-kb"})
+    assert original.status_code == 200
+    assert original.json()["metadata"]["status"] == "accepted"
     result = client.put(
         f"/api/entries/{entry_id}",
         json={
