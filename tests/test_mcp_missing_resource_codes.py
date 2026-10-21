@@ -49,18 +49,34 @@ def _call(server, tool, arguments, *, scoped=False):
     return asyncio.run(run())
 
 
-@pytest.mark.parametrize("tool", ["kb_get", "kb_update"])
+#: The code MCP answered for a missing *entry* before #981/#984, beside the
+#: class's own code for one release (ADR-0037 theme 2).
+_LEGACY_MISSING_CODE = {
+    "kb_delete": "NOT_FOUND",  # its handler answered a missing entry itself
+    "kb_get": "NOT_FOUND",
+    "kb_read_body": "NOT_FOUND",
+    "kb_update": "UPDATE_FAILED",
+}
+
+#: A missing *KB* on an unscoped write tool reached its handler, whose
+#: catch-all answered that tool's failure code rather than NOT_FOUND; the
+#: dispatcher keeps it for one release (#981: UPDATE_FAILED, #984:
+#: DELETE_FAILED).
+_LEGACY_MISSING_KB_CODE = {**_LEGACY_MISSING_CODE, "kb_delete": "DELETE_FAILED"}
+
+
+@pytest.mark.parametrize("tool", sorted(_LEGACY_MISSING_CODE))
 def test_missing_entry_has_domain_code_and_legacy_code(mcp_server, tool):
     args = {"kb_name": "notes", "entry_id": "missing"}
     if tool == "kb_update":
         args["title"] = "New title"
     result = _call(mcp_server, tool, args)
     assert result["error_code"] == "ENTRY_NOT_FOUND", result
-    assert result["legacy_error_code"] == ("UPDATE_FAILED" if tool == "kb_update" else "NOT_FOUND")
+    assert result["legacy_error_code"] == _LEGACY_MISSING_CODE[tool], result
     assert result["retryable"] is False
 
 
-@pytest.mark.parametrize("tool", ["kb_get", "kb_update"])
+@pytest.mark.parametrize("tool", sorted(_LEGACY_MISSING_CODE))
 def test_missing_kb_has_domain_code(mcp_server, tool):
     result = _call(
         mcp_server,
@@ -68,11 +84,11 @@ def test_missing_kb_has_domain_code(mcp_server, tool):
         {"kb_name": "missing", "entry_id": "missing", "title": "New title"},
     )
     assert result["error_code"] == "KB_NOT_FOUND", result
-    assert result["legacy_error_code"] == ("UPDATE_FAILED" if tool == "kb_update" else "NOT_FOUND")
+    assert result["legacy_error_code"] == _LEGACY_MISSING_KB_CODE[tool], result
     assert result["retryable"] is False
 
 
-@pytest.mark.parametrize("tool", ["kb_get", "kb_update"])
+@pytest.mark.parametrize("tool", sorted(_LEGACY_MISSING_CODE))
 @pytest.mark.control(
     reason="existing dispatcher scoping must keep absent and unreadable KBs indistinguishable"
 )
@@ -123,7 +139,7 @@ def _note(server, kb_name, entry_id, title="Note", body="body text"):
     server.svc.create_entry(kb_name, entry_id, title, "note", body)
 
 
-@pytest.mark.parametrize("tool", ["kb_get", "kb_update"])
+@pytest.mark.parametrize("tool", sorted(_LEGACY_MISSING_CODE))
 def test_id_only_in_another_kb_is_entry_not_found_in_the_named_kb(mcp_server, tool):
     # The id exists, but in `private`; asked of `notes` it is absent there.
     # Neither the other KB's entry nor a KB-level code may answer.
@@ -133,7 +149,7 @@ def test_id_only_in_another_kb_is_entry_not_found_in_the_named_kb(mcp_server, to
         args["title"] = "Overwritten"
     result = _call(mcp_server, tool, args)
     assert result["error_code"] == "ENTRY_NOT_FOUND", result
-    assert result["legacy_error_code"] == ("UPDATE_FAILED" if tool == "kb_update" else "NOT_FOUND")
+    assert result["legacy_error_code"] == _LEGACY_MISSING_CODE[tool], result
     assert result["retryable"] is False
     assert "Private title" not in json.dumps(result)
     kept = _call(mcp_server, "kb_get", {"kb_name": "private", "entry_id": "elsewhere"})
@@ -191,3 +207,48 @@ def test_kb_registered_after_startup_is_updated_by_kb_update(mcp_server, tmp_pat
     assert got["entry"]["title"] == "Renamed late", got
     on_disk = (tmp_path / "late").rglob("late-note.md")
     assert any("Renamed late" in f.read_text(encoding="utf-8") for f in on_disk)
+
+
+def test_kb_registered_after_startup_is_deleted_by_kb_delete(mcp_server, tmp_path):
+    """The delete lookup is the registry-aware one, so a KB `pyrite kb add`
+    registered while this server runs is writable, not DELETE_FAILED."""
+    _register_late_kb(mcp_server, tmp_path)
+
+    result = _call(mcp_server, "kb_delete", {"kb_name": "late", "entry_id": "late-note"})
+    assert result.get("deleted") is True, result
+
+    gone = _call(mcp_server, "kb_read_body", {"kb_name": "late", "entry_id": "late-note"})
+    assert gone["error_code"] == "ENTRY_NOT_FOUND", gone
+
+
+@pytest.mark.control(
+    reason="KBService's link lookup already reads the registry (#952); this pins it"
+)
+def test_kb_registered_after_startup_is_linked_by_kb_link(mcp_server, tmp_path):
+    _register_late_kb(mcp_server, tmp_path)
+    mcp_server.svc.create_entry("late", "late-target", "Late target", "note", "there")
+
+    result = _call(
+        mcp_server,
+        "kb_link",
+        {"source_id": "late-note", "source_kb": "late", "target_id": "late-target"},
+    )
+    assert "error_code" not in result, result
+    assert result["resolved"] is True, result
+
+
+@pytest.mark.control(
+    reason="KBService.bulk_create_entries' validate_only lookup already reads the "
+    "registry (#952); MCP's kb_bulk_create does not forward validate_only, so the "
+    "service is the surface that offers it"
+)
+def test_kb_registered_after_startup_validates_a_bulk_by_validate_only(mcp_server, tmp_path):
+    _register_late_kb(mcp_server, tmp_path)
+
+    results = mcp_server.svc.bulk_create_entries(
+        "late",
+        [{"entry_type": "note", "title": "Another late note"}],
+        validate_only=True,
+    )
+
+    assert [item.get("valid") for item in results] == [True], results

@@ -779,11 +779,12 @@ class PyriteMCPServer:
 
         result = self.svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=readable_kbs)
         if not result:
-            return _error(
-                "NOT_FOUND",
-                f"Entry '{entry_id}' not found",
-                suggestion="Use kb_list_entries or kb_search to find entries",
-            )
+            # An entry that is not there is `ENTRY_NOT_FOUND`, the same answer
+            # kb_get gives and the same shape (#981, #984): the KB itself was
+            # resolved by the dispatcher before this ran.
+            refusal = _refusal(EntryNotFoundError(f"Entry '{entry_id}' not found"))
+            refusal["suggestion"] = "Use kb_list_entries or kb_search to find entries"
+            return refusal
 
         body = result.get("body") or ""
         body_len = len(body)
@@ -1501,11 +1502,12 @@ class PyriteMCPServer:
             return _error("DELETE_FAILED", _safe_message(e), retryable=True)
 
         if not deleted:
-            return _error(
-                "NOT_FOUND",
-                f"Entry '{entry_id}' not found in {kb_name}",
-                suggestion="Use kb_list_entries or kb_search to find entries",
-            )
+            # An entry that is not in the named KB is `ENTRY_NOT_FOUND`, as
+            # kb_get and kb_update answer it (#981, #984); the KB was resolved
+            # by the dispatcher, and a file that is gone was not deleted.
+            refusal = _refusal(EntryNotFoundError(f"Entry '{entry_id}' not found"))
+            refusal["suggestion"] = "Use kb_list_entries or kb_search to find entries"
+            return refusal
 
         return {"deleted": True, "entry_id": entry_id}
 
@@ -2566,13 +2568,15 @@ class PyriteMCPServer:
         for kb_name in named_kbs:
             refusal = _kb_refusal(self.svc, kb_name, readable_kbs)
             if refusal is not None:
-                if name == "kb_update" and readable_kbs is None:
-                    # The one refusal, with the old code the old algorithm
-                    # gave this caller: an unscoped kb_update reached its
-                    # handler, which answered a missing KB with UPDATE_FAILED
-                    # until 0.25.8 (#761, #981); a scoped caller was refused
-                    # here, with NOT_FOUND, as every other tool still is.
-                    refusal["legacy_error_code"] = "UPDATE_FAILED"
+                # The one refusal, with the code the old algorithm gave this
+                # caller: an unscoped kb_update and kb_delete reached their
+                # handlers, which answered a missing KB with UPDATE_FAILED and
+                # DELETE_FAILED (both retryable: true) before #761 and #984
+                # typed them; a scoped caller was refused here, with
+                # NOT_FOUND, as every other tool still is.
+                legacy = {"kb_update": "UPDATE_FAILED", "kb_delete": "DELETE_FAILED"}
+                if readable_kbs is None and name in legacy:
+                    refusal["legacy_error_code"] = legacy[name]
                 return refusal
 
         takes_readable = readable_kbs is not None and self._handler_takes_readable_kbs(name)
