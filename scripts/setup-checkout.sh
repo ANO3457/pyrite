@@ -40,7 +40,8 @@ cd "$wt_dir"
 # What an install is made from. cksum is POSIX, so it exists on a laptop and a VM.
 stamp="$( { cat pyproject.toml extensions/*/pyproject.toml uv.lock 2>/dev/null; echo "$extras"; } | cksum)"
 if [ "$if_changed" = 1 ] && [ -x .venv/bin/python ] \
-   && [ "$(cat .venv/.pyrite-install-stamp 2>/dev/null)" = "$stamp" ]; then
+   && [ "$(cat .venv/.pyrite-install-stamp 2>/dev/null)" = "$stamp" ] \
+   && .venv/bin/python scripts/check_checkout_imports.py --root "$wt_dir"; then
   echo "setup-checkout: .venv matches pyproject/lock/extras; skipping installs"
   stamp=""
 elif command -v uv >/dev/null 2>&1; then
@@ -56,6 +57,8 @@ else
     [ -f "$ext/pyproject.toml" ] && .venv/bin/pip install -q -e "$ext"
   done
 fi
+.venv/bin/python scripts/check_checkout_imports.py --root "$wt_dir"
+
 # Written only after every install above succeeded (set -e): a half-finished
 # install leaves no stamp, so the next --if-changed run repeats it.
 [ -z "$stamp" ] || echo "$stamp" > .venv/.pyrite-install-stamp
@@ -80,7 +83,7 @@ CFG
 # This worktree's Playwright e2e ports, derived from its own path so two
 # worktrees can run `npm run test:e2e` at once without colliding (Package
 # A.1, #118: kb/backlog/playwright-package-a-1-per-worktree-ports-and-data-dir-118.md).
-# Recorded here — not just computed on demand inside playwright.config.ts —
+# Recorded here â€” not just computed on demand inside playwright.config.ts â€”
 # so a human running the suite by hand (lsof, curl, a stray uvicorn to kill)
 # sees the same numbers the config derives. `web/e2e/ports.ts` is the single
 # source of truth for the hash; this only prints it. Requires the worktree's
@@ -88,7 +91,7 @@ CFG
 # so it works even before `npm ci` has run in web/.
 if command -v node >/dev/null 2>&1 && [ -f "$wt_dir/web/e2e/print-ports.ts" ]; then
   node "$wt_dir/web/e2e/print-ports.ts" "$wt_dir" > "$wt_dir/.pyrite/e2e-ports" \
-    || echo "note: could not derive e2e ports (node too old for native TS?) — playwright.config.ts will still derive them at test time" >&2
+    || echo "note: could not derive e2e ports (node too old for native TS?) â€” playwright.config.ts will still derive them at test time" >&2
 else
   echo "note: node not found; skipping .pyrite/e2e-ports (playwright.config.ts derives ports itself at test time)" >&2
 fi
