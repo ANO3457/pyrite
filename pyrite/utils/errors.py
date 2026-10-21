@@ -233,7 +233,7 @@ def _format_in(argv: Sequence[str], ctx: Any = None) -> str:
         from ..cli.output import FORMAT_META_KEY, _record_short_format
 
         if value := ctx.meta.get(FORMAT_META_KEY):
-            if value in SHARED_FORMATS:
+            if isinstance(value, str) and value in SHARED_FORMATS:
                 return value
         for parameter in ctx.command.params:
             options = (*getattr(parameter, "opts", ()), *getattr(parameter, "secondary_opts", ()))
@@ -241,7 +241,7 @@ def _format_in(argv: Sequence[str], ctx: Any = None) -> str:
             original = getattr(callback, "__wrapped__", callback)
             if "--format" in options:
                 value = ctx.params.get(parameter.name)
-                if value in SHARED_FORMATS:
+                if isinstance(value, str) and value in SHARED_FORMATS:
                     return value
             if "-f" in options and ("--format" in options or original is _record_short_format):
                 short_is_format = True
@@ -282,7 +282,7 @@ class _CountingStdout:
     def __init__(self, inner: Any, owner: Any = None) -> None:
         self._inner = inner
         self._owner = owner if owner is not None else self
-        self._buffer = None
+        self._buffer: _CountingStdout | None = None
         self.written = False
 
     def write(self, text: Any) -> Any:
