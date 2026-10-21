@@ -285,10 +285,6 @@ def _any(_form):
     return True
 
 
-def _envelope_only(form):  # REST POST's body model has no free top-level keys
-    return form.startswith("envelope:")
-
-
 def _task_only(etype):
     return etype == "task"
 
@@ -301,7 +297,7 @@ PATHS = {
     "mcp.kb_create": (p_mcp_create, _any, lambda t: True),
     "mcp.kb_bulk_create": (p_mcp_bulk, _any, lambda t: True),
     "cli.create -f": (p_cli_create, _any, lambda t: True),
-    "rest.post": (p_rest_post, _envelope_only, lambda t: True),
+    "rest.post": (p_rest_post, _any, lambda t: True),
     "cli.task create --field": (p_cli_task_create, _any, _task_only),
     "journalism.create_entity": (p_journalism_entity, _any, lambda t: t == "note"),
 }
@@ -589,13 +585,11 @@ def test_every_create_call_site_is_classified():
             assert name in PATHS or name in IMPORT_PATHS, (key, name)
 
 
-@pytest.mark.control(
-    reason="pins today's behaviour: the REST POST body model ignores extra keys; a follow-up makes it refuse"
-)
-def test_rest_post_silently_ignores_a_managed_field_sent_as_a_top_level_key(env):
-    """`CreateEntryRequest` has no free top-level keys, so a managed field sent at
-    the top level is dropped: 200, created, nothing forged. Only the `metadata`
-    envelope spelling is refused on this path (grid: rest.post, envelope cells)."""
+def test_rest_post_refuses_a_managed_field_sent_as_a_top_level_key(env):
+    """#1090: `CreateEntryRequest` refuses a key it does not know, naming it,
+    instead of dropping it and answering 200. A managed field sent as a
+    top-level key is a key the model does not know: refused before the
+    service, on this path too."""
     client, worker, db = _rest(env)
     try:
         resp = client.post(
@@ -605,9 +599,54 @@ def test_rest_post_silently_ignores_a_managed_field_sent_as_a_top_level_key(env)
     finally:
         worker.wait_for_idle(timeout=10)
         db.close()
-    assert resp.status_code == 200, resp.text
-    (written,) = env["kb_path"].rglob("resttop.md")
-    assert "forged" not in written.read_text()
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "VALIDATION_FAILED", detail
+    assert "evidence" in detail["message"], detail
+    assert not list(env["kb_path"].rglob("resttop.md")), "refused, yet a file appeared"
+
+
+def test_rest_post_refuses_a_key_it_does_not_know(env):
+    """The other half of #1090: an unknown key is named, not dropped."""
+    client, worker, db = _rest(env)
+    try:
+        resp = client.post(
+            "/api/entries",
+            json={"kb": KB, "title": "RestUnknown", "wibble": 1},
+        )
+    finally:
+        worker.wait_for_idle(timeout=10)
+        db.close()
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "VALIDATION_FAILED", detail
+    assert "wibble" in detail["message"], detail
+    assert not list(env["kb_path"].rglob("restunknown.md")), "refused, yet a file appeared"
+
+
+def test_rest_post_takes_the_web_forms_status_in_metadata_and_refuses_it_at_the_top_level(env):
+    """The web New Entry form's Status input (#1124 review): `status` is not a
+    key of the body model, so the form sends it in `metadata`. That shape is
+    created with the value written; the old top-level shape is refused, named."""
+    client, worker, db = _rest(env)
+    try:
+        ok = client.post(
+            "/api/entries",
+            json={"kb": KB, "title": "FormStatus", "metadata": {"status": "draft"}},
+        )
+        refused = client.post(
+            "/api/entries",
+            json={"kb": KB, "title": "FormStatusTop", "status": "draft"},
+        )
+    finally:
+        worker.wait_for_idle(timeout=10)
+        db.close()
+    assert ok.status_code == 200, ok.text
+    (written,) = env["kb_path"].rglob("formstatus.md")
+    assert "status: draft" in written.read_text()
+    assert refused.status_code == 400, refused.text
+    assert "status" in refused.json()["detail"]["message"]
+    assert not list(env["kb_path"].rglob("formstatustop.md"))
 
 
 def test_a_non_frozenset_owns_is_refused_not_a_type_error(env):
