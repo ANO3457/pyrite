@@ -337,6 +337,14 @@ without a credential on a non-loopback address; a server started some other way
 (for example `uvicorn pyrite.server.api:app --host 0.0.0.0`) does not, because
 the app cannot see its own bind address.
 
+The `pyrite.server.api:app` uvicorn entry point configures the Pyrite logger
+when first loaded. Importing the module or calling `create_app()` leaves host
+logging alone. Operators supplying their own logging use the factory:
+
+```bash
+uvicorn --factory pyrite.server.api:create_app --log-config logging.yaml
+```
+
 ## Install
 
 No PyPI wheel yet. From source (CLI, server, MCP **and** the web UI):

@@ -1455,7 +1455,20 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
 # Default application instance (used by uvicorn / existing imports)
 # =============================================================================
 
-app = create_app()
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """The uvicorn import-string entry point owns logging; the factory does not."""
+    global _default_app
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _default_app is None:
+        from ..logging import configure_entry_point_logging
+
+        configure_entry_point_logging(default="INFO")
+        _default_app = create_app()
+    return _default_app
 
 
 # =============================================================================
