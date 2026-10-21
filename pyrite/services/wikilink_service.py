@@ -170,15 +170,28 @@ class WikilinkService:
         if picked:
             return picked
 
-        # Third pass: search aliases -- the row's own `aliases` column (a
+        # Third pass: exact alias elements -- the row's own `aliases` column (a
         # file's top-level `aliases:`, #1001 decision 5) or, for a file that
         # spells it under `metadata:`, the bag.
         sql = """
             SELECT id, kb_name, entry_type, title FROM entry
-            WHERE (aliases LIKE :alias_pattern
-                   OR json_extract(metadata, '$.aliases') LIKE :alias_pattern)
+            WHERE (
+                EXISTS (
+                    SELECT 1 FROM json_each(
+                        CASE WHEN json_valid(aliases) THEN aliases ELSE '[]' END
+                    ) AS alias
+                    WHERE alias.type = 'text' AND alias.value = :alias_target COLLATE NOCASE
+                )
+                OR EXISTS (
+                    SELECT 1 FROM json_each(
+                        CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.aliases'
+                    ) AS legacy_alias
+                    WHERE legacy_alias.type = 'text'
+                        AND legacy_alias.value = :alias_target COLLATE NOCASE
+                )
+            )
         """
-        params = {"alias_pattern": f"%{actual_target}%", **scope_params}
+        params = {"alias_target": actual_target, **scope_params}
         if actual_kb:
             sql += " AND kb_name = :kb_name"
             params["kb_name"] = actual_kb
