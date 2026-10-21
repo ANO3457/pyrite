@@ -1957,13 +1957,6 @@ class QAService:
         return self._fix_svc._fix_invalid_date(issue)
 
     @staticmethod
-    def _fix_missing_field(issue: dict[str, Any]) -> dict[str, Any] | None:
-        """Delegate to QAFixService."""
-        from .qa_fix_service import QAFixService
-
-        return QAFixService._fix_missing_field(issue)
-
-    @staticmethod
     def _edit_distance(a: str, b: str) -> int:
         """Delegate to QAFixService."""
         from .qa_fix_service import QAFixService
