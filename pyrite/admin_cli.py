@@ -253,6 +253,7 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
 
     from .cli.context import get_config_and_db
     from .services.embedding_service import (
+        EmbeddingModelUnavailableError,
         EmbeddingService,
         is_available,
         semantic_unavailable_for,
@@ -283,9 +284,19 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
             )
         # This called `embed_kb`, which EmbeddingService has never had; the
         # ImportError arm hid that from every run without the extra.
-        stats = EmbeddingService(db, model_name=config.settings.embedding_model).embed_all(
-            kb_name=kb_name
-        )
+        try:
+            stats = EmbeddingService(db, model_name=config.settings.embedding_model).embed_all(
+                kb_name=kb_name
+            )
+        except EmbeddingModelUnavailableError as e:
+            # The finder in `is_available()` saw the package; its first real
+            # import failed. That is a missing dependency, not a bad entry
+            # (#1101).
+            cli_error(
+                str(e),
+                error_code="DEPENDENCY_MISSING",
+                suggestion=extra_install_command("semantic"),
+            )
     finally:
         db.close()
     console.print(

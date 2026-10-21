@@ -593,6 +593,11 @@ class EmbeddingService:
                 embedding = self.embed_text(text)
                 backend.upsert_embedding(row["id"], row["kb_name"], embedding)
                 stats["embedded"] += 1
+            except EmbeddingModelUnavailableError:
+                # Not this entry's fault: the extra is installed but broken, and
+                # every entry would fail the same way. Let the caller report the
+                # dependency once (the CLI answers DEPENDENCY_MISSING, #1101).
+                raise
             except Exception as e:
                 logger.warning("Failed to embed entry %s: %s", row.get("id"), e)
                 stats["errors"] += 1
