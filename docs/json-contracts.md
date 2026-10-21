@@ -269,6 +269,38 @@ and for every plugin row (status `warning`), and `info` for an
 `allow_other` field (does not change the status). Empty for a KB without
 drift.
 
+**`index health` keys.** `pyrite index health` prints these top-level keys.
+`checks` repeats the detailed finding arrays; the top-level counts and rows are
+the same findings. One row is one top-level key; a key added to the report needs
+a row here (a test compares this table with the command's output).
+
+| Key | What it counts | Status | Clear with |
+|---|---|---|---|
+| `status` | The verdict over every row below: `healthy`, `warning` or `unhealthy`. | Verdict | Clear the rows that make it `unhealthy`; `--no-fail` only changes the exit code. |
+| `missing_files` | Indexed entries whose recorded file path no longer exists. | Failure | Restore the file, or drop the stale rows with `pyrite index sync`. |
+| `unindexed_files` | Files on disk that have no index row. | Failure | `pyrite index sync`. |
+| `stale_entries` | Entries whose file mtime or size differs from the values recorded at index time. | Failure | `pyrite index sync`. |
+| `content_changed` | Entries whose content hash differs from the indexed hash even when mtime/size did not change. | Failure | `pyrite index sync --verify`. |
+| `broken_links` | Link rows whose target resolves to no entry. | Warning | Hand edit the link or create its target, then `pyrite index sync`. |
+| `links_stale_kb` | Link rows whose written KB prefix would now resolve to a different KB. | Warning | `pyrite index build` (it re-reads every link row). |
+| `undeclared_types` | Entries whose `type` is not declared in the KB's `kb.yaml`, core types included. | Warning | Hand edit the `type`, or declare it in `kb.yaml`, then `pyrite index sync`. |
+| `missing_required_fields` | Entries missing a field the type's `required:` list declares. | Warning | `pyrite update <id> -f <field>=<value>`. |
+| `subdirectory_mismatches` | Entries whose file is outside the type's declared `subdirectory:`. | Warning | `pyrite index reconcile <kb> --apply`. |
+| `malformed_frontmatter` | Files that read but whose frontmatter does not parse. | Warning | Hand edit the YAML, then `pyrite index sync`. |
+| `unreadable_files` | Files that exist but whose bytes cannot be read or decoded. | Failure | Fix permissions or encoding, then `pyrite index sync`. |
+| `orphaned_entries` | Indexed IDs absent from the readable files although the recorded path exists. | Failure | `pyrite index sync` (or hand edit the ID). |
+| `invalid_statuses` | Entries whose `status` a plugin validator's enum rejects. | Warning | `pyrite update <id> -f status=<allowed>`. |
+| `off_list_values` | Off-list values of declared enums, with their `origin` and `severity`. | Failure for `severity: error`; warning for `warning`; `info` changes nothing | `pyrite update <id> -f <field>=<allowed>`. |
+| `duplicates` | IDs held by more than one file; `winner` names the indexed copy. | Failure | Keep one file, then `pyrite index sync`. |
+| `removed_extensions` | KBs whose type belonged to an extension that is no longer installed. | Warning | Reinstall the extension, or change `kb_type` in `kb.yaml`. |
+| `type_name_drift` | Groups of one type spelled more than one way after case, `_` and spaces are folded to `-`. | Warning | Hand edit the `type:` spellings, then `pyrite index sync`. |
+| `type_name_drift_total` | Number of drift groups before the report's cap. | Metadata, not a finding | Fix the groups listed there. |
+| `type_name_drift_has_more` | Whether more drift groups exist beyond the 100-group cap. | Metadata, not a finding | Narrow with `-k <kb>`; fix the groups listed. |
+| `schema_errors` | KBs whose `kb.yaml` failed to load. | Warning | Hand edit `kb.yaml`, then `pyrite index sync`. |
+| `unmodellable_frontmatter` | Files whose frontmatter Pyrite cannot model (a non-string key, a set, a duplicate key). | Warning | Hand edit the unsupported frontmatter, then `pyrite index sync`. |
+| `double_spellings` | Fields one file spells twice (`k:` and `metadata.k`, or a field and its alias). | Warning | `pyrite qa fix <kb>` when both values are identical; otherwise hand edit both spellings. |
+| `checks` | The detailed arrays behind the counts above, under the same key names. | Not a finding | Fix the rows above; this key repeats them for callers that want paths and ids. |
+
 **`index health` file findings.** The JSON report exposes the detailed
 `unreadable_files` and `orphaned_entries` arrays both at the top level and in
 `checks`:
