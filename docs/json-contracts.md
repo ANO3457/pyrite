@@ -269,6 +269,41 @@ and for every plugin row (status `warning`), and `info` for an
 `allow_other` field (does not change the status). Empty for a KB without
 drift.
 
+**`index health` file findings.** The JSON report exposes the detailed
+`unreadable_files` and `orphaned_entries` arrays both at the top level and in
+`checks`:
+
+- `unreadable_files` rows are `{kb, path, error}`. They represent files that
+  exist but whose bytes cannot be read or decoded (an `OSError` or a
+  `UnicodeError`, for a Markdown file and a `__collection.yaml` alike);
+  `error` includes the exception type and message. Any such row makes status
+  `unhealthy` and the CLI exits `1`; `pyrite-admin index health` counts them
+  too. A file in a folder the process cannot search (mode `600` or `000`) is
+  listed here too, with its `PermissionError`; health reports it and does not
+  stop. **Behaviour change:** before this, a file with an encoding or
+  permission failure was filed under `malformed_frontmatter` (status
+  `warning`, exit `0`); it now moves to `unreadable_files` (status
+  `unhealthy`, exit `1`). A caller keying on the old field or on exit `0`
+  for such a KB sees the change.
+- `orphaned_entries` rows are `{kb, id, path}` for an indexed ID absent from
+  the files health check successfully loaded while its recorded path still
+  exists. The files checked are the ones `index sync` walks (Markdown and
+  `__collection.yaml`), so a healthy KB with a folder collection has none.
+  Paths already reported as unreadable or malformed stay in those
+  categories. When a readable replacement ID is the only file holding it and
+  sits at the same path, the row also has `replacement_id`. An ID edited to
+  one another file already holds leaves no `replacement_id`: that ID is
+  reported under `duplicates`, not as a replacement. These findings make
+  status `unhealthy` and exit `1`; `pyrite-admin index health` counts them
+  too.
+- `malformed_frontmatter` remains its own category: content that reads but
+  does not parse (bad YAML, a collection file that is not a mapping) is never
+  labeled unreadable, and bytes that cannot be read are never labeled
+  malformed YAML.
+- `missing_files` still refers to the path recorded in the index. A file moved
+  on disk with its ID unchanged is reported there until `index sync` updates
+  the indexed path, even if health check can already read the moved file.
+
 **`index health` → `type_name_drift`.** One group per KB per entry type
 spelled more than one way once case, `_` and spaces are folded to `-`:
 `{kb, normalized, spellings, spellings_total, spellings_has_more}`, each

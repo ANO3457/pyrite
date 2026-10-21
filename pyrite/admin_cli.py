@@ -309,7 +309,11 @@ def index_health():
 
         health = kb_svc.check_index_health()
         is_healthy = not (
-            health["missing_files"] or health["unindexed_files"] or health["stale_entries"]
+            health["missing_files"]
+            or health["unindexed_files"]
+            or health["stale_entries"]
+            or health["unreadable_files"]
+            or health["orphaned_entries"]
         )
 
         if is_healthy:
@@ -322,6 +326,10 @@ def index_health():
                 console.print(f"  Unindexed files: {len(health['unindexed_files'])}")
             if health["stale_entries"]:
                 console.print(f"  Stale entries: {len(health['stale_entries'])}")
+            if health["unreadable_files"]:
+                console.print(f"  Unreadable files: {len(health['unreadable_files'])}")
+            if health["orphaned_entries"]:
+                console.print(f"  Orphaned index entries: {len(health['orphaned_entries'])}")
             raise typer.Exit(1)  # as `pyrite index health` does (#526)
 
 

@@ -351,6 +351,11 @@ class ReconcilePlan:
     malformed: list[dict[str, str]] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     holders: dict[str, list[_Claim]] = field(default_factory=dict)
+    # path -> "ExcType: detail" for the ``malformed`` files whose bytes could not
+    # be read or decoded (OSError, UnicodeError), whatever the file's kind:
+    # health reports these as ``unreadable_files`` (#593). Content that reads
+    # but does not parse stays only in ``malformed``.
+    unreadable: dict[str, str] = field(default_factory=dict)
     walked: int = 0
 
 
@@ -971,6 +976,8 @@ class IndexManager:
                     # An unparseable file is content drift, not a Pyrite bug:
                     # reported in the result, one log line, and it holds no id.
                     plan.malformed.append({"path": str(file_path), "error": str(e)})
+                    if isinstance(e, OSError | UnicodeError):
+                        plan.unreadable[str(file_path)] = f"{type(e).__name__}: {e}"
                     logger.warning("Could not parse %s: %s", file_path, e)
                     continue
                 claim = _Claim(rel, file_path, id_text(entry.id), file_stat, entry)
@@ -1355,6 +1362,11 @@ class IndexManager:
 
         Returns dict with:
         - missing_files: entries in DB but file not found
+        - unreadable_files: files that exist but could not be loaded for a
+          non-frontmatter error, with path and exception detail
+        - orphaned_entries: indexed IDs absent from readable files even though
+          their indexed path still exists; replacement_id identifies an ID
+          now found at that same path
         - unindexed_files: files not in DB
         - stale_entries: entries whose file's mtime or size differs from the
           values recorded when it was indexed (``_file_changed``, the
@@ -1391,6 +1403,8 @@ class IndexManager:
         """
         health: dict[str, Any] = {
             "missing_files": [],
+            "unreadable_files": [],
+            "orphaned_entries": [],
             "unindexed_files": [],
             "stale_entries": [],
             "content_changed": [],
@@ -1488,7 +1502,15 @@ class IndexManager:
             plan = self.plan_reconcile(kb, force=True, indexed=indexed)
             health["duplicates"].extend(plan.duplicates)
             for bad in plan.malformed:
-                health["malformed_frontmatter"].append({"kb": kb.name, **bad})
+                if bad["path"] in plan.unreadable:
+                    # A present file that cannot be decoded/read is neither
+                    # missing nor malformed frontmatter: report its actual
+                    # failure so health cannot silently pass (#593).
+                    health["unreadable_files"].append(
+                        {"kb": kb.name, "path": bad["path"], "error": plan.unreadable[bad["path"]]}
+                    )
+                else:
+                    health["malformed_frontmatter"].append({"kb": kb.name, **bad})
             # The #760 listing, from the reconcile's own read (#990): only a
             # file whose loaded frontmatter could be refused (a non-string
             # key, a set, a flow-style root: `may_be_unmodellable`), or that
@@ -1503,6 +1525,17 @@ class IndexManager:
                 or may_be_unmodellable(getattr(claim.entry, "_source_frontmatter", None))
             ] + [Path(bad["path"]) for bad in plan.malformed]
             health["unmodellable_frontmatter"].extend(unmodellable_files(kb, sorted(suspects)))
+
+            # Ids the files hold this pass tell an indexed id replaced in place
+            # from a file that simply moved. A file whose id could not be read
+            # is not an orphan. Same file set as sync (list_all_files).
+            loaded_ids = set(plan.holders)
+            # An id two files hold is a duplicate (reported as such), not a
+            # replacement: it names no new id for the old row.
+            loaded_ids_by_path = {
+                str(cs[0].path): entry_id for entry_id, cs in plan.holders.items() if len(cs) == 1
+            }
+            uninspectable_paths = {bad["path"] for bad in plan.malformed}
 
             from ..schema.field_aliases import double_spellings
 
@@ -1552,14 +1585,38 @@ class IndexManager:
                             {"kb": kb.name, "id": entry_id, "path": str(file_path)}
                         )
 
-            # Check for missing files
+            # Check for missing files and IDs superseded at an existing path.
+            reported_unreadable = {row["path"] for row in health["unreadable_files"]}
             for entry_id, info in indexed.items():
                 if not info["file_path"]:
                     continue  # an index-only row has no file to be missing
-                if not Path(info["file_path"]).exists():
+                indexed_path = Path(info["file_path"])
+                try:
+                    present = indexed_path.exists()
+                except OSError as e:
+                    # A folder this process cannot search (Python 3.13 raises
+                    # PermissionError where 3.12 said "absent"): the file may
+                    # well be there. Report it; never let one row end the report.
+                    if str(indexed_path) not in reported_unreadable:
+                        reported_unreadable.add(str(indexed_path))
+                        health["unreadable_files"].append(
+                            {
+                                "kb": kb.name,
+                                "path": str(indexed_path),
+                                "error": f"{type(e).__name__}: {e}",
+                            }
+                        )
+                    continue
+                if not present:
                     health["missing_files"].append(
                         {"kb": kb.name, "id": entry_id, "path": info["file_path"]}
                     )
+                elif entry_id not in loaded_ids and str(indexed_path) not in uninspectable_paths:
+                    orphan = {"kb": kb.name, "id": entry_id, "path": info["file_path"]}
+                    replacement_id = loaded_ids_by_path.get(str(indexed_path))
+                    if replacement_id and replacement_id != entry_id:
+                        orphan["replacement_id"] = replacement_id
+                    health["orphaned_entries"].append(orphan)
 
         # Count broken links (targets that don't resolve to entries)
         broken_sql = """
