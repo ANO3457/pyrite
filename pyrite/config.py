@@ -152,11 +152,6 @@ class Repository:
         self.path = Path(self.path).expanduser().resolve()
 
     @property
-    def is_remote(self) -> bool:
-        """Check if this repo has a remote."""
-        return self.remote is not None
-
-    @property
     def is_github(self) -> bool:
         """Check if this is a GitHub repo."""
         if not self.remote:
@@ -220,11 +215,6 @@ class GitHubAuth:
             except Exception:
                 logger.warning("Failed to parse token expiry: %s", self.token_expiry, exc_info=True)
         return True
-
-    @property
-    def has_app_credentials(self) -> bool:
-        """Check if GitHub App credentials are configured."""
-        return bool(self.app_id and self.private_key_path and self.installation_id)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary (excluding secrets for display)."""
