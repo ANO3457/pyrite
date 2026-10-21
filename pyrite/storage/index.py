@@ -2164,7 +2164,15 @@ class IndexManager:
         force: bool | set[Path] = True
         if since_commit and is_git:
             force = set()
-            for rel_path in git_service.get_changed_files(kb_path, since_commit=since_commit):
+            # `git diff --name-only` prints repo-root-relative paths, so a KB
+            # in a repo subdirectory must strip its own prefix first, as
+            # `get_file_log` does: joined raw, `repo/kb/` + `kb/b.md` names
+            # nothing and every changed file is skipped (#898).
+            kb_prefix = git_service.get_kb_prefix(kb_path)
+            for repo_path in git_service.get_changed_files(kb_path, since_commit=since_commit):
+                rel_path = git_service._kb_relative_path(repo_path, kb_prefix)
+                if rel_path is None:  # another KB's file in the same repo
+                    continue
                 full_path = kb_path / rel_path
                 if full_path.exists() and full_path.suffix == ".md":
                     force.add(full_path)
