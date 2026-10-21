@@ -2130,7 +2130,14 @@ class KBService:
             managed = self._managed_spellings(entry_type, kb_config, spec)
         except Exception:  # an unknown type or bad envelope key: the create says why
             return spec, []
-        index_only = (_INDEX_ONLY_KEYS - {"entry_type", "type"}) | {"file_path", "kb_name"}
+        index_only = (_INDEX_ONLY_KEYS - {"entry_type", "type"}) | {
+            "file_path",
+            "kb_name",
+            # An export carries the read's timestamps; a create stamps new
+            # ones, so an import reports them instead of dropping them (#1091).
+            "created_at",
+            "updated_at",
+        }
         out = dict(spec)
         ignored: list[str] = []
         for key in list(out):

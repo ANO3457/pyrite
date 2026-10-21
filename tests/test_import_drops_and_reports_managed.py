@@ -29,7 +29,16 @@ from pyrite.storage.index import IndexManager
 
 runner = CliRunner()
 
-DROPPED = {"kb_name", "file_path", "indexed_at", "content_hash", "outlinks", "backlinks"}
+DROPPED = {
+    "kb_name",
+    "file_path",
+    "indexed_at",
+    "content_hash",
+    "outlinks",
+    "backlinks",
+    "created_at",
+    "updated_at",
+}
 TASK_MANAGED = {"assigned_at", "status_change_log"}
 TASK_MANAGED_ALL = TASK_MANAGED | {"evidence", "agent_context"}
 
@@ -94,7 +103,7 @@ def _frontmatter_keys(env) -> dict[str, set[str]]:
 def test_the_export_really_carries_the_keys_the_decision_names(env):
     records = json.loads(_export(env))["entries"]
     carried = set().union(*(r.keys() for r in records))
-    assert {"kb_name", "file_path"} <= carried, carried
+    assert {"kb_name", "file_path", "created_at", "updated_at"} <= carried, carried
 
 
 def test_an_export_imports_into_another_kb_through_rest(env):
@@ -126,7 +135,7 @@ def test_an_export_imports_into_another_kb_through_rest(env):
     # location keys, and a task's managed fields.
     index_keys = {
         "kb_name", "file_path", "indexed_at", "content_hash", "outlinks", "backlinks",
-        "created_by", "modified_by",
+        "created_by", "modified_by", "created_at", "updated_at",
     }  # fmt: skip
     for rec in json.loads(exported)["entries"]:
         expected = set(rec) & index_keys
