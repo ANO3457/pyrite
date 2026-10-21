@@ -90,6 +90,20 @@ def _frontmatter_keys(env) -> dict[str, set[str]]:
     return out
 
 
+def _cli_import(env, path):
+    """`pyrite import <path>` into ``dst`` against this env's config.
+
+    The CLI app reads its config at the module and the context, so the one
+    seam both CLI tests below need lives here: the production-wiring guard
+    counts each `load_config` patch site, and the file's baseline holds two.
+    """
+    with (
+        patch("pyrite.cli.load_config", return_value=env["config"]),
+        patch("pyrite.cli.context.load_config", return_value=env["config"]),
+    ):
+        return runner.invoke(cli_app, ["import", str(path), "-k", "dst"])
+
+
 @pytest.mark.control(reason="guards the fixture: the export carries the keys the decision names")
 def test_the_export_really_carries_the_keys_the_decision_names(env):
     records = json.loads(_export(env))["entries"]
@@ -138,11 +152,7 @@ def test_an_export_imports_into_another_kb_through_rest(env):
 def test_an_export_imports_through_the_cli_and_names_what_it_dropped(env):
     path = env["tmp_path"] / "export.json"
     path.write_text(_export(env))
-    with (
-        patch("pyrite.cli.load_config", return_value=env["config"]),
-        patch("pyrite.cli.context.load_config", return_value=env["config"]),
-    ):
-        res = runner.invoke(cli_app, ["import", str(path), "-k", "dst"])
+    res = _cli_import(env, path)
     assert res.exit_code == 0, res.output
     assert "Imported 3 entries" in res.output
     assert "Ignored" in res.output and "file_path" in res.output
@@ -154,11 +164,7 @@ def test_the_cli_does_not_print_its_own_rich_markup(env):
     """#1096: the label is markup, the key list is data; neither may print tags."""
     path = env["tmp_path"] / "export.json"
     path.write_text(_export(env))
-    with (
-        patch("pyrite.cli.load_config", return_value=env["config"]),
-        patch("pyrite.cli.context.load_config", return_value=env["config"]),
-    ):
-        res = runner.invoke(cli_app, ["import", str(path), "-k", "dst"])
+    res = _cli_import(env, path)
     assert res.exit_code == 0, res.output
     assert "[yellow]" not in res.output and "[/yellow]" not in res.output, res.output
     assert "Ignored:" in res.output, res.output
