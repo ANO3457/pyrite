@@ -1613,7 +1613,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
-    ("pyrite/cli/__init__.py", "<module>"): ("safe", "plugin CLI loading: not a command's effect"),
+    ("pyrite/cli/__init__.py", "_mount_plugin_cli"): (
+        "safe",
+        "optional plugin CLI loading: logs unavailable groups, not a command's requested effect",
+    ),
     ("pyrite/cli/collection_commands.py", "list_collections"): (
         "safe",
         "bad metadata reads as empty",
