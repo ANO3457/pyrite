@@ -742,6 +742,10 @@ class BaseBackend(ABC):
         - ``inverse_relation``: the declared inverse of ``forward_relation``,
           ``None`` when it is not a declared type. Computed at query time, so
           an index built before a plugin registered the type still answers.
+        - ``prefix``: the KB prefix the source wrote for this link, exactly
+          as written (``None`` for a row indexed before #980). It is part of
+          the link's identity: ``[[ops:x]]`` and ``[[ops-kb:x]]`` are two
+          rows, and a reader that merges rows must keep them apart (#1062).
 
         ``readable_kbs`` (the caller's ``ReadScope`` set; ``None`` unscoped)
         drops a source the caller cannot read -- the same answer as a source
@@ -750,7 +754,7 @@ class BaseBackend(ABC):
         sql = """
             SELECT e.id, e.kb_name, e.title, e.entry_type,
                    l.inverse_relation as relation, l.relation as forward_relation,
-                   l.note
+                   l.target_prefix as prefix, l.note
             FROM link l
             JOIN entry e ON l.source_id = e.id AND l.source_kb = e.kb_name
             WHERE l.target_id = :entry_id AND l.target_kb = :kb_name
@@ -780,7 +784,7 @@ class BaseBackend(ABC):
         return self._exec(
             f"""
             SELECT l.target_id as id, l.target_kb as kb_name,
-                   e.title, e.entry_type, l.relation, l.note
+                   e.title, e.entry_type, l.relation, l.target_prefix as prefix, l.note
             FROM link l
             LEFT JOIN entry e ON l.target_id = e.id AND l.target_kb = e.kb_name
                 {f"AND {scope}" if scope else ""}
@@ -795,7 +799,7 @@ class BaseBackend(ABC):
             """
             SELECT l.target_id, e.id, e.kb_name, e.title, e.entry_type,
                    l.inverse_relation as relation, l.relation as forward_relation,
-                   l.note
+                   l.target_prefix as prefix, l.note
             FROM link l
             JOIN entry e ON l.source_id = e.id AND l.source_kb = e.kb_name
             WHERE l.target_kb = :kb_name
@@ -815,7 +819,7 @@ class BaseBackend(ABC):
             """
             SELECT l.source_id,
                    l.target_id as id, l.target_kb as kb_name,
-                   e.title, e.entry_type, l.relation, l.note
+                   e.title, e.entry_type, l.relation, l.target_prefix as prefix, l.note
             FROM link l
             LEFT JOIN entry e ON l.target_id = e.id AND l.target_kb = e.kb_name
             WHERE l.source_kb = :kb_name

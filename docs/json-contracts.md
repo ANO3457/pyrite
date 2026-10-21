@@ -1083,6 +1083,12 @@ the key). `![[x]]` is one row, relation `transclusion`.
 The web panel and the `backlinks` table list each source once, with each of
 its links' relation in the row; the graph draws one edge per pair of entries.
 
+The row also carries `prefix`: the `kb:` prefix the source wrote, exactly as
+written (`null` for a row indexed before #980). It is what tells `[[ops:x]]`
+from `[[ops-kb:x]]` in a row, so a reader that merges rows keeps it in the
+identity — the overlay backend merges the main and overlay stores and used to
+collapse those two back into one (#1062).
+
 A link's target is compared as the text the index stores an id as (#1022):
 `target: true` in a file is the id `"1"`, so `pyrite link src 1`, MCP
 `kb_link` with `target_id: "1"` and `links bulk-create` find it and write
