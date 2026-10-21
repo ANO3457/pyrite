@@ -526,7 +526,11 @@ class TestOmittingTheKBNameIsNotAWayIn:
         # The most direct read there was: it returns body text and nothing else.
         out = _call(env, "peer", "kb_read_body", {"entry_id": "secret-note"})
         assert "zebra behind the wall" not in json.dumps(out)
-        assert out["error_code"] == "NOT_FOUND"
+        # An entry this caller cannot read is not one that is there: the class
+        # code names what was missing, the old NOT_FOUND stays for a release
+        # (#981, #984), and the two are still indistinguishable to the caller.
+        assert out["error_code"] == "ENTRY_NOT_FOUND"
+        assert out["legacy_error_code"] == "NOT_FOUND"
 
     def test_kb_read_body_still_works_on_a_readable_entry(self, env):
         out = _call(env, "peer", "kb_read_body", {"entry_id": "public-note"})

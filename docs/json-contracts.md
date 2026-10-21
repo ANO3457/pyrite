@@ -60,8 +60,8 @@ task-graph tools (in the tool result); REST `GET /api/entries/{id}/blocks`,
 `kb`, answer `409` with `candidate_kbs` in `detail`. `candidate_kbs` names
 only KBs the caller can read: a private KB holding the same id is neither
 listed nor a cause of the refusal. One readable match still answers; zero is
-still `NOT_FOUND`, except on MCP `kb_get`, which answers `ENTRY_NOT_FOUND`
-(`legacy_error_code: "NOT_FOUND"`, #761). Only indexed copies are counted:
+still `NOT_FOUND`, except on MCP `kb_get` and `kb_read_body`, which answer
+`ENTRY_NOT_FOUND` (`legacy_error_code: "NOT_FOUND"`, #761, #984). Only indexed copies are counted:
 an id indexed in one KB with a not-yet-indexed `<id>.md` in another answers
 from the indexed KB (the
 by-name read runs only when no readable KB's index holds the id, #753). To
@@ -136,6 +136,17 @@ file, `retryable: true`) and `STORAGE_ERROR` (a storage fault on the write;
 below; a `VALIDATION_FAILED` refusal carries no legacy code (the code did
 not change). Any other `kb_update` failure is still `UPDATE_FAILED`,
 `retryable: true`.
+
+Two more (#984): MCP `kb_read_body` and `kb_delete` answer a
+missing entry with `ENTRY_NOT_FOUND` and a KB that does not exist with
+`KB_NOT_FOUND`, both `retryable: false`, as `kb_get` and `kb_update` do. A
+missing entry keeps `NOT_FOUND` in `legacy_error_code` on both tools: that
+was `kb_read_body`'s answer for everything, and `kb_delete`'s own answer for
+an entry it did not find. A missing KB keeps `NOT_FOUND` on `kb_delete` too:
+the resolver refused that call before it reached the handler, for every
+caller, so `DELETE_FAILED` was never that caller's answer (unlike an
+unscoped `kb_update`, which keeps `UPDATE_FAILED`). Any other `kb_delete`
+failure is still `DELETE_FAILED`, `retryable: true`.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape
