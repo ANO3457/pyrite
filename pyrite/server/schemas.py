@@ -470,6 +470,9 @@ class UpdateEntryRequest(BaseModel):
     # refusal as create, rather than silently dropping them or returning 422.
     model_config = {"extra": "allow"}
 
+    # Transport control, not an entry field. The body-bounds dependency
+    # refuses truthy markers on a body write; explicit false remains valid.
+    body_truncated: Any = False
     kb: str
     title: str | None = None
     body: str | None = None

@@ -54,6 +54,7 @@ def test_declared_put_fields_and_create_metadata_keep_working(make_client):
             "kb": "test-kb",
             "title": "Updated",
             "body": "Updated body",
+            "body_truncated": False,
             "tags": ["checked"],
             "metadata": {"status": "draft"},
         },
@@ -66,3 +67,24 @@ def test_declared_put_fields_and_create_metadata_keep_working(make_client):
     assert entry["body"] == "Updated body"
     assert entry["tags"] == ["checked"]
     assert entry["metadata"]["status"] == "draft"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Real entry publication requires POSIX")
+def test_post_writes_declared_adr_status_from_metadata(make_client):
+    client, config, _ = make_client()
+    created = client.post(
+        "/api/entries",
+        json={
+            "kb": "test-kb",
+            "title": "Decision",
+            "entry_type": "adr",
+            "allow_undeclared": True,
+            "metadata": {"status": "accepted"},
+        },
+    )
+    assert created.status_code == 200, created.text
+    from pyrite.utils.frontmatter import load_frontmatter
+
+    path = next(Path(config.knowledge_bases[0].path).rglob("*decision*.md"))
+    frontmatter, _ = load_frontmatter(path.read_text(encoding="utf-8"))
+    assert frontmatter["status"] == "accepted"
