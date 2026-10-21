@@ -40,11 +40,17 @@ pyrite task reset write-intro -k test-kb --reason "Worker stopped" --operator re
 ```bash
 pyrite task create "Publish guide" -k test-kb
 pyrite task decompose publish-guide -k test-kb --child "Draft guide" --child "Review guide"
+pyrite task claim draft-guide -k test-kb --assignee alice
+pyrite task update draft-guide -k test-kb --status in_progress
 pyrite task update draft-guide -k test-kb --status done
+pyrite task claim review-guide -k test-kb --assignee bob
+pyrite task update review-guide -k test-kb --status in_progress
 pyrite task update review-guide -k test-kb --status done
 pyrite task get publish-guide -k test-kb
 ```
 
+The normal stored-state path is open → claimed → in_progress → done (or failed,
+blocked or review). Follow the transition refusal rather than skipping states.
 A parent's completion is derived from its children. Completing the children
 makes the derived result complete without rewriting the parent's stored
 status. Read both the stored status and `derived`; do not infer parent
