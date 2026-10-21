@@ -263,6 +263,10 @@ class TestEmbed:
         (stub / "sentence_transformers" / "__init__.py").write_text(
             "raise ImportError('no semantic extra')\n"
         )
+        # `is_available()` answers through the import system's finder, so the
+        # broken install is named at the first real load (#1101): there has to
+        # be an entry for that load to happen.
+        _create(cli, "Needs a vector")
         cli.pyrite("index", "sync")
         out = cli.run(
             "pyrite.admin_cli",

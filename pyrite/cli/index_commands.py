@@ -347,6 +347,7 @@ def index_embed(
 ):
     """Generate vector embeddings for semantic search."""
     from ..services.embedding_service import (
+        EmbeddingModelUnavailableError,
         EmbeddingService,
         is_available,
         semantic_unavailable,
@@ -407,22 +408,33 @@ def index_embed(
 
     svc = EmbeddingService(db, model_name=config.settings.embedding_model)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Embedding entries...", total=None)
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Embedding entries...", total=None)
 
-        def update_progress(current: int, total: int):
-            progress.update(task, completed=current, total=total)
+            def update_progress(current: int, total: int):
+                progress.update(task, completed=current, total=total)
 
-        stats = svc.embed_all(
-            kb_name=kb_name,
-            force=force,
-            progress_callback=update_progress,
+            stats = svc.embed_all(
+                kb_name=kb_name,
+                force=force,
+                progress_callback=update_progress,
+            )
+    except EmbeddingModelUnavailableError as e:
+        # The finder in `is_available()` saw the package; its first real import
+        # failed. That is a missing dependency, not an entry error (#1101).
+        from ..utils.install_hints import extra_install_command
+
+        cli_error(
+            str(e),
+            error_code="DEPENDENCY_MISSING",
+            suggestion=extra_install_command("semantic"),
         )
 
     embedded, skipped, overshoot = _embed_counts(stats, from_queue, force)
