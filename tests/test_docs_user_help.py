@@ -125,3 +125,33 @@ def test_new_pages_are_linked_and_nonportable_cases_are_explicit():
         "STORAGE_ERROR",
     ):
         assert term in page
+
+
+def test_health_names_double_spellings_and_tagged_keys(cli_world):
+    world = cli_world()
+    folder = world.config.get_kb("test-kb").path
+    (folder / "double.md").write_text(
+        "---\nid: double\ntitle: Double\ntype: note\nimportance: 7\nmetadata:\n  importance: 8\n---\n",
+        encoding="utf-8",
+    )
+    (folder / "tagged.md").write_text(
+        "---\nid: tagged\ntitle: Tagged\ntype: note\n!!str flag: 1\n---\n", encoding="utf-8"
+    )
+    result = world.cli("index", "health")
+    assert result.exit_code == 1
+    body = json.loads(result.stdout)
+    assert any(row["field"] == "importance" for row in body["double_spellings"])
+    assert any(Path(row["path"]).name == "tagged.md" for row in body["unmodellable_frontmatter"])
+
+
+def test_reserved_name_is_refused_before_creating_kb(cli_world, tmp_path):
+    from pyrite.services.kb_names import RESERVED_KB_NAMES
+
+    world = cli_world()
+    folder = tmp_path / "new-kb"
+    result = world.cli(
+        "init", "-t", "research", "-n", sorted(RESERVED_KB_NAMES)[0], "-p", str(folder)
+    )
+    assert result.exit_code == 1
+    assert "INVALID_KB_NAME" in result.output
+    assert not (folder / "kb.yaml").exists()
