@@ -44,3 +44,24 @@ Set a provider one of two ways:
 ## Changes by non-admin users
 
 How a signed-in non-admin user's changes reach the main KB is changing in 0.26.0; this section will describe it then.
+
+## Choose the screen for your job
+
+| Screen | Use it for | CLI equivalent |
+|---|---|---|
+| Overview | KB counts, recent entries and entry types | orient |
+| Entries / entry detail | Browse, inspect and edit an entry | list-entries, get, update |
+| Search | Keyword or semantic queries | search |
+| Graph | Follow connections between entries | backlinks, links discover |
+| Daily notes | Open a dated note | daily |
+| Timeline | Inspect dated entries | timeline |
+| Collections | Group entries and change views | collection commands |
+| Settings | Operator configuration, users and personal provider keys | config and admin commands |
+
+An entry link carries its KB context. When an ID exists in several readable
+KBs, choose the intended KB; do not guess from the first result. A read-only
+account can inspect content while the server refuses writes outside its grants.
+The pending non-admin change workflow above remains the authoritative status;
+this guide does not promise an unpublished approval flow.
+
+For failures and upgrade symptoms, use [Troubleshooting](troubleshooting.md).
