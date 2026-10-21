@@ -1,0 +1,1 @@
+- REST `PUT /api/entries/{id}` refuses a top-level key `UpdateEntryRequest` does not declare with 400 `VALIDATION_FAILED` naming the keys without writing, instead of answering 200 with the keys silently dropped (#1184).

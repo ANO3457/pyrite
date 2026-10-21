@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 
 from ...exceptions import ValidationError
 from ...services.body_bounds import ensure_not_truncated
+from ..schemas import UpdateEntryRequest
 
 
 def refusal_http(exc: ValidationError) -> HTTPException:
@@ -87,3 +88,33 @@ async def refuses_truncated_body(request: Request) -> None:
         ensure_not_truncated(payload)
     except ValidationError as e:
         raise refusal_http(e) from e
+
+
+async def refuses_unknown_update_keys(request: Request) -> None:
+    """#1184: refuse a top-level key the update body model does not declare.
+
+    The model drops every key it does not declare, so an undeclared top-level
+    key (e.g. ``status`` or ``date``) was answered 200 with the key silently
+    dropped and nothing written. Read the raw JSON, as :func:`refuses_truncated_body`
+    does, and answer the write pipeline's own refusal shape: 400
+    ``VALIDATION_FAILED`` naming the keys without writing. The model's
+    ``extra="forbid"`` is the belt to this dependency's braces.
+    """
+    media_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if not (media_type == "application/json" or media_type.endswith("+json")):
+        return
+    try:
+        payload = await request.json()
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    unknown = sorted(set(payload) - set(UpdateEntryRequest.model_fields))
+    if not unknown:
+        return
+    accepted = ", ".join(sorted(UpdateEntryRequest.model_fields))
+    raise refusal_http(
+        ValidationError(
+            f"Unknown field(s) on an update: {', '.join(unknown)}. An update accepts: {accepted}."
+        )
+    )

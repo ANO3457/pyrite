@@ -52,7 +52,7 @@ def rest_env():
         app.dependency_overrides[get_config] = lambda: config
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_index_mgr] = lambda: index_mgr
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://localhost")
         try:
             yield {"client": client, "kb_path": kb_path}
         finally:
@@ -140,3 +140,46 @@ def test_put_response_lists_empty_when_nothing_was_set_aside(rest_env):
     body = res.json()
     assert body["ignored"] == [], body
     assert body["unchanged"] == [], body
+
+
+def test_put_refuses_undeclared_top_level_keys_with_no_write(rest_env):
+    """#1184: a REST PUT refuses an undeclared key, naming it, without writing."""
+    client = rest_env["client"]
+    path = rest_env["kb_path"] / "notes" / "d.md"
+    original = path.read_text(encoding="utf-8")
+
+    res = client.put(
+        "/api/entries/d",
+        json={"kb": KB, "status": "draft", "date": "2026-10-21", "wibble": 1},
+    )
+    assert res.status_code == 400, res.text
+    detail = res.json()["detail"]
+    assert detail["code"] == "VALIDATION_FAILED", detail
+    msg = detail["message"]
+    assert "date" in msg, msg
+    assert "status" in msg, msg
+    assert "wibble" in msg, msg
+    # Zero writes occurred
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_post_writes_metadata_status_for_adr(rest_env):
+    """#1184 review request: create an ADR writing metadata.status, the case the
+    web New Entry form exercises."""
+    client = rest_env["client"]
+    res = client.post(
+        "/api/entries",
+        json={
+            "kb": KB,
+            "entry_type": "adr",
+            "title": "Decide Arch",
+            "metadata": {"status": "accepted"},
+        },
+    )
+    assert res.status_code == 200, res.text
+    created = res.json()
+    assert created["created"] is True
+    files = list(rest_env["kb_path"].rglob("*decide-arch*.md"))
+    assert files, "no file created for ADR"
+    content = files[0].read_text(encoding="utf-8")
+    assert "status: accepted" in content, content

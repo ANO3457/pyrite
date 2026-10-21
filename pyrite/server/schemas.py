@@ -454,7 +454,15 @@ class CreateEntryRequest(BaseModel):
 
 
 class UpdateEntryRequest(BaseModel):
-    """JSON body for updating an entry."""
+    """JSON body for updating an entry.
+
+    ``extra="forbid"``: the model has no free top-level fields, so a key it
+    does not declare is never silently dropped. The update route also reads
+    the raw body (`refuses_unknown_update_keys`) to answer such a key with
+    the service's own refusal -- 400 ``VALIDATION_FAILED`` naming it (#1184).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     kb: str
     title: str | None = None

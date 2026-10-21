@@ -48,7 +48,7 @@ from ..schemas import (
     WantedPage,
     WantedPagesResponse,
 )
-from .write_refusal import refusal_http, refuses_truncated_body
+from .write_refusal import refusal_http, refuses_truncated_body, refuses_unknown_update_keys
 
 logger = logging.getLogger(__name__)
 
@@ -837,7 +837,11 @@ def create_entry(
 @router.put(
     "/entries/{entry_id}",
     response_model=UpdateResponse,
-    dependencies=[Depends(requires_kb_tier("write")), Depends(refuses_truncated_body)],
+    dependencies=[
+        Depends(requires_kb_tier("write")),
+        Depends(refuses_truncated_body),
+        Depends(refuses_unknown_update_keys),
+    ],
 )
 @limiter.limit("30/minute")
 def update_entry(
@@ -856,14 +860,14 @@ def update_entry(
         except ValueError:
             pass  # KB not in a git repo — fall back to main
 
-    # `id` is not a field `UpdateEntryRequest` can carry (FastAPI drops an
-    # unknown key before this handler sees it, Pydantic's default
-    # extra="ignore"), so a client that reads an entry and PUTs it straight
-    # back cannot trip `split_echoed_update`'s own "this looks like an
-    # echoed read" heuristic (`id`/`file_path`/index-only keys) the way MCP
-    # `kb_update` does. A REST PUT to `/entries/{id}` is always that
-    # caller's current view of the resource, so `id` is added here to put
-    # every PUT through the same reading-comparison MCP gets for an echo:
+    # `id` is not a field `UpdateEntryRequest` can carry (FastAPI refuses an
+    # unknown key before this handler sees it, `extra="forbid"` and
+    # `refuses_unknown_update_keys`, #1184), so a client that reads an entry
+    # and PUTs it straight back cannot trip `split_echoed_update`'s own "this
+    # looks like an echoed read" heuristic (`id`/`file_path`/index-only keys)
+    # the way MCP `kb_update` does. A REST PUT to `/entries/{id}` is always
+    # that caller's current view of the resource, so `id` is added here to
+    # put every PUT through the same reading-comparison MCP gets for an echo:
     # `importance`/`tags` sent back unchanged from a GET are left alone
     # instead of rewriting `importance: high` as `5` or `tags: Foo` as
     # `['Foo']` (#561, #569 item 1). `split_echoed_update` always puts `id`
