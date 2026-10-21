@@ -1627,8 +1627,13 @@ class QAService:
             if "severity" in item and str(item["severity"]).lower() in ("warn", "fail"):
                 return str(item["severity"]).lower()
         kb_config = self.config.get_kb(kb_name)
-        if kb_config and kb_config.kb_schema:
-            schema = kb_config.kb_schema
+        try:
+            schema = kb_config.kb_schema if kb_config else None
+        except OSError:
+            # The KB's file checks report unreadability. A missing rubric
+            # setting must not prevent that report; default to failing.
+            return "fail"
+        if schema:
             if entry_type and schema.types.get(entry_type):
                 ts = schema.types[entry_type]
                 if getattr(ts, "rubric_action", None):
