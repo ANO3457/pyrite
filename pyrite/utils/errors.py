@@ -32,7 +32,7 @@ from typing import Any, cast
 import typer
 from typer.core import TyperGroup
 
-from ..exceptions import PyriteError, public_text, refusal_fields
+from ..exceptions import PyriteError, StorageError, public_text, refusal_fields
 
 logger = logging.getLogger(__name__)
 
@@ -728,6 +728,14 @@ class PyriteCLIGroup(TyperGroup):
                     cli_error(str(exc), error_code="CONFIG_SAVE_REFUSED")
                 if isinstance(exc, StorageError):
                     cli_error_from(exc, _format_in(_ARGV.get()))
+                import sqlite3
+
+                if isinstance(exc, sqlite3.DatabaseError):
+                    from ..storage.connection import CORRUPT_INDEX_SUGGESTION
+
+                    err = StorageError(f"Database error: {exc}")
+                    err.suggestion = CORRUPT_INDEX_SUGGESTION
+                    cli_error_from(err, _format_in(_ARGV.get()))
                 raise
             raised = exc
 
@@ -776,6 +784,14 @@ class PyriteCLIGroup(TyperGroup):
             raise raised
         if isinstance(raised, PyriteError | ValueError):
             return _error_answer(_refusal_payload(raised), fmt)
+        import sqlite3
+
+        if isinstance(raised, sqlite3.DatabaseError):
+            from ..storage.connection import CORRUPT_INDEX_SUGGESTION
+
+            err = StorageError(f"Database error: {raised}")
+            err.suggestion = CORRUPT_INDEX_SUGGESTION
+            return _error_answer(_refusal_payload(err), fmt)
         if raised is None and type(result) is Outcome and result is guard.returned:
             return _outcome_answer(result, fmt)
 
