@@ -112,7 +112,9 @@ class TestEntryLifecycle:
             nonlocal statement_count
             statement_count += 1
 
-        event.listen(db.engine, "before_cursor_execute", count_statement)
+        # Postgres fixtures have a real backend/session but no PyriteDB.
+        engine = backend._session.get_bind()
+        event.listen(engine, "before_cursor_execute", count_statement)
         try:
             entries = backend.list_entries(kb_name="test", limit=50)
             assert len(entries) == 50
@@ -121,7 +123,7 @@ class TestEntryLifecycle:
                 assert e["tags"] == [f"tag{num % 5}"]
             assert statement_count == 2, f"Expected 2 queries, got {statement_count}"
         finally:
-            event.remove(db.engine, "before_cursor_execute", count_statement)
+            event.remove(engine, "before_cursor_execute", count_statement)
 
     def test_count_entries(self, backend):
         for i in range(3):
