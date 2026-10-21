@@ -1485,3 +1485,16 @@ fixes were attempted and failed. `manual` keeps only the issues a person must
 decide. One failed entry does not
 stop the rest. With `--dry-run`, `fixed` lists what would be attempted and
 `failed` is empty.
+
+### Usage errors raised after parsing
+
+A shared-format command whose body raises a Click/Typer usage error violates
+the Outcome contract: the root reports `NO_OUTCOME`, exit1. A parse-time usage
+error is `USAGE_ERROR`, exit2. This preserves the existing contract rather than
+turning a command implementation bug into a caller's parse error. Text or bytes
+printed by a contract command before raising are moved to stderr and the result
+is still one `NO_OUTCOME` document. Non-contract commands that already wrote
+through `sys.stdout` or `sys.stdout.buffer` keep that text on stdout; a subsequent
+Click error is a plain stderr diagnostic, with no appended document. Writes
+through an independently retained stream or descriptor1 remain outside this
+non-contract counting guard.

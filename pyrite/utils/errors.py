@@ -219,7 +219,7 @@ def _default_format() -> str:
     return asked if asked in SHARED_FORMATS else "json"
 
 
-def _format_in(argv: Sequence[str]) -> str:
+def _format_in(argv: Sequence[str], ctx: Any = None) -> str:
     """The format a usage error is printed in: the ``--format`` (or the
     deprecated ``-f``) the caller typed, if it is a format the root prints (the
     parse that failed may be what never got to read it), else the default.
@@ -228,11 +228,30 @@ def _format_in(argv: Sequence[str]) -> str:
     document is in ``PYRITE_FORMAT``, else JSON."""
     from ..cli.output import SHARED_FORMATS
 
+    short_is_format = ctx is None
+    if ctx is not None:
+        from ..cli.output import FORMAT_META_KEY, _record_short_format
+
+        if value := ctx.meta.get(FORMAT_META_KEY):
+            if value in SHARED_FORMATS:
+                return value
+        for parameter in ctx.command.params:
+            options = (*getattr(parameter, "opts", ()), *getattr(parameter, "secondary_opts", ()))
+            callback = getattr(parameter, "callback", None)
+            original = getattr(callback, "__wrapped__", callback)
+            if "--format" in options:
+                value = ctx.params.get(parameter.name)
+                if value in SHARED_FORMATS:
+                    return value
+            if "-f" in options and ("--format" in options or original is _record_short_format):
+                short_is_format = True
     if next((w for w in argv if not w.startswith("-")), None) == "export":
         return _default_format()
     for index, word in enumerate(argv):
         if word == "--":
             break
+        if word == "-f" and not short_is_format:
+            continue
         if word in ("--format", "-f") and index + 1 < len(argv):
             value = argv[index + 1]
         elif word.startswith("--format="):
@@ -260,13 +279,15 @@ class _CountingStdout:
     cannot see (descriptor 1 directly, a stream a module took at import) are a
     stated limit: see ``_answered``."""
 
-    def __init__(self, inner: Any) -> None:
+    def __init__(self, inner: Any, owner: Any = None) -> None:
         self._inner = inner
+        self._owner = owner if owner is not None else self
+        self._buffer = None
         self.written = False
 
     def write(self, text: Any) -> Any:
         if text:
-            self.written = True
+            self._owner.written = True
         return self._inner.write(text)
 
     def writelines(self, lines: Any) -> None:
@@ -274,7 +295,12 @@ class _CountingStdout:
             self.write(line)
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._inner, name)
+        value = getattr(self._inner, name)
+        if name == "buffer":
+            if self._buffer is None:
+                self._buffer = _CountingStdout(value, owner=self._owner)
+            return self._buffer
+        return value
 
 
 def _is_a(error: BaseException, name: str) -> bool:
@@ -338,7 +364,7 @@ def _answered(*, watch_stdout: bool):
         if counting is not None and counting.written:
             _tell_a_person(error)
         else:
-            _print_click_error(error, _format_in(_ARGV.get()))
+            _print_click_error(error, _format_in(_ARGV.get(), getattr(error, "ctx", None)))
         raise typer.Exit(cast(Any, error).exit_code) from error
     except EOFError as error:
         sys.stderr.write("\nAborted!\n")
