@@ -1750,7 +1750,7 @@ class SoftwareKBPlugin:
             return {
                 "created": False,
                 "error": "No KB resolved for the ADR (pass kb_name).",
-                "error_code": "KB_NOT_FOUND",
+                "error_code": "KB_NOT_FOUND" if kb_name else "VALIDATION_FAILED",
             }
         if readable_kbs is not None and kb_conf.name not in readable_kbs:
             return {
