@@ -1220,8 +1220,17 @@ class KBService:
             entry_type = self._resolve_entry_type(entry_type, kb_config.kb_type)
         if builder is None:
             self._refuse_managed_on_create(entry_type, kb_config, fields, owns)
-            fields, attributes = self._with_declared_fields(entry_type, kb_config, fields)
-            entry = build_entry(entry_type, entry_id=entry_id, title=title, body=body, **fields)
+            fields, attributes, top_level = self._with_declared_fields(
+                entry_type, kb_config, fields
+            )
+            entry = build_entry(
+                entry_type,
+                entry_id=entry_id,
+                title=title,
+                body=body,
+                top_level=top_level,
+                **fields,
+            )
             entry._create_fields = attributes
         else:
             entry = builder(entry_type, entry_id, title, body, fields)
@@ -1275,7 +1284,7 @@ class KBService:
 
     def _with_declared_fields(
         self, entry_type: str, kb_config: KBConfig, fields: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, str]]:
+    ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
         """A create's request with every field the type's schema declares
         (#86), and the declared fields the model holds as attributes.
 
@@ -1295,7 +1304,9 @@ class KBService:
         Left out: base Entry fields (``RESERVED_FIELD_NAMES``) and the fields
         a create refuses (``_field_sets``' managed set, #1010). An alias is
         added at its target's name. The second value maps each declared
-        attribute field to its attribute, for ``Entry._create_fields``.
+        attribute field to its attribute, for ``Entry._create_fields``. The
+        third is the declared fields the class has no attribute for: their
+        canonical spelling is the top-level name (#1108).
         """
         from ..models.core_types import get_entry_class
         from ..schema.field_aliases import class_field_aliases, field_at, spellings_of
@@ -1308,6 +1319,7 @@ class KBService:
         envelope = envelope if isinstance(envelope, Mapping) else {}
         added: dict[str, Any] = {}
         attributes: dict[str, str] = {}
+        top_level: set[str] = set()
         for name, schema in kb_config.kb_schema.type_fields(entry_type).items():
             if name in skip:
                 continue
@@ -1325,9 +1337,11 @@ class KBService:
                 attributes[field] = attribute
                 if not sent and schema.default is not None:
                     added[field] = schema.empty_value()
-            elif not sent:
-                added[field] = schema.empty_value()
-        return {**fields, **added}, attributes
+            else:
+                top_level.add(field)
+                if not sent:
+                    added[field] = schema.empty_value()
+        return {**fields, **added}, attributes, top_level
 
     def _prepare_and_save(
         self,

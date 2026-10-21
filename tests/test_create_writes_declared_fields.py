@@ -918,3 +918,35 @@ def test_schema_validate_reads_an_empty_protocol_field_as_no_value(tmp_path: Pat
     fm = {"id": "x", "title": "X", "type": "note", "priority": empty}
     findings = validate_entry(tmp_path / "x.md", fm, None)
     assert not [f for f in findings if f["check"] == "protocol_field_type"], findings
+
+
+@pytest.mark.parametrize("entry_type", ["note", "person", "task"])
+def test_a_sent_declared_field_is_written_at_its_top_level_name(tmp_path: Path, entry_type: str):
+    """The canonical spelling of a field the file does not yet spell is its
+    top-level name (#1108, ADR-0051).
+
+    A typed class has no attribute for a kb.yaml-declared field, and a create
+    used to leave the caller's value under ``metadata:`` while #1095 wrote
+    declared empties at the top level -- one file spelling the set two ways.
+    ``_prepare`` is the whole decision, before the file lock; serialize what it
+    built.
+    """
+    config = _config(tmp_path, _kb_yaml_declaring(entry_type))
+    kb_config = config.get_kb(KB)
+    spec = {
+        "entry_type": entry_type,
+        "title": "Sent",
+        "body": "b",
+        "x_text": "mine",
+        "x_multi": ["a"],
+        **NEEDS.get(entry_type, {}),
+    }
+    entry, _warnings = _with_service(
+        config,
+        lambda svc: svc._prepare(KB, kb_config, spec, allow_undeclared=True),
+    )
+    got = dict(entry._frontmatter_for_file())
+    nested = got.get("metadata") or {}
+    assert got.get("x_text") == "mine", got
+    assert got.get("x_multi") == ["a"], got
+    assert "x_text" not in nested and "x_multi" not in nested, got

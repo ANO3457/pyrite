@@ -1,6 +1,7 @@
 """Entry factory -- single point of entry type dispatch."""
 
 import dataclasses as _dc
+from collections.abc import Collection
 
 from ..schema import generate_entry_id
 from .base import Entry
@@ -14,6 +15,7 @@ def build_entry(
     entry_id: str | None = None,
     title: str,
     body: str = "",
+    top_level: Collection[str] = (),
     **kwargs,
 ) -> Entry:
     """Build an entry of the given type with appropriate constructor kwargs.
@@ -27,6 +29,10 @@ def build_entry(
         entry_id: Optional entry ID. Auto-generated from title if not provided.
         title: Entry title (required)
         body: Entry body content
+        top_level: Field names the KB's schema declares that the class has no
+            attribute for. They are written at their top-level name, the
+            canonical spelling for a field the file does not yet spell
+            (#1108), instead of under ``metadata:``.
         **kwargs: Type-specific fields (date, importance, role, participants, etc.)
 
     Returns:
@@ -103,9 +109,11 @@ def build_entry(
         {k: v for k, v in kwargs.items() if k != "metadata"},
         kwargs["metadata"] if isinstance(kwargs.get("metadata"), dict) else {},
     )
+    _top_level = set(top_level)
     _fm_keys = (
         _cls_fields
         | _alias_keys
+        | _top_level
         | {
             "type",
             "provenance",
@@ -152,4 +160,14 @@ def build_entry(
         existing = fm.get("metadata") or {}
         fm["metadata"] = {**existing, **_extra_meta}
 
-    return resolved_cls.from_frontmatter(fm, body)
+    entry = resolved_cls.from_frontmatter(fm, body)
+    # A declared field the class has no attribute for is kept in
+    # ``extra_frontmatter``, the keys ``_base_frontmatter`` re-emits
+    # untouched, so it stays at the top-level name the schema spells it
+    # at rather than reappearing under ``metadata:`` (#1108).
+    if _top_level:
+        emitted = entry.to_frontmatter()
+        for key in _top_level:
+            if key in fm and key not in emitted and key not in entry.extra_frontmatter:
+                entry.extra_frontmatter[key] = fm[key]
+    return entry
