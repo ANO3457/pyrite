@@ -11,6 +11,7 @@ from rich.table import Table
 from pyrite.cli.context import require_kb
 from pyrite.cli.output import output_format_choice
 from pyrite.config import load_config
+from pyrite.exceptions import FrontmatterError
 from pyrite.services.access_policy import UNSCOPED
 from pyrite.storage.database import PyriteDB
 
@@ -72,6 +73,42 @@ def _query_entries(db: PyriteDB, entry_type: str, kb_name: str | None = None) ->
         item["_meta"] = meta
         results.append(item)
     return results
+
+
+def _adr_numbers_in_files(kb_conf: Any) -> set[int]:
+    """The ``adr_number`` values the KB's files hold, read without the index.
+
+    A KB registered but never indexed has no rows, and numbering from the
+    index alone answered ``adr-0001`` for a KB whose files already carry
+    ADR-0001, so the write refused with ``ENTRY_EXISTS`` for an entry it
+    never looked for (#1082).
+    """
+    from pyrite.storage.repository import KBRepository
+    from pyrite.utils.frontmatter import load_frontmatter
+
+    numbers: set[int] = set()
+    for path in KBRepository(kb_conf).list_files():
+        try:
+            loaded = load_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, FrontmatterError):
+            continue
+        if loaded is None:
+            continue
+        number = loaded[0].get("adr_number")
+        if isinstance(number, bool):
+            continue
+        if isinstance(number, int):
+            numbers.add(number)
+        elif isinstance(number, str) and number.strip().isdigit():
+            numbers.add(int(number.strip()))
+    return numbers
+
+
+def _next_adr_number(db: PyriteDB, kb_conf: Any) -> int:
+    """One past the highest ADR number the index and the files both know."""
+    numbers = {row["_meta"].get("adr_number", 0) for row in _query_entries(db, "adr", kb_conf.name)}
+    numbers = {n for n in numbers if isinstance(n, int) and not isinstance(n, bool)}
+    return max(numbers | _adr_numbers_in_files(kb_conf) | {0}) + 1
 
 
 def _json_output(items: list[dict]) -> None:
@@ -212,13 +249,7 @@ def sw_new_adr(
 
     db = PyriteDB(config.settings.index_path)
     try:
-        rows = _query_entries(db, "adr", kb_conf.name)
-        max_num = 0
-        for row in rows:
-            num = row["_meta"].get("adr_number", 0)
-            if isinstance(num, int) and num > max_num:
-                max_num = num
-        next_num = max_num + 1
+        next_num = _next_adr_number(db, kb_conf)
         today = date.today().isoformat()
 
         body = (

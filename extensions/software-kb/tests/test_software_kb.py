@@ -2077,6 +2077,33 @@ class TestNewAdrGoesThroughPipeline:
         finally:
             db.close()
 
+    def test_a_file_that_is_not_indexed_still_advances_the_number(self, env):
+        """#1082: numbering from an empty index said adr-0001 for a KB whose
+        files already held ADR-0001, and the write refused with ENTRY_EXISTS
+        for an entry it never looked for."""
+        adrs = env["kb_path"] / "adrs"
+        adrs.mkdir()
+        for number in (1, 2):
+            (adrs / f"{number:04d}-existing.md").write_text(
+                "---\n"
+                f"id: adr-{number:04d}\n"
+                f"title: Existing decision {number}\n"
+                "type: adr\n"
+                f"adr_number: {number}\n"
+                "status: accepted\n"
+                "date: 2026-10-01\n"
+                "---\n"
+                "\n"
+                f"# ADR-{number:04d}: Existing decision {number}\n",
+                encoding="utf-8",
+            )
+
+        result = self._run(env, ["new-adr", "Use NATS", "--kb", "sw-kb"])
+
+        assert result.exit_code == 0, result.output
+        created = sorted(p.name for p in adrs.glob("*.md"))
+        assert "0003-use-nats.md" in created, created
+
     def test_new_adr_runs_before_and_after_save_hooks(self, env):
         from pyrite.plugins.registry import get_registry
 
@@ -2157,16 +2184,17 @@ class TestNewAdrGoesThroughPipeline:
             "new-adr must not create ./adrs in the current directory"
         )
 
-    def test_existing_adr_number_is_refused_with_entry_exists(self, env):
-        """An existing ADR's id (adr-0001) is refused; the file is untouched."""
+    def test_a_row_the_index_lost_does_not_reuse_its_number(self, env):
+        """#1082: with the row gone but the file on disk, the file advances the
+        number; the older ADR keeps its file and content."""
         first = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
         assert first.exit_code == 0, first.output
         expected_file = env["kb_path"] / "adrs" / "0001-original-title.md"
         original = expected_file.read_bytes()
 
-        # A second ADR that resolves to the SAME id (adr-0001) is refused.
-        # The numbering query only sees indexed ADRs, so this simulates a
-        # race/duplicate rather than the auto-increment's normal path.
+        # The index row for adr-0001 is gone; the file is not. Numbering from
+        # the index alone would answer adr-0001 again and refuse with
+        # ENTRY_EXISTS for an entry it never looked for.
         from pyrite.storage.database import PyriteDB
 
         db = PyriteDB(env["db_path"])
@@ -2178,7 +2206,34 @@ class TestNewAdrGoesThroughPipeline:
         finally:
             db.close()
 
-        result = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
+        result = self._run(env, ["new-adr", "Second Title", "--kb", "sw-kb"])
+
+        assert result.exit_code == 0, result.output
+        assert expected_file.read_bytes() == original
+        assert (env["kb_path"] / "adrs" / "0002-second-title.md").exists(), sorted(
+            p.name for p in (env["kb_path"] / "adrs").glob("*.md")
+        )
+
+    def test_a_numbering_collision_is_still_refused(self, env):
+        """The pipeline's own guard stays: when numbering does collide, the
+        write refuses and the existing file is untouched."""
+        from unittest.mock import patch
+
+        first = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
+        assert first.exit_code == 0, first.output
+        expected_file = env["kb_path"] / "adrs" / "0001-original-title.md"
+        original = expected_file.read_bytes()
+
+        from pyrite_software_kb.cli import sw_app
+        from typer.testing import CliRunner
+
+        runner = CliRunner()
+        with (
+            patch("pyrite_software_kb.cli.load_config", return_value=env["config"]),
+            patch("pyrite_software_kb.cli._next_adr_number", lambda db, kb: 1),
+        ):
+            result = runner.invoke(sw_app, ["new-adr", "Collides", "--kb", "sw-kb"])
+
         assert result.exit_code != 0, result.output
         assert "ENTRY_EXISTS" in result.output, result.output
         assert expected_file.read_bytes() == original
