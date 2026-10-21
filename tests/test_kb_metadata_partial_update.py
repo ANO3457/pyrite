@@ -135,3 +135,31 @@ def test_the_registry_service_refuses_a_bad_update_too(make_client, tmp_path, up
         KBRegistryService(config, db).update_kb("notes", description="Changed", **updates)
     assert refused.value.error_code == "VALIDATION_FAILED"
     assert _row(db) == ("Kept", "task")
+
+
+def test_rest_refuses_a_metadata_edit_on_a_hand_defined_config_kb(make_client, tmp_path):
+    """config.yaml, not the registry row, is the source of truth (#1116).
+
+    Every entry save and sync rewrites a config-defined KB's row from the
+    file, so an accepted description edit vanished on the next reindex. The
+    route refuses it with the code the default_role route already uses.
+    """
+    from pyrite.config import KBConfig, save_config
+
+    client, config, db = make_client()
+    path = tmp_path / "hand"
+    path.mkdir()
+    db.register_kb(name="hand", path=str(path), kb_type="generic", description="From file")
+    config.add_kb(KBConfig(name="hand", path=path, kb_type="generic", description="From file"))
+    save_config(config)
+
+    response = client.put("/api/kbs/hand", json={"description": "Changed"})
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "KB_DEFINED_IN_CONFIG"
+    assert "config.yaml" in detail["message"]
+    assert "description" in detail["message"]
+    db.session.expire_all()
+    row = db.session.get(KB, "hand")
+    assert row is not None and row.description == "From file"
