@@ -18,7 +18,7 @@ runs with every subprocess call monkeypatched.
 """
 
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -334,6 +334,40 @@ class TestChangelogValidation:
             f"# Changelog\n\n## [0.24.2] - {date.today().isoformat()}\n\n- Thing.\n"
         )
         release.check_changelog(repo, "0.24.2")  # no raise
+
+    def test_a_run_that_crosses_midnight_reads_one_day(self, tmp_path, monkeypatch):
+        """One clock per run (#1128).
+
+        The merge queue imported the rehearsal at 23:56 and ran it after
+        midnight, so the changelog was dated one day and the script asked for
+        the next: five checks failed on a PR that touched no release code. The
+        run captures its day once, and every date check reads that.
+        """
+        prepared = date(2026, 5, 4)  # 23:59:59
+        monkeypatch.setattr(release, "current_day", lambda: prepared)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "CHANGELOG.md").write_text(
+            f"# Changelog\n\n## [0.24.2] - {prepared.isoformat()}\n\n- Thing.\n"
+        )
+
+        ctx = release.Context(
+            repo=repo,
+            version="0.24.2",
+            runner=release.Runner(execute=False),
+            wait_ci_minutes=0,
+        )
+
+        # The wall clock has crossed midnight; the run's day has not.
+        monkeypatch.setattr(release, "current_day", lambda: prepared + timedelta(days=1))
+
+        release.check_changelog(ctx.repo, ctx.version, ctx.day)  # no raise
+        assert ctx.day == prepared
+
+        # The check still compares days: a caller that asked the clock instead
+        # of the run's day is told the changelog is a day old.
+        with pytest.raises(release.ReleaseError, match="today is 2026-05-05"):
+            release.check_changelog(ctx.repo, ctx.version)
 
 
 # --------------------------------------------------------------------------
