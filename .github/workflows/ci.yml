@@ -233,7 +233,7 @@ jobs:
       # timings, and `gate` fails on any red leg regardless.
       fail-fast: false
       matrix:
-        # Value chain (ADR-0032 Â§3): a pull request proves the change on one
+        # Value chain (ADR-0032 §3): a pull request proves the change on one
         # interpreter, fast; the merge queue and the push to dev that follows
         # prove breadth (every supported Python, Postgres). main only
         # fast-forwards to a commit dev already proved. Each step costs more
@@ -748,7 +748,7 @@ jobs:
 
   # ===========================================================================
   # E2E: Playwright against a real backend. Slower (~5-8 min) so it runs in
-  # its own job â€” a unit-test failure shouldn't block the E2E signal and
+  # its own job — a unit-test failure shouldn't block the E2E signal and
   # vice versa. r1900 web-tests-in-ci.
   # ===========================================================================
   e2e:
@@ -839,7 +839,7 @@ jobs:
           retention-days: 14
 
   # ===========================================================================
-  # Smoke: the "breadth" row of ADR-0032 Â§3a's value chain that had nothing in
+  # Smoke: the "breadth" row of ADR-0032 §3a's value chain that had nothing in
   # it. The matrix proves the CODE on three interpreters; nothing proved the
   # ASSEMBLED THING -- a real pyrite-server process driven by a real HTTP and
   # MCP client, and the CLI exactly as docs/getting-started.md documents it.
