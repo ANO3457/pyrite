@@ -150,6 +150,11 @@ test.describe('New Entry Page', () => {
 
 			// Editor step: the title input here is the untitled one in the header row.
 			await expect(page.getByRole('heading', { name: title })).toBeVisible();
+			// Since #473, a KB with more than one declared type preselects none,
+			// and Create stays disabled until one is chosen (TypeChoice.svelte;
+			// the research template has note, event, person, ...). Blank Entry
+			// keeps whatever the picker step chose, so choose here.
+			await page.locator('#entry-type-select-edit').selectOption('note');
 			// The Create button is disabled until `kb` (kbStore.activeKB) has
 			// resolved (web/src/routes/entries/new/+page.svelte) -- Playwright's
 			// .click() auto-waits for that, so this click itself rides out the
