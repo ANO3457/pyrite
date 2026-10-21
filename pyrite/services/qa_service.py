@@ -199,6 +199,9 @@ class QAService:
             self._check_schema_retypes_core_fields(issues, kb_name)
             self._check_schema_all(issues, kb_name, sources)
 
+            # The bulk SQL checks above do not know a KB's named rubric (#956).
+            self._check_named_rubric_all(issues, kb_name)
+
             if tier >= 2:
                 self._check_llm_rubric_all(issues, kb_name)
 
@@ -1592,6 +1595,26 @@ class QAService:
                 _add_item(item)
 
         return items
+
+    def _check_named_rubric_all(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+        """Run the single-entry deterministic rubric without repeating SQL findings."""
+        by_entry: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for issue in issues:
+            key = (issue.get("entry_id", ""), issue.get("kb_name", ""))
+            by_entry.setdefault(key, []).append(issue)
+        rows = self.db.execute_sql(
+            "SELECT id, kb_name, entry_type, title, date, importance, body, status, metadata "
+            "FROM entry WHERE kb_name = :kb_name ORDER BY id",
+            {"kb_name": kb_name},
+        )
+        for row in rows:
+            findings: list[dict[str, Any]] = []
+            self._check_rubric_evaluation(row, findings)
+            existing = by_entry.setdefault((row["id"], row["kb_name"]), [])
+            for finding in findings:
+                if finding not in existing:
+                    issues.append(finding)
+                    existing.append(finding)
 
     def _check_rubric_evaluation(self, entry: dict[str, Any], issues: list[dict[str, Any]]) -> None:
         """Run rubric checks on a single entry."""
