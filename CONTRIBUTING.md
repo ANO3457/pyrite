@@ -162,6 +162,16 @@ pyrite/
 
 ### Entry Points
 
+Imports flow `cli`/`server` → `services` → `storage`; storage never imports
+services. The allowed surface-to-storage exceptions are a ratchet whose count
+can only fall, in [test_layer_boundaries.py](tests/test_layer_boundaries.py).
+The inner-layer rule is enforced by
+[test_storage_never_imports_services.py](tests/test_storage_never_imports_services.py);
+the migrated CLI surfaces are covered by
+[test_cli_surfaces_through_services.py](tests/test_cli_surfaces_through_services.py).
+For public error text, follow the [API standard](kb/standards/api-design.md#error-handling),
+enforced by [test_public_message_logged_once.py](tests/test_public_message_logged_once.py).
+
 | Command | Module | Purpose |
 |---------|--------|---------|
 | `pyrite` | `pyrite.cli:main` | Full CLI (Typer) — primary interface for humans and agents |
@@ -410,6 +420,15 @@ uv pip install --python .venv/bin/python -e ".[all,dev]"
 ```
 
 ### Writing Tests
+
+- Follow the [deadline rule](kb/standards/testing-standards.md#deadlines-and-waits);
+  [test_test_rules.py](tests/test_test_rules.py) enforces it.
+- Drive real services behind entry points; the
+  [mocking standard](kb/standards/testing-standards.md) and
+  [test_tests_drive_the_surface_not_the_mock.py](tests/test_tests_drive_the_surface_not_the_mock.py)
+  define the permitted edges.
+- Use the [pinned CLI rendering environment](kb/standards/testing-standards.md#cli-rendering),
+  covered by [test_cli_color_environment.py](tests/test_cli_color_environment.py).
 
 - Tests live in `tests/`; extension tests in `extensions/<name>/tests/`
 - Name test files `test_*.py`
