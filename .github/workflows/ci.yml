@@ -876,7 +876,7 @@ jobs:
 
       - name: Compare the frontmatter oracle with live Hugo
         run: |
-          pytest tests/test_frontmatter_splitter.py -k live_hugo -n0 -q --disable-warnings \
+          pytest tests/test_frontmatter_splitter.py -k live_hugo -n auto -q --disable-warnings \
             --durations=25 --durations-min=1.0 \
             -o junit_family=xunit1 --junitxml=junit-hugo-oracle.xml
 
