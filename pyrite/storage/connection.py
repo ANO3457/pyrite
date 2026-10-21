@@ -69,6 +69,15 @@ CORRUPT_INDEX_SUGGESTION = (
 )
 
 
+def is_index_corruption(exc: BaseException) -> bool:
+    """Distinguish a broken index from query syntax, locks and other SQL errors."""
+    code = getattr(exc, "sqlite_errorcode", 0)
+    return isinstance(exc, sqlite3.DatabaseError) and (code & 0xFF) in (
+        sqlite3.SQLITE_CORRUPT,
+        sqlite3.SQLITE_NOTADB,
+    )
+
+
 def index_file_problem(db_path: Path) -> str | None:
     """Why the index file at ``db_path`` is unreadable, judged from its header, or None.
 
@@ -152,12 +161,16 @@ class ConnectionMixin:
                 cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
                 cursor.close()
 
-            # Translate mid-command sqlite3.DatabaseError to StorageError (#1182)
+            # Translate actual corruption, preserving query and lock errors.
+            # Keep the listener free of an owner reference (engine -> self
+            # would retain every request's database through an event cycle).
+            index_path_for_errors = str(self.db_path)
+
             @event.listens_for(self.engine, "handle_error")
             def handle_db_error(exception_context):
                 orig = exception_context.original_exception
-                if isinstance(orig, sqlite3.DatabaseError):
-                    err = StorageError(f"Database error at {self.db_path}: {orig}")
+                if is_index_corruption(orig):
+                    err = StorageError(f"Database error at {index_path_for_errors}: {orig}")
                     err.suggestion = CORRUPT_INDEX_SUGGESTION
                     raise err from orig
 
@@ -363,6 +376,8 @@ class ConnectionMixin:
             try:
                 yield cursor
             except sqlite3.DatabaseError as exc:
+                if not is_index_corruption(exc):
+                    raise
                 err = StorageError(f"Database error at {self.db_path}: {exc}")
                 err.suggestion = CORRUPT_INDEX_SUGGESTION
                 raise err from exc

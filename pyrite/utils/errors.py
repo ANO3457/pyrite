@@ -784,14 +784,13 @@ class PyriteCLIGroup(TyperGroup):
             raise raised
         if isinstance(raised, PyriteError | ValueError):
             return _error_answer(_refusal_payload(raised), fmt)
-        import sqlite3
+        if raised is not None:
+            from ..storage.connection import CORRUPT_INDEX_SUGGESTION, is_index_corruption
 
-        if isinstance(raised, sqlite3.DatabaseError):
-            from ..storage.connection import CORRUPT_INDEX_SUGGESTION
-
-            err = StorageError(f"Database error: {raised}")
-            err.suggestion = CORRUPT_INDEX_SUGGESTION
-            return _error_answer(_refusal_payload(err), fmt)
+            if is_index_corruption(raised):
+                err = StorageError(f"Database error: {raised}")
+                err.suggestion = CORRUPT_INDEX_SUGGESTION
+                return _error_answer(_refusal_payload(err), fmt)
         if raised is None and type(result) is Outcome and result is guard.returned:
             return _outcome_answer(result, fmt)
 

@@ -316,6 +316,18 @@ class TestInteriorPageCorruptionRefusal:
     """Interior page corruption passes the open-time header probe; any mid-command
     sqlite3.DatabaseError must refuse with STORAGE_ERROR (#1182)."""
 
+    def test_non_corruption_query_errors_keep_their_sqlite_identity(self, tmp_path):
+        from sqlalchemy.exc import OperationalError
+
+        with PyriteDB(tmp_path / "index.db") as db:
+            with pytest.raises(OperationalError) as caught:
+                db.execute_sql("SELECT nonexistent_column FROM entry")
+            assert caught.value.orig.sqlite_errorcode == sqlite3.SQLITE_ERROR
+            with pytest.raises(sqlite3.OperationalError) as raw:
+                with db._raw_cursor() as cursor:
+                    cursor.execute("SELECT nonexistent_column FROM entry")
+            assert raw.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
+
     @pytest.fixture
     def corrupt_interior_page_index(self, scratch_home: dict[str, Path]) -> dict[str, Path]:
         for i in range(10):
