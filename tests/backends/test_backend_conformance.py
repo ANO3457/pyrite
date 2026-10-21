@@ -98,6 +98,31 @@ class TestEntryLifecycle:
         ids2 = {e["id"] for e in page2}
         assert ids1.isdisjoint(ids2)
 
+    def test_list_entries_issues_two_statements_not_n_plus_one(self, backend_with_db):
+        """list_entries(limit=50) issues two statements: 1 for entries, 1 for batch tags (#1044)."""
+        from sqlalchemy import event
+
+        backend, db = backend_with_db
+        for i in range(50):
+            backend.upsert_entry(_make_entry(f"e{i:02d}", kb_name="test", tags=[f"tag{i % 5}"]))
+
+        statement_count = 0
+
+        def count_statement(conn, cursor, statement, parameters, context, executemany):
+            nonlocal statement_count
+            statement_count += 1
+
+        event.listen(db.engine, "before_cursor_execute", count_statement)
+        try:
+            entries = backend.list_entries(kb_name="test", limit=50)
+            assert len(entries) == 50
+            for e in entries:
+                num = int(e["id"][1:])
+                assert e["tags"] == [f"tag{num % 5}"]
+            assert statement_count == 2, f"Expected 2 queries, got {statement_count}"
+        finally:
+            event.remove(db.engine, "before_cursor_execute", count_statement)
+
     def test_count_entries(self, backend):
         for i in range(3):
             backend.upsert_entry(_make_entry(f"e{i}"))
