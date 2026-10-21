@@ -392,19 +392,19 @@ class TestGraph:
         backend.upsert_entry(
             _make_entry(
                 "stale-source",
-                links=[{"target": "target", "relation": "transclusion"}],
+                links=[{"target": "target", "relation": "late_declared_relation_621"}],
             )
         )
 
         declared_types = dict(provenance.get_all_relationship_types())
-        assert "transclusion" not in declared_types
+        assert "late_declared_relation_621" not in declared_types
         monkeypatch.setattr(
             provenance,
             "get_all_relationship_types",
             lambda: {
                 **declared_types,
-                "transclusion": {
-                    "inverse": "transcluded_by",
+                "late_declared_relation_621": {
+                    "inverse": "late_inverse_621",
                     "description": "Declared after the link was indexed",
                 },
             },
@@ -422,9 +422,9 @@ class TestGraph:
                 "inverse_relation": None,
             },
             "stale-source": {
-                "forward_relation": "transclusion",
+                "forward_relation": "late_declared_relation_621",
                 "relation": "related_to",
-                "inverse_relation": "transcluded_by",
+                "inverse_relation": "late_inverse_621",
             },
         }
 
@@ -497,16 +497,16 @@ class TestGraph:
         # Setup: entries in default 'test' KB
         self._setup_linked_entries(backend)  # a->b->c all in 'test'
 
-        # Filter to 'test' — should get a, b, c (all linked)
+        # Filter to 'test' â€” should get a, b, c (all linked)
         graph = backend.get_graph_data(kb_name="test", readable_kbs=UNSCOPED)
         node_kbs = {n["kb_name"] for n in graph["nodes"]}
         assert node_kbs == {"test"}, f"Expected only test nodes, got {node_kbs}"
 
-        # Filter to nonexistent KB — should get nothing
+        # Filter to nonexistent KB â€” should get nothing
         graph2 = backend.get_graph_data(kb_name="nonexistent", readable_kbs=UNSCOPED)
         assert len(graph2["nodes"]) == 0
 
-        # Without filter — should get all linked entries
+        # Without filter â€” should get all linked entries
         graph3 = backend.get_graph_data(readable_kbs=UNSCOPED)
         assert len(graph3["nodes"]) >= 2
 
@@ -881,7 +881,7 @@ class TestOneRowPerWrittenLink:
 
 
 # =========================================================================
-# Embeddings (basic — only tests interface, not actual model)
+# Embeddings (basic â€” only tests interface, not actual model)
 # =========================================================================
 
 
@@ -889,7 +889,7 @@ class TestEmbeddingInterface:
     """Tests the embedding API surface. Actual vector search requires sqlite-vec."""
 
     def test_has_embeddings_false_initially(self, backend):
-        # May be False if vec not available, or True with no data — both valid
+        # May be False if vec not available, or True with no data â€” both valid
         result = backend.has_embeddings()
         assert isinstance(result, bool)
 
@@ -916,7 +916,7 @@ class TestEmbeddingInterface:
 
 
 # =========================================================================
-# Semantic filters — the vector leg takes the keyword leg's filter set (#56)
+# Semantic filters â€” the vector leg takes the keyword leg's filter set (#56)
 # =========================================================================
 
 
@@ -1072,7 +1072,7 @@ class TestSemanticFilterConformance:
 
         Unlike the others it is a default *exclusion* rather than a value the
         caller supplies, which is how it stayed in the keyword branch while
-        every other filter was threaded through — archived entries reached
+        every other filter was threaded through â€” archived entries reached
         semantic and hybrid results while the contract promised they could not.
         """
         backend = embedded_backend
@@ -1092,7 +1092,7 @@ class TestSemanticFilterConformance:
         """A cutoff that excludes nothing must not reduce the rows returned.
 
         Postgres applied the cutoff in Python *after* ``LIMIT``, so a
-        culled row was one the LIMIT had already spent — it under-returned
+        culled row was one the LIMIT had already spent â€” it under-returned
         where sqlite escalates its ``k``. Asking for as many rows as match,
         with a cutoff wide enough to exclude none, must give all of them on
         every backend.
@@ -1120,7 +1120,7 @@ class TestSemanticFilterConformance:
 
 
 # =========================================================================
-# Similarity — one number, the same on every backend (#668)
+# Similarity â€” one number, the same on every backend (#668)
 # =========================================================================
 
 
@@ -1316,7 +1316,7 @@ class TestSimilarityConformance:
 
 
 # =========================================================================
-# KNN budget — escalation must stay inside the backend's own k ceiling (#56)
+# KNN budget â€” escalation must stay inside the backend's own k ceiling (#56)
 # =========================================================================
 
 
@@ -1329,7 +1329,7 @@ class TestSemanticKnnBudget:
         provided 16384 and the limit is 4096
 
     An escalation loop clamped only against the table's row count therefore
-    raises on any index bigger than the cap — which reaches users as an HTTP
+    raises on any index bigger than the cap â€” which reaches users as an HTTP
     400 ``SEARCH_FAILED``, an unhandled exception out of MCP ``kb_search`` and
     a silent keyword-only fallback in the AI endpoint. Postgres has no such
     ceiling and passes these trivially. Selective SQLite predicates are now
@@ -1655,7 +1655,7 @@ class TestSemanticKnnEscalation:
             entry_type = "needle" if i == 199 else "note"
             backend.upsert_entry(_make_entry(f"h{i}", entry_type=entry_type))
             # Distances grow with i but stay well inside the default
-            # ``min_similarity`` cutoff, so ordering — not culling — is what
+            # ``min_similarity`` cutoff, so ordering â€” not culling â€” is what
             # puts the needle out of reach of the first ``k``.
             vec = [0.05] * 384
             vec[0] += 0.0001 * i
