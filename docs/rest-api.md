@@ -78,8 +78,7 @@ curl -H "X-API-Key: my-key" "http://127.0.0.1:8088/api/entries/hello?kb=test-kb"
 curl -X POST -H "X-API-Key: my-key" -H "Content-Type: application/json" -d '{"kb":"test-kb","entry_type":"note","title":"REST example","body":"Example body"}' "http://127.0.0.1:8088/api/entries"
 ```
 
-The entry route needs a full KB name when an ID is ambiguous. An unknown body
-key is refused rather than silently ignored; put optional custom entry data in
-its documented field. The API reference at `/docs` and `/redoc` owns the route
+The entry route needs a full KB name when an ID is ambiguous. Use only the documented body keys and put optional custom entry data in its
+documented field; the running OpenAPI schema describes accepted fields. The API reference at `/docs` and `/redoc` owns the route
 list. Format negotiation is route-specific: inspect the operation in OpenAPI
 instead of assuming every route accepts the CLI's `--format` choices.
