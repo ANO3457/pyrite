@@ -28,54 +28,6 @@ knowledge easier to trust, for its operator first and for invited readers next?
 
 ---
 
-## The working plan (approved 2026-10-03, maintainer)
-
-**How the work runs.** One core theme (write path, index, identity) in flight
-at a time; small independent fixes run alongside. Every theme is groomed
-against [[design]] (principle at stake, the user's model and the
-implementation model, its cluster) before code; a spike wherever scope or
-approach is uncertain; the Andon cord stops dispatch when two themes fail the
-same way; a cold read for the gate, storage, the write path and security; a
-retro after about five landed themes, counting churn first.
-
-**Maintainer decisions that gate work:** accept ADR-0041 (the 0.25.7
-message); accept ADR-0038 with its identity amendment (reconcile, identity);
-ADR-0042 questions 1 and 2 (write path phase 2); the principle 4 sentence on
-reads and derived values.
-
-**Track A: the first hour and agent friction.**
-- A1, 0.25.7 (Oct 8): #582/#647, the contributor PRs #649 and #652 (LF line
-  endings; add `.gitattributes`), the 20-minute tutorial #662 as the release's
-  acceptance test, #583 with a known-issues page, #595, #664. Cut line: #232,
-  #43.
-- A2, 0.25.8, under the CLI contract (#303): `--fields` in every format and a
-  compact default (#667), `sw adrs` sorted with supersession (#666), `orient`
-  recent from content dates (#670); a spike first for search scores and "no
-  strong match" (#668).
-- A3: contributor setup (#665, groomed and decomposed), Pyrite's own KB healthy
-  on `dev` with a CI check (#669), #672, #671, #673 (reproduce first), a spike
-  on making the skills findable (#674), #365.
-- A4: rerun the contributor hallway test on three models, repository attached,
-  after A1 and A3.
-
-**Track B: refactoring toward 0.26, "your files, exactly".** B1 #661
-follow-ups; B2 #659 cleanup, one PR per area (spike first on which migration
-path is live); B3 the divergence register as expected-failure conformance tests
-(ADR-0042 phase 1); B4 `ids missing` and `ids pin`, one release before the
-identity switch (0.25.9); B5 the index reconcile (ADR-0038 steps 2 to 5); B6 the
-write path in phases (spike first on concurrency, the per-file lock and `/` in
-ids); B7 derived task completion, then the rollup hook goes; B8 the ADR-0045
-protocol inventory (done: spike 2, recorded in ADR-0045), then aliases as schema
-data, `field_aliases:` (#697, before B6 lands; maintainer, 2026-10-03).
-
-**Track C: releases.** 0.25.7: A1, ADR-0041, the tutorial, the alpha
-announcement. 0.25.8: A2, A3, B1, first B2 removals. 0.25.9: passage
-embedding, B4, B3. 0.26: B8's aliases (#697) ahead of B6, then B5, B6, B7. 0.27 and 0.28: the
-authorization design, then the rest of B8 and the alpha contracts.
-
-**For contributors:** #664, #671, #666, #670, #672, groomed for strangers and
-left unclaimed a few days.
-
 ## The release line (redesigned 2026-10-02, maintainer)
 
 **Design.** A KB is Markdown files with YAML frontmatter on disk, usable by any
@@ -94,7 +46,8 @@ community needs and feedback.
 |---|---|---|
 | 0.25.7 | The first hour works; the alpha announcement | 2026-10-08 |
 | 0.25.8 | The CLI contract for agents | 2026-10-15 |
-| 0.26 | Your files, exactly | 2026-10-22 |
+| 0.26.0 | Your files, exactly | 2026-10-22 |
+| 0.26.1 | Remaining passage-embedding, link and cross-KB work | undated |
 | 0.27 | One operator, many users | undated |
 | 0.28 | Alpha plugin and API contracts | undated |
 
@@ -110,15 +63,19 @@ milestones carry the issues; this table carries the promise and the gate.
   error spelling (#610), create (#86), the echo rule against the file (#569),
   tiers in tool descriptions (#68), `.claude/` by audience (#244). Left open
   for contributors: #54, #52, #59, #572, #200.
-- **0.26: your files, exactly.** The scope previously planned as 0.25.9
-  is folded into 0.26.0; no 0.25.9 release is scheduled. **Done when:** the
-  index reconciles the files (ADR-0038), identity and health report their
-  state, and writes apply only the requested operations (ADR-0042 and
-  ADR-0051). See [the changelog](../CHANGELOG.md) for the release contents.
+- **0.26.0: your files, exactly (shipped).** First the index tells the truth:
+  the ADR-0038 reconcile (#6, #7, #484 to #487, #495, #51, #22), identity
+  (#639, #494, #488 to #490), and health (#593). Writes change only what was
+  asked (ADR-0042: #637, #638, #640, #178, #628, explicit format and migrate
+  commands), alongside whole-entry passage embedding
+  ([[embed-the-whole-entry-in-passages-by-default]], #594, #194) and cross-KB
+  link and read support (#124, #622, #623).
+- **0.26.1.** What is left from the 0.25.9 / 0.26 line: #627, #64, #468 (on
+  the 0.26.1 milestone), #62 and #621.
 - **0.27: one operator, many users.** Design first: the authorization model
   and its executable matrix (#587), the security review (#586), the registry
   in config under the operator (#539, #521, #565, #602, #382), one landing rule
-  for writes, the `published` flag. Two planes: users read and write entries
+  for writes, ~~the `published` flag~~ (`/site` was removed in 0.26.0). Two planes: users read and write entries
   per KB by grant; everything else belongs to the operator. Capabilities
   granted by the operator and configured in a user-owned file are the
   direction, not this release.
@@ -596,7 +553,7 @@ requested effect that did not happen exits non-zero, an ambiguous id is an error
   `PluginContext` half of #384.
 - Needs design first: #303, #200, #22, #59.
 
-### History: the planned 0.25.9 index work (folded into 0.26.0)
+### History: the planned 0.25.9 index work (shipped in 0.26.0)
 
 **Done when:** after any change made outside Pyrite (an edit that keeps its mtime, a
 time-preserving copy, a `git mv`, a delete, a duplicate id), one command makes the
