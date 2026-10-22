@@ -752,3 +752,18 @@ change, and in the README.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same license as the project.
+
+### Refresh the fallback type baseline before a release
+
+Before preparing the release commit, run the same pinned mypy environment as
+CI, then lower its no-base fallback (issue#1103):
+
+```bash
+mypy pyrite/ --ignore-missing-imports > mypy-release.out || true
+python scripts/mypy_ratchet.py mypy-release.out --update
+```
+
+Review and include the resulting `.mypy-baseline.json` in the release PR.
+A crash or any per-file rise refuses the update: fix those errors instead of
+using `--allow-increase`. Normal PR/push runs still compare with their actual
+base commit, so refreshing this fallback never hides a regression in a PR.
