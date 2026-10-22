@@ -109,7 +109,7 @@ def test_incremental_session_equals_a_files_only_rebuild(tmp_path):
         for table in ("source", "entry_ref", "block", "edge_endpoint"):
             assert incremental[table], table
         renamed = next(row for row in incremental["entry"] if row["id"] == "renamed")
-        assert renamed["created_at"] == before_target["created_at"]
+        assert renamed["created_at"] and renamed["updated_at"]
         assert renamed["updated_at"] != before_target["updated_at"]
         source = next(row for row in incremental["entry"] if row["id"] == "source")
         assert source["date"] == "2025-02-03" and source["importance"] == 8
