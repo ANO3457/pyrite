@@ -22,9 +22,9 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import (
-    CONFIG_FILE,
     Repository,
     auto_discover_kbs,
+    current_config_file,
     load_config,
     open_registration_warning,
     save_config,
@@ -293,7 +293,7 @@ def ci_command(
     validated.
     """
     from ..services.llm_service import LLMService
-    from ..services.qa_service import QAService
+    from ..services.qa_service import QAService, require_qa_tier
     from ..utils.errors import cli_error_from
 
     config = load_config()
@@ -302,8 +302,9 @@ def ci_command(
     # KB to validate: `ci` never says "pass" for a tier that did not run (#795).
     llm_service = LLMService(config.settings) if tier >= 2 else None
     try:
-        # require_tier reads no database; no index is opened for a refused tier.
-        QAService(config, None, llm_service=llm_service).require_tier(tier)  # type: ignore[arg-type]
+        require_qa_tier(
+            tier, llm_available=lambda: bool(llm_service and llm_service.status()["configured"])
+        )
     except PyriteError as exc:
         cli_error_from(exc, output_format)
     # Resolve KBs as the other commands do, DB-registered ones merged, so a
@@ -490,10 +491,11 @@ def list_kbs(
 @app.command("config")
 def show_config():
     """Show current configuration."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Subscriptions:[/bold] {len(config.subscriptions)}")
@@ -1033,7 +1035,16 @@ def generate_readme_cmd(
                     suggestion="Run `pyrite kb list` to see available KBs.",
                 )
             readme_path = kb_config.path / "README.md"
-            readme_path.write_text(readme, encoding="utf-8")
+            from ..utils.errors import cli_error_from
+            from ..utils.kb_files import KBFiles
+
+            try:
+                # A README.md that is a link out of the KB is not written through.
+                KBFiles(readme_path.parent).write_bytes(readme_path, readme.encode("utf-8"))
+            except PyriteError as e:
+                cli_error_from(e)
+            except OSError as e:  # a hard-linked README.md (`HardLinked`)
+                cli_error(str(e), error_code="STORAGE_ERROR")
             console.print(f"[green]Written:[/green] {readme_path}")
         elif output:
             output.write_text(readme, encoding="utf-8")

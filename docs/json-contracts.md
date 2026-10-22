@@ -60,8 +60,8 @@ task-graph tools (in the tool result); REST `GET /api/entries/{id}/blocks`,
 `kb`, answer `409` with `candidate_kbs` in `detail`. `candidate_kbs` names
 only KBs the caller can read: a private KB holding the same id is neither
 listed nor a cause of the refusal. One readable match still answers; zero is
-still `NOT_FOUND`, except on MCP `kb_get` and `kb_read_body`, which answer
-`ENTRY_NOT_FOUND` (`legacy_error_code: "NOT_FOUND"`, #761, #984). Only indexed copies are counted:
+still a not-found refusal; MCP spellings are in the
+[MCP code transitions](#mcp-code-transitions) table. Only indexed copies are counted:
 an id indexed in one KB with a not-yet-indexed `<id>.md` in another answers
 from the indexed KB (the
 by-name read runs only when no readable KB's index holds the id, #753). To
@@ -87,66 +87,58 @@ The admin-tier MCP tools `kb_registry_health`, `kb_registry_reindex` and
 `kb_registry_remove` also bypass the resolver: an unknown KB answers
 `NOT_FOUND`, not `KB_NOT_FOUND` (#610).
 
-**MCP only, removed in 0.27: `legacy_error_code`.** Where a class's code
-changed on MCP because REST's more specific code won (ADR-0037 theme 2:
-`ENTRY_NOT_FOUND`/`KB_NOT_FOUND` replacing `NOT_FOUND`, `KB_READ_ONLY`
-replacing `READ_ONLY`, `INVALID_FRONTMATTER` replacing `VALIDATION_FAILED`
-for `FrontmatterError` specifically, `CONFIG_CONFLICT`/`CONFIG_SAVE_REFUSED`
-replacing `CONFIG_ERROR`, `STORAGE_ERROR`/`PLUGIN_ERROR` replacing
-`REQUEST_REFUSED`, and others), the MCP tool response carries the *old*
-code in `legacy_error_code` until 0.27, alongside the new
-`error_code` (use `error_code`). A class whose REST and MCP codes already agreed gets no
-`legacy_error_code` key at all — that includes the base `ValidationError`
-itself: its code is `VALIDATION_FAILED` on every transport, unchanged (see
-"Write refusals" below). The CLI has no transition field, and no CLI write
-command has adopted the new class-level codes yet — see "Write refusals".
+### MCP code transitions
 
-Two more joined in 0.25.7 (#66), both `KB_NOT_FOUND` with
-`legacy_error_code: "NOT_FOUND"`: the refusal a caller with per-KB scoping
-gets from any MCP tool, prompt or resource for a KB outside its readable
-set (the answer is the same whether the KB is private or does not exist),
-and `kb_orient`'s answer for a name that is not a KB. Since #952 both are
-one refusal from the one KB resolver (`services/kb_resolver.py`), on every
-surface, and it carries two things beside the contract's keys: a
-`suggestion` and a `did_you_mean` list. For an unknown name the suggestion
-is one static sentence ("To list the KBs you can read, call kb_orient (MCP)
-or `pyrite orient` (CLI) with no KB name."), the same for a private and an
-absent name and naming no KB; `did_you_mean` holds at most three near-match
-KB names for an unscoped caller (an operator key, auth off, the CLI) and is
-empty for a scoped one, whose readable set is one `kb_orient` call away. For
-the **shortname** of a KB the caller may read -- link syntax only
-(`[[short:id]]`), refused everywhere else -- the suggestion says so and
-`did_you_mean` names the full name, for every caller. A `kb_name` that is not
-a string is `VALIDATION_FAILED`; `null` and a blank string are "no name".
+MCP reports the class-level `error_code`. Where its old code differed,
+`legacy_error_code` carries that old spelling; an unchanged code has no
+transition field. The CLI has no transition field. This table is the single
+reference for the tool-specific transitions still accepted in 0.26.0.
+The maintainer set removal to 0.27; these compatibility spellings remain
+accepted in 0.26 (see `changelog.d/deprecations-retargeted.changed.md`).
+The evidence column records the introduction where known, rather than
+inventing a release date for older class-level transitions.
 
-Two more in 0.25.8 (#761): MCP `kb_get` and `kb_update` answer a missing
-entry with `ENTRY_NOT_FOUND` and a KB that does not exist with
-`KB_NOT_FOUND`, both `retryable: false`. Their old codes are in
-`legacy_error_code`: `NOT_FOUND` for `kb_get`, and `UPDATE_FAILED` for
-`kb_update`, which used to answer both with `retryable: true`. The
-`UPDATE_FAILED` legacy code for a missing KB holds for an unscoped caller
-only (an operator key, auth off), the one whose call reached the old
-handler; a scoped caller is refused by the resolver before the handler,
-with `legacy_error_code: NOT_FOUND`, as on every other tool (#952). The
-other `kb_update` refusals answer their class's own code, each with
-`legacy_error_code: UPDATE_FAILED`, the one code the old handler gave
-everything it did not name: `CONFLICT` (a write that lost the race for its
-file, `retryable: true`) and `STORAGE_ERROR` (a storage fault on the write;
-`retryable: true` only for a lock held too long) -- see "Update fields"
-below; a `VALIDATION_FAILED` refusal carries no legacy code (the code did
-not change). Any other `kb_update` failure is still `UPDATE_FAILED`,
-`retryable: true`.
+| Tool or refusal | Condition | `error_code` | `legacy_error_code` | `retryable` | Added / evidence | Leaves in |
+|---|---|---|---|---|---|---|
+| `kb_get` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | 0.25.8 (#761) | 0.27 |
+| `kb_get` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | 0.25.8 (#761) | 0.27 |
+| `kb_update` | Missing entry | `ENTRY_NOT_FOUND` | `UPDATE_FAILED` | false | 0.25.8 (#761) | 0.27 |
+| `kb_update` | Unknown KB, unscoped caller | `KB_NOT_FOUND` | `UPDATE_FAILED` | false | 0.25.8 (#761) | 0.27 |
+| `kb_update` | Unknown KB, scoped caller | `KB_NOT_FOUND` | `NOT_FOUND` | false | KB resolver (#952) | 0.27 |
+| `kb_update` | File changed during update | `CONFLICT` | `UPDATE_FAILED` | true | #990 | 0.27 |
+| `kb_update` | Storage fault | `STORAGE_ERROR` | `UPDATE_FAILED` | only for a busy database | #990 | 0.27 |
+| `kb_read_body` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| `kb_read_body` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| `kb_delete` | Missing entry | `ENTRY_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| `kb_delete` | Unknown KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | #984 (present in 0.26.0) | 0.27 |
+| KB resolver (including `kb_orient`) | Unknown or unreadable KB | `KB_NOT_FOUND` | `NOT_FOUND` | false | 0.25.7 (#66), unified by #952 | 0.27 |
+| Domain refusal | Read-only KB | `KB_READ_ONLY` | `READ_ONLY` | false | ADR-0037 theme 2 | 0.27 |
+| Domain refusal | Invalid frontmatter | `INVALID_FRONTMATTER` | `VALIDATION_FAILED` | false | ADR-0037 theme 2 | 0.27 |
+| Domain refusal | Conflicting / refused config save | `CONFIG_CONFLICT` / `CONFIG_SAVE_REFUSED` | `CONFIG_ERROR` | false | ADR-0037 theme 2 | 0.27 |
+| Domain refusal | Storage / plugin fault | `STORAGE_ERROR` / `PLUGIN_ERROR` | `REQUEST_REFUSED` | only busy storage is retryable | ADR-0037 theme 2 | 0.27 |
 
-Two more (#984): MCP `kb_read_body` and `kb_delete` answer a
-missing entry with `ENTRY_NOT_FOUND` and a KB that does not exist with
-`KB_NOT_FOUND`, both `retryable: false`, as `kb_get` and `kb_update` do. A
-missing entry keeps `NOT_FOUND` in `legacy_error_code` on both tools: that
-was `kb_read_body`'s answer for everything, and `kb_delete`'s own answer for
-an entry it did not find. A missing KB keeps `NOT_FOUND` on `kb_delete` too:
-the resolver refused that call before it reached the handler, for every
-caller, so `DELETE_FAILED` was never that caller's answer (unlike an
-unscoped `kb_update`, which keeps `UPDATE_FAILED`). Any other `kb_delete`
-failure is still `DELETE_FAILED`, `retryable: true`.
+The scoped update refusal happens before the old handler; its legacy code
+therefore differs from the unscoped update row. A base `ValidationError`
+remains `VALIDATION_FAILED` without a legacy field. Other unnamed update
+and delete failures retain their existing `UPDATE_FAILED` / `DELETE_FAILED`
+codes with `retryable: true`.
+
+The KB resolver returns `suggestion` and `did_you_mean` beside the contract's
+keys. For an unknown name its static suggestion names no KB. Near matches
+are shown only to an unscoped caller; a scoped caller gets an empty list.
+A readable KB's shortname is accepted only in link syntax, and a refusal
+explains that syntax. Non-string KB names are `VALIDATION_FAILED`; null or
+blank means no name. These details apply equally to CLI and REST resolution.
+
+### Deprecated, still accepted
+
+- `legacy_error_code`: match `error_code` instead. Leaves in 0.27.
+- Search `distance`: read `similarity` instead. Leaves in 0.27.
+- `-f` as `--format`: spell `--format` explicitly. Leaves in 0.27.
+- `export --format`: use `export --target`. Leaves in 0.27.
+
+The CLI warnings also name 0.27. This reference follows that maintainer
+decision; it does not change warning strings.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape
@@ -173,6 +165,25 @@ Source of truth: `pyrite/exceptions.py` (the codes), `pyrite/utils/errors.py`
 (`build_error`, `cli_error`, `cli_error_from`), `pyrite/server/errors.py`
 (REST's central handler), `pyrite/server/mcp_server.py` (`_refusal`). The CLI
 root's own codes, `USAGE_ERROR` and `ERROR`, are in `pyrite/utils/errors.py`.
+
+## Server and account codes
+
+These are the central REST mappings (`pyrite/server/errors.py`); an endpoint
+that handles a refusal itself can retain its documented route-specific status.
+CLI and MCP report the code without an HTTP status.
+
+| Code | Surface / central HTTP status | Remedy |
+|---|---|---|
+| `KB_DEFINED_IN_CONFIG` | REST KB metadata changes: 409 | Edit the KB in `config.yaml`, then restart; requests cannot replace file-owned metadata. |
+| `KB_PROTECTED` | REST protected KB operation: 403 | Choose an unprotected KB or ask the operator to change its protection. |
+| `LAST_ADMIN` | REST account role change: 409 | Keep at least one administrator; promote another account first. |
+| `FORBIDDEN` | REST authorization: 403; MCP refusal | Ask the operator for the required grant. |
+| `UNAUTHENTICATED` | REST authentication: 401; MCP refusal | Supply valid credentials before retrying. |
+| `QUERY_TOO_LONG` | Search, REST 422; CLI/MCP | Shorten the query; it is not silently truncated. |
+| `INVALID_REF` | Git-ref validation, REST 422; CLI/MCP | Use a valid git reference. |
+| `CLIPPER_BLOCKED_HOST` | Clipper, central REST mapping 500 | Choose an allowed URL; ask the operator about the host policy. |
+| `BRANDING_INVALID` | Branding configuration, REST 500 | Ask the operator to repair `branding.yaml`; repeating the request will not fix configuration. |
+| `INTERNAL_ERROR` | Unclassified domain failure, REST 500 | Consult the server log; do not assume retrying is safe. |
 
 ## Write refusals (create, import, update)
 
@@ -211,7 +222,7 @@ is reproduced by a command in "Reproduce the codes" below, which CI runs.
 | `error_code` | Meaning | What to do |
 |---|---|---|
 | `KB_NOT_FOUND` | the KB name is not registered, or, for a scoped caller, not readable (the same answer, byte for byte), or it is a KB's **shortname**: a shortname is link syntax only (`[[short:id]]`), and `-k`, REST `kb` and MCP `kb_name` take the full name (#952). One resolver answers every surface; the refusal carries `did_you_mean` (near matches drawn only from the KBs you can read; for a readable KB's shortname, its full name) and a `suggestion`/`hint`. A blank name names no KB and is never this code: a command that needs one answers `VALIDATION_FAILED`. The one exception is a blank REST path segment (`/api/kbs/%20/permissions`): a path that must name a KB and names none is `KB_NOT_FOUND`. Every CLI write command (`create`, `update`, `delete`, `link`) reports it. | Use a name from `did_you_mean`, or `pyrite orient` (`kb_orient`) with no KB to list the KBs you can read. |
-| `NOT_FOUND` | the entry id does not exist: CLI `get`, `update`, `delete`, `link`. Also a path you named as input (`--body-file`, `--schema-file`, `--alias-file`, `--file`, `import`'s and `add`'s file) that does not exist; a directory there is `VALIDATION_FAILED` (#923). `pyrite backlinks` and `pyrite-read backlinks` on an id that no entry has and nothing links to answer `ENTRY_NOT_FOUND` (the class's code, today; #610 settles the spelling). An id that is only linked to (`[[ghost-page]]`) is answered with its linking entries. MCP `kb_get` and `kb_update` answer `ENTRY_NOT_FOUND`, `retryable: false`, with `legacy_error_code` `NOT_FOUND` and `UPDATE_FAILED` respectively (see "MCP only, removed in 0.27" above, #761); `ENTRY_NOT_FOUND` is also the REST code for the class. | `pyrite search <term> -k <kb>` to find the id. |
+| `NOT_FOUND` | the entry id does not exist: CLI `get`, `update`, `delete`, `link`. Also a path you named as input (`--body-file`, `--schema-file`, `--alias-file`, `--file`, `import`'s and `add`'s file) that does not exist; an empty path or a non-regular file (directory, FIFO or device) is `VALIDATION_FAILED` before command work (#923, #1165). `pyrite backlinks` and `pyrite-read backlinks` on an id that no entry has and nothing links to answer `ENTRY_NOT_FOUND` (the class's code, today; #610 settles the spelling). An id that is only linked to (`[[ghost-page]]`) is answered with its linking entries. For MCP spellings and legacy codes, see [MCP code transitions](#mcp-code-transitions); `ENTRY_NOT_FOUND` is also the REST class code. | `pyrite search <term> -k <kb>` to find the id. |
 | `AMBIGUOUS` | the id was given without a KB (or with a blank `-k`) and more than one KB you can read holds it (see "`AMBIGUOUS`" above). The error lists them in `candidate_kbs`; REST answers `409`. | Repeat the command with `-k <kb>` (`kb` on REST, `kb_name` on MCP), one of `candidate_kbs`. |
 | `UNDECLARED_TYPE` | the KB's `kb.yaml` declares types and this is not one of them. Core types (`note`, `person`, …) are **not** exempt. Override with `allow_undeclared` (MCP, REST body or import query) / `--allow-undeclared` (CLI). The error carries `declared_types` on MCP and REST. | Use a declared type (`pyrite kb schema show <kb>`), or pass the override. |
 | `ENTRY_EXISTS` | the id (given, or derived from the title) already exists. Create never replaces; use update. REST answers `409`. | `update` it, or choose another title or id. |
@@ -219,6 +230,8 @@ is reproduced by a command in "Reproduce the codes" below, which CI runs.
 | `VALIDATION_FAILED` | anything else the entry model refuses (an event without a date, a missing title), a `managed_fields` key in an update, a field Pyrite or the type manages on a create at any spelling (`status_change_log`, `adr_number`, `file_path`, ...: top level, dotted `metadata.k`, under `metadata`, or an alias of the field; REST `POST` refuses only the `metadata` spelling, see above; #1010), an `entry` key holding a whole `kb_get` envelope sent to `kb_update` or REST `PUT` (send `result["entry"]`'s fields at the top level; the file is left untouched; #1024), and the ADR-0034 truncated-body refusal below. Unchanged by ADR-0037 theme 2 (2026-09-25): REST, MCP and the CLI already agreed on this code, so no `legacy_error_code`. | Fix the named field. For a truncated body, reassemble it with `kb_read_body` and retry without the marker. |
 | `CONFLICT` | the file kept changing between the update's read and its replace, five tries in a row; nothing was written. REST answers `409`; MCP and the CLI use the shape above. | Re-read the entry, then repeat the update. |
 | `STORAGE_ERROR` | a storage fault on the write (REST `500`). The message is fixed text; the cause is in the server log. | Read `retryable`: `true` only for a locked database, so wait and repeat; `false` needs an administrator. |
+| `OUTSIDE_KB_ROOT` | a write to a KB entry whose path leaves the KB root: the entry file, or a folder on its path, is a symbolic link to somewhere outside the KB's folder, or a configured path (a type's `subdirectory`, a `file_pattern`) leads outside it. The writer opens each folder beneath the KB root without following a link, so a folder swapped for a link while the write runs is refused the same way. Every write refuses it before anything is written: `create`, `update` (including `qa fix`'s), `rename`, `delete`, `schema migrate`, the reconcile move, software-kb's `migrate-standards`. An update used to write through such a link to its target. A link whose target is inside the KB is still written through, and stays a link. The message names no path; the server log does. Two neighbours keep their codes: a write to a file with more than one hard link is `STORAGE_ERROR` (its other name may be outside the KB; the message names the KB-relative path only), in a KB under git or not, and a `rename` of an entry whose file is a symbolic link is `VALIDATION_FAILED` with the reason (the link's target is never removed). | Replace the link with the file or folder it points to, inside the KB, then retry. |
+| `LANDING_REFUSED` | a write with no place to land under the KB's `landing` (ADR-0044 §1): the KB is `landing: review` and the writer's change set cannot be made (no git repository, no user to own it), a write that names several KBs one of which lands in a change set, or a database-only record asked of a change set (a review verdict: `sw_review`, `POST`/`DELETE /api/reviews` on a `landing: review` KB), which the change set could not carry through its merge; that one is available to the operator, or after the merge. Nothing is written to the KB's files or its index, and a write never falls back to them. The refusals above come before the working copy is made, so none leaves a worktree or branch behind. Two refusals after it is made are possible in principle (its config or its index cannot be opened); they leave the new working copy, unused, at main's commit. | Write to one KB at a time, or ask the operator about the KB's landing. |
 | `QUERY_SYNTAX` | (`search`, not a write, but what an agent hits right after a failed write) a token containing `-`, `:` or `.` used beside `AND`/`OR`/`NOT` or a quote, unquoted. | Quote the token yourself: `"bar-baz"`. |
 
 All are `retryable: false` except `CONFLICT` (always `true`) and `STORAGE_ERROR`
@@ -228,6 +241,17 @@ with status `400` (`409` for `ENTRY_EXISTS`). REST `CONFLICT` is `409` with
 `{"detail": {"code", "message"}}`, no `retryable` key; treat it as retryable.
 `STORAGE_ERROR` is `500` and carries `retryable`. MCP and the CLI use the error
 shape above.
+
+**Whole-request refusals (REST).** Two refusals stop an import, or any
+request, before a record is read:
+
+| status | `code` | Meaning | What to do |
+|---|---|---|---|
+| `413` | `PAYLOAD_TOO_LARGE` | the request body is larger than `settings.max_request_body_bytes` (default 32 MiB; see `docs/configuration.md`, "Server"). Applies to every route, `/auth` and `/mcp` included. Answered as soon as the body passes the limit (at once when `Content-Length` declares it); nothing is written. | Send a smaller body: split the import into several files, or ask the operator to raise the limit. |
+| `400` | `PARSE_ERROR` | `POST /api/entries/import` could not read the file in the named format (not UTF-8, or not valid JSON, YAML, CSV or markdown frontmatter). The message is Pyrite's own and names the format; the parser's detail is in the server log, not the response. Nothing is written. | Check the file's encoding and format, or pass the right `format=`. |
+
+Both answer `{"detail": {"code", "message", "retryable": false}}`; the `413`
+adds a `hint`.
 
 **Per-item results.** `kb_bulk_create`, `POST /api/entries/import` and
 `pyrite import` refuse a bad item on its own and create its siblings;
@@ -377,7 +401,7 @@ and MCP `kb_registry_health`.
 **`index health` → `double_spellings`; `qa validate` →
 `field_spelled_twice`.** `metadata` is not a field: `metadata.k` is a
 second spelling of field `k`, one level only, the same as an alias (Andon
-#994, decision A; ADR-0051, a proposed amendment to ADR-0042 decision 6). A
+#994, decision A; ADR-0051, an accepted amendment to ADR-0042 decision 6). A
 file that spells one field twice (`k:` and `metadata.k`, a field and its
 alias, or either under `metadata:`) is read one way, the field's own
 top-level name first, in the model and the index row alike, and an update
@@ -403,7 +427,7 @@ spelled it at the top level, in the model, the index row, the single-entry
 read, search and health, so `update -f importance=8` then `get` agree and
 `metadata.links` is indexed and appended to. **A single-entry read spells
 each field once, at its own name** (`pyrite get`, MCP `kb_get`, REST `GET
-/api/entries/{id}`; ADR-0051, proposed amendment 2026-10-20): a declared
+/api/entries/{id}`; ADR-0051, accepted amendment 2026-10-20): a declared
 field never appears under the read's `metadata`, which holds only keys the
 type does not declare (a backlog item's `rank` reads at `rank`, never at
 `metadata.rank`; a task's `evidence`, `status_reason` and `parked_awaiting`
@@ -705,6 +729,26 @@ pyrite create -k typed -t ticket --title "T1" -f kind=chore
 pyrite create -k notes -t event --title "An event"
 ```
 
+`OUTSIDE_KB_ROOT`, from an entry file that is a link to a file outside the KB; the file it points to keeps its bytes:
+
+<!-- expect-exit: 0 -->
+```bash
+printf -- '---\nid: away\ntype: note\ntitle: Away\n---\n\nKept.\n' > away.md
+ln -s ../away.md notes/away.md
+pyrite index sync
+```
+
+<!-- expect-exit: 1 -->
+<!-- expect-text: "error_code": "OUTSIDE_KB_ROOT" -->
+```bash
+pyrite update away -k notes --title x
+```
+
+<!-- expect-exit: 0 -->
+```bash
+grep -q '^title: Away$' away.md
+```
+
 `QUERY_SYNTAX`, from `search`:
 
 <!-- expect-exit: 1 -->
@@ -879,6 +923,10 @@ KB is also read-only). An admin can set a KB's `default_role` afterwards.
 Source of truth: `pyrite/server/endpoints/repos.py` (`_relativize_path`,
 `_repo_dict_to_info`).
 
+An unknown search `--mode` is refused with `VALIDATION_FAILED`: CLI exits
+1 in every requested format, MCP reports the code, and REST returns 400.
+Choose a supported mode rather than retrying the same request.
+
 ## Search result envelope
 
 ```json
@@ -1011,8 +1059,8 @@ full or found nothing strong, not that the KB lacks an answer: read
 Ordering fields are not scores. `rank` is a raw BM25 value and `rrf_score` is
 rank arithmetic (a few fixed values, whatever the query); neither compares
 across queries. `distance` is **backend-specific**: sqlite-vec's L2 distance on
-SQLite, pgvector's cosine distance on Postgres. It is removed in 0.27;
-read `similarity`. On SQLite, candidates are the
+SQLite, pgvector's cosine distance on Postgres. It is removed in 0.27; read `similarity`
+instead (see [Deprecated, still accepted](#deprecated-still-accepted)). On SQLite, candidates are the
 L2-nearest vectors, then ordered by cosine: with a model that does not
 normalise its output, a long vector with a high cosine can be missed (the
 default model normalises). REST results carry
@@ -1078,11 +1126,15 @@ from the entry's side, with three relation fields:
 | `inverse_relation` | the declared inverse of `forward_relation`, looked up when the query runs | `null` | the declared inverse (`informed_by`) |
 
 `inverse_relation: null` means no inverse is declared for that relation. That
-is true of a custom relation, and also of some relations Pyrite writes itself:
-`transclusion` and `references` (written by the indexer for `![[...]]` and
-object-reference fields) and the legacy default `related` are not declared
-relationship types today, so their rows read `relation: related_to`,
-`inverse_relation: null`.
+is true of an undeclared custom relation. Core-written `transclusion` (for
+`![[...]]`) and `references` (object-reference fields) have the declared
+inverses `transcluded_by` and `referenced_by`; those reverse names are declared
+too. The legacy spelling `related` is an alias of `related_to`, with
+`inverse_relation: related_to`. `forward_relation` still preserves the spelling
+in the source. Existing stored rows are not rewritten: their `relation` can
+remain `related_to` until reindexing, while `inverse_relation` already reports
+the current declared inverse. A plugin declaration of the same name takes
+precedence over a core declaration, as for other relationship types.
 
 A stale row is the last column: a plugin declares `informs` after the link was
 indexed. `relation` is a stored column and keeps `related_to`;
@@ -1319,8 +1371,9 @@ overrides it, and an unknown format is a usage error (`2`, a `USAGE_ERROR` docum
 they exist for the shapes the REST API serves (entries, search results) and
 print a Python `repr` for anything else. A refusal is printed in the format
 asked for, YAML included. `-f` no longer
-means `--format`: where it did it still works for one
-release and prints a deprecation line on stderr. Each module takes the
+means `--format`: where it did it remains accepted until a later
+release and prints a deprecation line on stderr (see
+[Deprecated, still accepted](#deprecated-still-accepted)). Each module takes the
 shared option when it moves to the outcome contract; the commands not named in
 `tests/legacy_commands/` have it. Until then most *read* commands default to `--format json`, `config`
 to a rich terminal view, and the write commands are not uniform. The table is

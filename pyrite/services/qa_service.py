@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,19 @@ logger = logging.getLogger(__name__)
 #: stands behind (#795). `qa_assessment`'s schema mentions a tier 3 that
 #: nothing implements.
 QA_TIERS = (1, 2)
+
+
+def require_qa_tier(tier: int, *, llm_available: Callable[[], bool]) -> None:
+    """Validate before opening an index; only tier2 consults model availability."""
+    if isinstance(tier, bool) or tier not in QA_TIERS:
+        raise InvalidQATierError(
+            f"QA tier {tier!r} does not exist; choose one of {', '.join(str(t) for t in QA_TIERS)}"
+        )
+    if tier >= 2 and not llm_available():
+        raise AINotConfiguredError(
+            "QA tier 2 runs the model-judged rubric and no model is configured; "
+            "nothing was assessed"
+        )
 
 
 class QAService:
@@ -408,16 +422,7 @@ class QAService:
         Called before anything is checked or written, so a refused tier
         leaves no record (#795, maintainer decision 2026-10-15).
         """
-        if isinstance(tier, bool) or tier not in QA_TIERS:
-            raise InvalidQATierError(
-                f"QA tier {tier!r} does not exist; choose one of "
-                f"{', '.join(str(t) for t in QA_TIERS)}"
-            )
-        if tier >= 2 and not self.llm_available:
-            raise AINotConfiguredError(
-                "QA tier 2 runs the model-judged rubric and no model is configured; "
-                "nothing was assessed"
-            )
+        require_qa_tier(tier, llm_available=lambda: self.llm_available)
 
     # =========================================================================
     # Assessment API
