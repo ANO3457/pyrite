@@ -40,3 +40,13 @@ def test_adr_numbering_skips_and_logs_non_utf8_files(tmp_path, caplog):
     )
     assert next_adr_number(KBConfig(name="demo", path=tmp_path)) == 8
     assert "broken.md" in caplog.text
+
+
+def test_shared_resolver_preserves_explicit_db_registered_kbs(tmp_path):
+    from pyrite.config import PyriteConfig
+    from pyrite_software_kb.adr_listing import resolve_adr_kb
+
+    config = PyriteConfig()
+    config.register_db_kbs([{"name": "registered", "path": str(tmp_path), "kb_type": "software"}])
+    assert resolve_adr_kb(config, "registered").name == "registered"
+    assert resolve_adr_kb(config, "registered", set()) is None

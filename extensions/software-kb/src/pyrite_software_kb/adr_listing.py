@@ -82,10 +82,8 @@ def resolve_adr_kb(
         if readable_kbs is None or kb.name in readable_kbs
     ]
     if kb_name:
-        for kb in kbs:
-            if kb.name == kb_name:
-                return kb
-        return None
+        kb = config.get_kb(kb_name)
+        return kb if kb is not None and (readable_kbs is None or kb.name in readable_kbs) else None
 
     if len(kbs) == 1:
         return kbs[0]
