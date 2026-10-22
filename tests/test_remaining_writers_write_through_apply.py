@@ -148,7 +148,7 @@ def test_a_rename_sets_the_id_and_leaves_the_rest_of_the_file_as_written(tmp_pat
     result = KBRepository(config.knowledge_bases[0]).rename("old-one", "new-one")
 
     assert result["renamed"] and result["links_rewritten"] == 3, result
-    assert not (kb_path / "notes" / "old-one.md").exists()
+    assert not (kb_path / "notes" / "new-one.md").exists()
     after = _text(kb_path / "notes" / "old-one.md")
     assert "id: new-one\n" in after, after
     assert "- to: foo          # legacy spelling\n  type: related\n  since: 2020\n" in after
