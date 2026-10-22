@@ -983,9 +983,7 @@ class QAService:
                     raw = raw.strip()
                     prefix, sep, rest = raw.partition(":")
                     if sep:
-                        target = self.config.readable_kb_named(
-                            prefix, readable_kbs=readable_kbs
-                        )
+                        target = self.config.readable_kb_named(prefix, readable_kbs=readable_kbs)
                         if target is None:
                             target_kb, target_id, resolvable = prefix, rest, False
                         else:
