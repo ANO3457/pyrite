@@ -1170,8 +1170,12 @@ class TestRunningTheTestsDoc:
         assert "--dist loadfile" in section and (REPO / "tests" / "e2e").is_dir()
 
     def test_the_golden_regeneration_is_documented(self, section):
-        assert "PYRITE_CHARACTERIZATION_REGENERATE=1" in section
-        assert "tests/characterization/" in section
+        assert (
+            "PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/"
+            in section
+        )
+        assert "-m characterization" not in section
+        assert (REPO / "tests" / "characterization").is_dir()
 
 
 class TestDevPushReusesTheMergeQueuesPass:

@@ -290,17 +290,17 @@ scripts/test-affected --explain       # ... and why each test was chosen
 scripts/test-affected --run           # run it: core + affected, -n 4 (-n N or -n auto)
 ```
 
-**Regenerating goldens**
+### Regenerating goldens
 
 Characterization goldens (`tests/characterization/goldens/`) pin the response contracts for REST, MCP, and error bodies across all principals. Gating tests compare against these files; they are never regenerated in CI.
 
 A migration PR may not change a golden (ADR-0037). When an intentional behavior change updates responses:
 
 ```bash
-PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/ -m characterization
+PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/
 ```
 
-Regenerate serially without `-n` (or xdist) so each principal writes without lost updates (#712). Review `git diff tests/characterization/goldens/` carefully before committing.
+`golden_io.py` guards per-principal writes under a file lock so `-n4` can be used, though running serially without `-n` avoids xdist worker contention entirely (see #712). Review `git diff tests/characterization/goldens/` carefully before committing.
 
 `test-affected` diffs your working tree, uncommitted and untracked files
 included, against the merge base with `--base` (default `origin/dev`;

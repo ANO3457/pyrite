@@ -1,1 +1,1 @@
-Update CONTRIBUTING with measured test suite size and golden regeneration instructions (#1045).
+- Update `CONTRIBUTING.md` with measured test suite size and golden regeneration instructions (#1045).
