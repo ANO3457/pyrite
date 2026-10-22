@@ -209,6 +209,13 @@ no longer dropped with `created: true` (#1090). A field the model has no
 top-level key for, such as the web New Entry form's Status, travels in
 `metadata`.
 
+REST `PATCH /api/entries/{id}` also refuses any top-level key its body model
+does not declare: 400 `VALIDATION_FAILED`, naming the unknown key(s), before
+writing the file or index (#1221). It accepts `kb`, `field`, `value` and `op`.
+A misspelt `vaule` is not an instruction to clear the field. Explicit `value:
+null` remains a valid set; `append`, `remove` and `unset` keep their existing
+semantics.
+
 This is the one table of codes an agent meets while writing; the
 how-to (`docs/agent-write-path.md`) links here instead of repeating it. Each row
 is reproduced by a command in "Reproduce the codes" below, which CI runs.

@@ -483,6 +483,8 @@ class PatchEntryRequest(BaseModel):
     own lines; ``value`` is ignored). ADR-0042 decision 1; #955, B6 P3b.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     kb: str
     field: str
     value: Any = None
