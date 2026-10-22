@@ -93,7 +93,7 @@ proposes an invariant harness (R1 to R10, two views on one index file).
 
 ## Known gaps
 
-- Three registry designs exist ([[adr-0029]], the earlier [[adr-0039]], [[adr-0039]]
+- Three registry designs exist ([[adr-0029]], the earlier registry proposal, [[adr-0039]]
   now); none is accepted over the others. The file, the cache and the table are
   each written by several processes; the config lock is per process.
 - Ephemeral KBs are written to the config file against [[adr-0029]] section 3;

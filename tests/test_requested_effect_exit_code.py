@@ -27,10 +27,13 @@ Three kinds of test live here, each entering at the command line:
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+import textwrap
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -260,6 +263,10 @@ class TestEmbed:
         (stub / "sentence_transformers" / "__init__.py").write_text(
             "raise ImportError('no semantic extra')\n"
         )
+        # `is_available()` answers through the import system's finder, so the
+        # broken install is named at the first real load (#1101): there has to
+        # be an entry for that load to happen.
+        _create(cli, "Needs a vector")
         cli.pyrite("index", "sync")
         out = cli.run(
             "pyrite.admin_cli",
@@ -321,10 +328,22 @@ def inproc(tmp_path):
     db = PyriteDB(tmp_path / "index.db")
     IndexManager(db, config).index_all()
     db.close()
-    with (
-        patch("pyrite.cli.load_config", return_value=config),
-        patch("pyrite.cli.context.load_config", return_value=config),
-    ):
+    # Every CLI module loads the config under its own name and resolves the
+    # KB it was given against it (#952); an extension's commands included.
+    modules = ["pyrite.cli", "pyrite.cli.context"] + [
+        f"{ext}.cli"
+        for ext in (
+            "pyrite_journalism_investigation",
+            "pyrite_software_kb",
+            "pyrite_zettelkasten",
+            "pyrite_encyclopedia",
+            "pyrite_social",
+        )
+        if importlib.util.find_spec(ext) is not None
+    ]
+    with ExitStack() as stack:
+        for module in modules:
+            stack.enter_context(patch(f"{module}.load_config", return_value=config))
         yield {"config": config, "tmp": tmp_path, "kb": kb_path}
 
 
@@ -398,7 +417,7 @@ class TestImportAndBulkLinks:
             "- {source: src, target: t1, relation: informs}\n"
             "- {source: ghost, target: t1, relation: informs}\n"
         )
-        out = _invoke("links", "bulk-create", str(spec), "-k", "test-kb")
+        out = _invoke("links", "bulk-create", str(spec), "-k", "test-kb", "--format", "rich")
         assert "1 failed" in out.output, out.output
         assert out.exit_code == PARTIAL, out.output
 
@@ -446,7 +465,9 @@ class _Venv:
 
         self.root = root
         venv = root / "venv"
-        subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True)
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv)], check=True, capture_output=True, timeout=120
+        )
         self.python = venv / "bin" / "python"
         site_dir = next(venv.glob("lib/python*/site-packages"))
         # pyrite's dependencies (and setuptools, for the offline editable build).
@@ -458,6 +479,7 @@ class _Venv:
             "HOME": str(root / "home"),
             "PYRITE_CONFIG_DIR": str(root / "cfg"),
             "PYTHONPATH": str(REPO),
+            # pip's negative boolean option is inverted: 0 disables build isolation.
             "PIP_NO_BUILD_ISOLATION": "0",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "HF_HUB_OFFLINE": "1",
@@ -589,8 +611,10 @@ class TestBacklinksOfALinkedToMissingPage:
             out = cli.run(entry, "backlinks", "ghost-page", "-k", "demo", "--format", "json")
             assert out.returncode == 0, out.stdout + out.stderr
             payload = json.loads(out.stdout)
-            assert payload["total"] == 1, payload
-            assert payload["entries"][0]["id"] == "linker"
+            # Two links, two rows (#1009): the frontmatter item and the body
+            # wikilink, each its own backlink.
+            assert payload["total"] == 2, payload
+            assert [e["id"] for e in payload["entries"]] == ["linker", "linker"]
 
 
 class TestBatchRead:
@@ -612,7 +636,7 @@ class TestKbCommit:
             ["config", "user.email", "t@example.invalid"],
             ["config", "user.name", "T"],
         ):
-            subprocess.run(["git", *args], cwd=cli.kb, check=True, capture_output=True)
+            subprocess.run(["git", *args], cwd=cli.kb, check=True, capture_output=True, timeout=120)
 
     def test_a_hook_that_rejects_the_commit_is_a_failure(self, cli):
         self._git(cli)
@@ -674,6 +698,49 @@ class TestTasks:
         children = json.loads(out.stdout)["children"]
         assert [c.get("created") for c in children] == [True, False], children
         assert out.returncode == PARTIAL, out.stdout + out.stderr
+        assert json.loads(out.stdout)["outcome"] == "partial"
+
+    # The regimes below are ADR-0046 slice 1's: the task module returns an
+    # Outcome and the root group renders it, through the real entry point.
+
+    def test_children_that_all_failed_are_refused_and_say_so_in_json(self, cli):
+        cli.pyrite("task", "create", "Parent", "-k", "demo")
+        cli.pyrite("task", "decompose", "parent", "-k", "demo", "-c", "Same")
+        out = cli.pyrite("task", "decompose", "parent", "-k", "demo", "-c", "Same")
+        assert out.returncode == REFUSED, out.stdout + out.stderr
+        # `decomposed: true` was all a JSON reader saw when every child failed.
+        assert json.loads(out.stdout)["outcome"] == "nothing"
+
+    @pytest.mark.control(reason="regime: a batch of zero items stays click's usage error")
+    def test_decompose_with_no_child_is_a_usage_error(self, cli):
+        out = cli.pyrite("task", "decompose", "parent", "-k", "demo")
+        assert out.returncode == 2, out.stdout + out.stderr
+
+    def test_a_lost_claim_says_nothing_happened_in_json(self, cli):
+        cli.pyrite("task", "create", "T1", "-k", "demo")
+        cli.pyrite("task", "claim", "t1", "-k", "demo", "-a", "me")
+        out = cli.pyrite("task", "claim", "t1", "-k", "demo", "-a", "you")
+        assert out.returncode == REFUSED, out.stdout + out.stderr
+        body = json.loads(out.stdout)
+        assert (body["claimed"], body["outcome"]) == (False, "nothing")
+
+    def test_a_missing_kb_is_refused_in_json_and_in_rich(self, cli):
+        out = cli.pyrite("task", "create", "T", "-k", "nope")
+        assert out.returncode == REFUSED, out.stdout + out.stderr
+        body = json.loads(out.stdout)
+        assert (body["error_code"], body["outcome"]) == ("KB_NOT_FOUND", "error")
+        rich = cli.pyrite("task", "create", "T", "-k", "nope", "--format", "rich")
+        assert rich.returncode == REFUSED
+        assert "ERROR [KB_NOT_FOUND]" in rich.stdout
+
+    def test_json_is_the_default_and_pyrite_format_sets_another(self, cli):
+        """#303, folded into slice 1 for the task module."""
+        cli.pyrite("task", "create", "T1", "-k", "demo")
+        listed = cli.pyrite("task", "list", "-k", "demo")
+        assert listed.returncode == 0, listed.stdout + listed.stderr
+        assert json.loads(listed.stdout)["count"] == 1
+        rich = cli.pyrite("task", "list", "-k", "demo", env={"PYRITE_FORMAT": "rich"})
+        assert "Tasks" in rich.stdout and not rich.stdout.lstrip().startswith("{")
 
 
 class TestRepoSync:
@@ -891,7 +958,6 @@ SAFE = {
     "pyrite auth github-login": "one credential store; failure raises",
     "pyrite auth github-logout": "one credential store; failure raises",
     "pyrite auth github-setup": "one credential store; failure raises",
-    "pyrite cascade backfill-ji": "single backfill pass; scans clean",
     "pyrite ci": "exits non-zero on the checks' own result",
     "pyrite db backup": "one file copy; failure raises",
     "pyrite db restore": "one file copy; failure raises",
@@ -978,10 +1044,6 @@ SAFE = {
 READ_ONLY = [
     "pyrite auth status",
     "pyrite auth whoami",
-    "pyrite cascade audit-compat",
-    "pyrite cascade export",
-    "pyrite cascade extract-actors",
-    "pyrite cascade suggest-aliases",
     "pyrite collections list",
     "pyrite collections query",
     "pyrite config",
@@ -1147,11 +1209,342 @@ def test_a_command_whose_function_swallows_a_failure_is_guarded():
 
 
 # --------------------------------------------------------------------------
+# The outcome contract (ADR-0046): the rule the tables above stand in for
+# --------------------------------------------------------------------------
+#
+# A command is on the contract when it declares the shared --format option
+# (pyrite.cli.output.declares_shared_format). What such a command can and
+# cannot do is not checked here, or anywhere, by reading source: the root group
+# enforces it when the command runs, and tests/test_cli_outcome.py walks every
+# command on the contract with each way out planted (ADR-0046, decisions 6-8).
+# This section holds what the registry can say: which commands are still
+# legacy, and that a command on the contract is declared the way the root
+# expects.
+
+# Commands that still print their own result and choose their own exit code
+# are listed in tests/legacy_commands/, one text file per CLI module, named for
+# the module's dotted path (`pyrite.cli.browse_commands.txt`; the extensions'
+# paths are dotted the same way), holding the registered names of that module's
+# commands that do not declare the shared option, one per line, sorted.
+# The files match the registry exactly, in both directions, so they move only in
+# a diff a reviewer sees. A slice that migrates commands deletes their lines
+# from its own modules' files, and the file when it is empty; it touches no
+# other module's file and nothing in this test. A new command is on the
+# contract unless someone adds its name to its module's file. A module with no
+# legacy command has no file: a new command module is born on the contract.
+# Slice 11 deletes the directory.
+LEGACY_DIR = Path(__file__).resolve().parent / "legacy_commands"
+
+# An upper bound on the number of legacy commands. It replaces
+# LEGACY_COMMANDS_AT_SLICE_1 (185, the total when slice 1 introduced the table,
+# never to be edited): slice 3a renamed it and set it to the true count after
+# slice 2 (173), because a ceiling above the count lets commands be added back
+# unnoticed. The files are the exact list, so a slice may leave this alone; a
+# reviewer lowers it when a slice migrates commands. Nothing enforces "only
+# goes down" but review.
+LEGACY_COMMANDS_CEILING = 173
+
+
+def _on_the_contract(cmd) -> bool:
+    """Imported here, not at module level, to keep this file's import light; it
+    does run at collection (the parametrization walks the registry), so a tree
+    without ``declares_shared_format`` does not collect."""
+    from pyrite.cli.output import declares_shared_format
+
+    return declares_shared_format(cmd)
+
+
+def _returns_outcome(cmd) -> bool:
+    import inspect
+
+    ann = inspect.signature(inspect.unwrap(cmd.callback), eval_str=True).return_annotation
+    return (getattr(ann, "__module__", None), getattr(ann, "__name__", None)) == (
+        "pyrite.cli.outcome",
+        "Outcome",
+    )
+
+
+def _legacy_by_module(commands: dict[str, object] | None = None) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for name, cmd in (_commands() if commands is None else commands).items():
+        loc = _location(cmd) if cmd.callback is not None else None
+        # A command defined outside the repo is a third-party plugin's
+        # (decision 5): not this table's to count.
+        if loc is not None and not _on_the_contract(cmd):
+            found.setdefault(loc[0], []).append(name)
+    return found
+
+
+def _module_of(file: Path) -> str:
+    """`pyrite.cli.browse_commands.txt` -> `pyrite/cli/browse_commands.py`."""
+    return file.stem.replace(".", "/") + ".py"
+
+
+def _legacy_files() -> dict[str, list[str]]:
+    """Module -> the names in its file (blank lines ignored; a repeated name stays
+    repeated, so the comparison can say so)."""
+    return {
+        _module_of(f): [ln.strip() for ln in f.read_text().splitlines() if ln.strip()]
+        for f in sorted(LEGACY_DIR.glob("*.txt"))
+    }
+
+
+def _the_file_and_the_registry_differ(
+    module: str,
+    files: dict[str, list[str]],
+    actual: dict[str, list[str]],
+    commands: dict[str, object],
+) -> list[str]:
+    """What is wrong between one module's file and the registry, one line per
+    command, each naming the command. Empty when they agree."""
+    named, found = files.get(module, []), set(actual.get(module, []))
+    problems = []
+    if module in files and not named:
+        problems.append(f"{module}: its legacy file is empty: delete the file")
+    for name in sorted({n for n in named if named.count(n) > 1}):
+        problems.append(f"{name}: named more than once in {module}'s legacy file")
+    for name in sorted(found - set(named)):
+        problems.append(
+            f"{name} ({module}) does not declare the shared --format and is not in the "
+            "module's legacy file. A new command declares OUTPUT_FORMAT and returns an "
+            "Outcome; only a command that cannot yet is added to the file"
+        )
+    for name in sorted(set(named) - found):
+        if name not in commands:
+            why = "is not a registered command (renamed, removed or misspelt)"
+        elif _on_the_contract(commands[name]):
+            why = "is on the contract now"
+        else:
+            why = f"is registered by another module ({(_location(commands[name]) or ('?',))[0]})"
+        problems.append(f"{name} {why}: remove it from {module}'s legacy file")
+    return problems
+
+
+def _contract_modules() -> set[str]:
+    return {
+        loc[0]
+        for cmd in _commands().values()
+        if _on_the_contract(cmd) and (loc := _location(cmd)) is not None
+    }
+
+
+@pytest.mark.parametrize(
+    "module", sorted(set(_legacy_files()) | set(_legacy_by_module())), ids=lambda m: m
+)
+def test_a_modules_legacy_file_is_exactly_its_legacy_commands(module):
+    """A command that is not on the contract is named in its module's file, and
+    the file is exact in both directions. A new command in a legacy module does
+    not join the legacy path unnoticed (its name would have to be added), and a
+    slice that migrates commands has to take them off (their lines have to go).
+    One module is one comparison: a slice moves only its own."""
+    problems = _the_file_and_the_registry_differ(
+        module, _legacy_files(), _legacy_by_module(), _commands()
+    )
+    assert not problems, "\n".join(problems)
+
+
+def _planted_on_the_contract(cmd):
+    """A copy of a registered command that also declares the shared option: what
+    a slice does to a command, without touching the registry."""
+    import copy
+
+    from pyrite.cli.output import OUTPUT_FORMAT
+
+    def planted(output_format: str = OUTPUT_FORMAT) -> None: ...
+
+    app = typer.Typer()
+    app.command()(planted)  # one command: typer hands back the command itself
+    shared = typer.main.get_command(app).params[0]
+    twin = copy.copy(cmd)
+    twin.params = [*cmd.params, shared]
+    return twin
+
+
+def test_migrating_a_command_turns_red_only_its_modules_comparison():
+    """The property slice 3a exists for: plant the shared option on one browse
+    command and exactly that module's comparison fails, naming the command. No
+    other module's file, and no line in this test, needs to move."""
+    commands = _commands()
+    legacy = _legacy_by_module(commands)
+    if not legacy:
+        pytest.fail("no command is legacy any more: slice 11 deletes this test with the files")
+    # Whatever the registry says is first: no module or command is named here.
+    module = sorted(legacy)[0]
+    victim = legacy[module][0]
+    commands[victim] = _planted_on_the_contract(commands[victim])
+    actual, files = _legacy_by_module(commands), _legacy_files()
+
+    red = {
+        m: problems
+        for m in sorted(set(files) | set(actual))
+        if (problems := _the_file_and_the_registry_differ(m, files, actual, commands))
+    }
+
+    assert list(red) == [module], red
+    assert len(red[module]) == 1 and red[module][0].startswith(f"{victim} is on the contract")
+
+
+def test_a_file_naming_a_command_that_does_not_exist_is_red():
+    module = "pyrite/cli/fabricated_module.py"
+    files = {module: ["pyrite no-such-command"]}
+    problems = _the_file_and_the_registry_differ(module, files, {}, {})
+    assert len(problems) == 1 and problems[0].startswith(
+        "pyrite no-such-command is not a registered"
+    )
+
+
+def test_a_file_for_a_module_with_no_legacy_command_is_red():
+    """A module with no legacy command has no file: not an empty one, not a stale one."""
+    module = "pyrite/cli/fabricated_module.py"
+    stale = _the_file_and_the_registry_differ(module, {module: ["pyrite fabricated"]}, {}, {})
+    empty = _the_file_and_the_registry_differ(module, {module: []}, {}, {})
+    assert stale and "pyrite fabricated" in stale[0]
+    assert empty and "empty" in empty[0]
+
+
+def test_a_third_party_plugins_commands_are_not_counted(tmp_path):
+    """A command whose function lives outside the repo is a plugin's (ADR-0046,
+    decision 5): legacy or not, it is in no module's file."""
+    import importlib.util
+
+    plugin = tmp_path / "some_plugin.py"
+    plugin.write_text("def hello():\n    print('hi')\n\n\ndef other():\n    print('o')\n")
+    spec = importlib.util.spec_from_file_location("some_plugin", plugin)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    app = typer.Typer()
+    app.command()(module.hello)
+    app.command("other")(module.other)
+    plugin_commands = dict(_walk(typer.main.get_command(app), ["pyrite-plugin"]))
+    assert "pyrite-plugin hello" in plugin_commands
+
+    counted = _legacy_by_module({**_commands(), **plugin_commands})
+    assert not any(n.startswith("pyrite-plugin") for names in counted.values() for n in names), (
+        counted
+    )
+    assert counted == _legacy_by_module()
+
+
+@pytest.mark.control(
+    reason="tests the files in this directory: red when the total passes the ceiling"
+)
+def test_the_legacy_count_only_goes_down():
+    assert sum(map(len, _legacy_files().values())) <= LEGACY_COMMANDS_CEILING
+
+
+def test_a_command_on_the_contract_is_declared_the_way_the_root_expects():
+    """The registry's half of the contract, for every command that declares
+    the shared option:
+
+    - it is annotated ``-> Outcome`` (documentation the registry can check; the
+      root checks the value itself on every run);
+    - none of its parameters has a callback but the shared option's own. A
+      parameter callback runs while click is parsing, before the root watches
+      (that is how ``--help`` works), so it could print a result and exit 0.
+    """
+    from pyrite.cli import output
+
+    shared = {output._record_format, output._record_short_format}
+    offences = []
+    for name, cmd in sorted(_commands().items()):
+        if not _on_the_contract(cmd):
+            continue
+        if not _returns_outcome(cmd):
+            offences.append(f"{name} is not annotated -> Outcome")
+        for param in cmd.params:
+            callback = getattr(param.callback, "__wrapped__", param.callback)
+            if callback is not None and callback not in shared:
+                offences.append(f"{name}: parameter {param.name!r} has its own callback")
+    assert not offences, "\n".join(offences)
+
+
+# A HINT, NOT THE GUARD. What follows reads source, so it knows only the
+# spellings it was given: an alias, a `getattr` or a helper in another module
+# gets past it, and that is not a finding against the contract. It exists for
+# the three things no check inside the process can see, because they act after
+# the root has returned (ADR-0046, "What no check in the process can see"), and
+# for one thing the root has no reason to see (a command that reads its format
+# has made the format change what runs). The property itself is enforced by
+# PyriteCLIGroup.invoke and proved by the walk in tests/test_cli_outcome.py.
+AFTER_THE_ROOT_HAS_RETURNED = {
+    "_exit": "os._exit ends the process with no outcome: exit 0 and empty stdout",
+    "register": "an atexit handler runs after the root has printed and set the exit code",
+    "Thread": "a thread that outlives the command writes after the root has printed",
+    "Timer": "a timer thread that outlives the command writes after the root has printed",
+}
+
+
+def _hints(source: str, rel: str = "<module>") -> list[str]:
+    hints = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and _name(node) in AFTER_THE_ROOT_HAS_RETURNED:
+            hints.append(f"{rel}:{node.lineno} {AFTER_THE_ROOT_HAS_RETURNED[_name(node)]}")
+    return hints
+
+
+@pytest.mark.control(
+    reason="control: the hint scan, generalised to the legacy -f; green before and after"
+)
+def test_hint_a_module_on_the_contract_does_nothing_the_root_cannot_see():
+    """A hint (see above): the plain spellings of ``os._exit``,
+    ``atexit.register`` and a started thread in a module with a command on the
+    contract, and a command that reads its own format parameter."""
+    import inspect
+
+    hints = []
+    for rel in sorted(_contract_modules()):
+        hints += _hints((REPO / rel).read_text(), rel)
+    for name, cmd in _commands().items():
+        if not _on_the_contract(cmd) or _location(cmd) is None:
+            continue
+        # `-f` is the deprecated format spelling only where it is the legacy option
+        # (found by its callback); on create/update it is --field.
+        from tests.outcome_walk import takes_short_format
+
+        fmt_params = {p.name for p in cmd.params if "--format" in p.opts}
+        if takes_short_format(cmd):
+            fmt_params |= {p.name for p in cmd.params if "-f" in getattr(p, "opts", ())}
+        func = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(cmd.callback))))
+        for node in ast.walk(func):
+            if isinstance(node, ast.Name) and node.id in fmt_params:
+                if isinstance(node.ctx, ast.Load):
+                    hints.append(f"{name} reads its format parameter {node.id!r}")
+    assert not hints, "\n".join(hints)
+
+
+@pytest.mark.control(reason="tests the hint in this file, not pyrite code")
+def test_hint_finds_the_plain_spellings_and_only_those():
+    plain = "import os, atexit, threading\nos._exit(0)\natexit.register(print)\n"
+    assert len(_hints(plain + "threading.Thread(target=print).start()\n")) == 3
+    # An alias is past it. That is what makes it a hint.
+    assert _hints("from os import _exit as leave\nleave(0)\n") == []
+
+
+def _renderers(tree: ast.AST) -> set[str]:
+    """Functions the root calls for --format rich: one named ``_render_*`` or
+    passed as ``rich=``. Used by the #779 scan below, which skips them in a
+    module on the contract."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("_render_"):
+            names.add(node.name)
+        if isinstance(node, ast.Call):
+            names |= {
+                k.value.id
+                for k in node.keywords
+                if k.arg == "rich" and isinstance(k.value, ast.Name)
+            }
+    return names
+
+
+# --------------------------------------------------------------------------
 # The scans: what the registry cannot see
 # --------------------------------------------------------------------------
 
 SCANNED = [
     *sorted((REPO / "pyrite" / "cli").glob("*.py")),
+    # Code a CLI command delegates to, whose handlers decide its exit status.
+    REPO / "pyrite" / "services" / "file_search.py",
     REPO / "pyrite" / "read_cli.py",
     REPO / "pyrite" / "admin_cli.py",
     *sorted((REPO / "extensions").glob("*/src/*/cli*.py")),
@@ -1165,7 +1558,6 @@ EXIT_CALLS = {
     "cli_error_from",
     "_cli_error",
     "_cli_err",
-    "_refusal_exit",
     "_task_error",
     "_kb_error",
     "exit_unless_whole",
@@ -1201,6 +1593,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
+    ("extensions/software-kb/src/pyrite_software_kb/cli.py", "sw_migrate_standards"): (
+        "fixed",
+        "TestJournalismAndSoftwareResults",
+    ),
     ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_query_entries"): (
         "safe",
         "bad metadata reads as empty",
@@ -1221,7 +1617,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
-    ("pyrite/cli/__init__.py", "<module>"): ("safe", "plugin CLI loading: not a command's effect"),
+    ("pyrite/cli/__init__.py", "_mount_plugin_cli"): (
+        "safe",
+        "optional plugin CLI loading: logs unavailable groups, not a command's requested effect",
+    ),
     ("pyrite/cli/collection_commands.py", "list_collections"): (
         "safe",
         "bad metadata reads as empty",
@@ -1236,6 +1635,14 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("pyrite/cli/entry_commands.py", "_parse_field_value"): ("safe", "tries the next parser"),
     ("pyrite/cli/entry_commands.py", "create_entry"): ("fixed", "TestCreateWithFailedLink"),
+    (
+        "pyrite/cli/entry_commands.py",
+        "link_entries",
+    ): (
+        "safe",
+        "a failed --bidi inverse is returned as Outcome.partial (exit 3): "
+        "tests/test_cli_outcome_write_path.py",
+    ),
     ("pyrite/cli/export_commands.py", "_load_entry_from_result"): ("fixed", "TestExportCollection"),
     ("pyrite/cli/export_commands.py", "export_collection"): ("fixed", "TestExportCollection"),
     ("pyrite/cli/extension_commands.py", "_verify_distribution"): ("fixed", "TestExtensionVerify"),
@@ -1255,7 +1662,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("pyrite/cli/init_command.py", "init_kb"): ("fixed", "TestInitIndexing"),
     ("pyrite/cli/kb_commands.py", "kb_discover"): ("safe", "already registered is not a failure"),
-    ("pyrite/cli/mcp_setup_command.py", "_add_reproduces"): ("safe", "a probe"),
+    ("pyrite/cli/mcp_setup_command.py", "_restore_unavailable_reason"): (
+        "safe",
+        "a probe: malformed entries become a restoration reason, not a successful effect",
+    ),
     ("pyrite/cli/mcp_setup_command.py", "_check_replaceable"): (
         "safe",
         "absent file: nothing to replace",
@@ -1268,6 +1678,24 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
     ("pyrite/cli/mcp_setup_command.py", "_read_claude_config"): (
         "safe",
         "an absent file reads as empty",
+    ),
+    ("pyrite/cli/mcp_setup_command.py", "_note_rest_of_claude_config"): (
+        "safe",
+        "a deleted current directory only drops the project-scope note; the client's change "
+        "and its status are already settled (#690)",
+    ),
+    ("pyrite/cli/mcp_setup_command.py", "_real"): (
+        "safe",
+        "a path that cannot be resolved is not the current directory; it only words a note",
+    ),
+    ("pyrite/cli/mcp_setup_command.py", "_runs"): (
+        "safe",
+        "wording of a note about another scope's entry",
+    ),
+    ("pyrite/cli/mcp_setup_command.py", "_setup_claude_code"): (
+        "safe",
+        "the failure goes to settle(), which reads the file back and reports the client failed "
+        "unless it holds the new entry (#690)",
     ),
     ("pyrite/cli/mcp_setup_command.py", "_setup_file"): ("safe", "absent file: created"),
     ("pyrite/cli/mcp_setup_command.py", "_verify_starts"): (
@@ -1288,6 +1716,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "a class that cannot be inspected is skipped; failures counted exit 1",
     ),
     ("pyrite/cli/protocol_commands.py", "protocol_list"): ("safe", "registry fallback"),
+    ("pyrite/cli/schema_commands.py", "detect_id_collisions"): (
+        "safe",
+        "a title that derives no id (list, mapping, NaN) has nothing to collide; qa reports it (#711)",
+    ),
     ("pyrite/cli/schema_commands.py", "_get_git_changed_md_files"): (
         "safe",
         "no git means no changed-file filter",
@@ -1296,12 +1728,11 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "appends to the errors list the command exits on",
     ),
-    ("pyrite/cli/schema_commands.py", "schema_migrate"): ("fixed", "TestSchemaMigrate"),
     ("pyrite/cli/schema_commands.py", "schema_validate"): (
         "safe",
         "path outside the KB is skipped",
     ),
-    ("pyrite/cli/search_commands.py", "_search_files"): ("fixed", "TestSearchFiles"),
+    ("pyrite/services/file_search.py", "search_kb_files"): ("fixed", "TestSearchFiles"),
     ("pyrite/cli/search_commands.py", "_warn_if_stale"): ("safe", "a probe for a warning"),
     ("pyrite/cli/task_commands.py", "_task_get_impl"): ("safe", "bad metadata reads as empty"),
 }
@@ -1339,19 +1770,30 @@ PRINTS: dict[tuple[str, str], tuple[str, str]] = {
     ("pyrite/admin_cli.py", "kb_validate"): ("safe", "exits 1 after listing the errors"),
     ("pyrite/admin_cli.py", "repo_sync"): ("fixed", "TestAdminRepo"),
     ("pyrite/cli/__init__.py", "import_entries"): ("fixed", "TestImportAndBulkLinks"),
-    ("pyrite/cli/entry_commands.py", "create_entry"): ("fixed", "TestCreateWithFailedLink"),
-    ("pyrite/cli/extension_commands.py", "extension_install"): ("fixed", "TestExtensionVerify"),
     ("pyrite/cli/index_commands.py", "_report_health"): (
         "safe",
         "index health exits 1 when unhealthy, in its caller",
     ),
     ("pyrite/cli/kb_commands.py", "kb_gc"): ("safe", "'red' is colour: each removal is reported"),
+    ("pyrite/cli/kb_commands.py", "kb_health"): (
+        "safe",
+        "a report: a kb.yaml that fails to load is a finding, not a failed effect",
+    ),
     ("pyrite/cli/kb_commands.py", "kb_validate"): (
         "safe",
         "exits 1 on structural errors, 2 on drift",
     ),
-    ("pyrite/cli/link_commands.py", "links_bulk_create"): ("fixed", "TestImportAndBulkLinks"),
     ("pyrite/cli/protocol_commands.py", "protocol_check"): ("safe", "exits 1 when a check fails"),
+    ("pyrite/cli/qa_commands.py", "qa_assess"): (
+        "left",
+        "#795: a KB run lists entries not assessed and tasks not created; the exit "
+        "for a partial result is ADR-0046 slice 6",
+    ),
+    ("pyrite/cli/qa_commands.py", "qa_fix"): (
+        "left",
+        "#795/#788: the report lists fixes whose write failed under Failed; the exit "
+        "for a partial result is ADR-0046 slice 6",
+    ),
     ("pyrite/cli/qa_commands.py", "qa_check_urls"): (
         "safe",
         "broken URLs are the report the command exists to give, as qa validate's findings are",
@@ -1360,7 +1802,6 @@ PRINTS: dict[tuple[str, str], tuple[str, str]] = {
     ("pyrite/cli/repo_commands.py", "repo_sync"): ("fixed", "TestRepoSync"),
     ("pyrite/cli/schema_commands.py", "schema_migrate"): ("fixed", "TestSchemaMigrate"),
     ("pyrite/cli/search_commands.py", "search"): ("fixed", "TestSearchFiles"),
-    ("pyrite/cli/task_commands.py", "task_decompose"): ("fixed", "TestTasks"),
     ("pyrite/read_cli.py", "_emit_error"): (
         "safe",
         "the helper that prints the error; its callers raise Exit(1)",
@@ -1389,9 +1830,14 @@ def _func_of(node: ast.AST, parents: dict) -> str:
 def _scan() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
     handlers: set[tuple[str, str]] = set()
     prints: set[tuple[str, str]] = set()
+    # A renderer in a module on the contract prints failures by design: the
+    # exit code comes from the Outcome the command returned, which the root
+    # reads, not from what was printed.
+    migrated = _contract_modules()
     for path in SCANNED:
         rel = str(path.relative_to(REPO))
         tree = ast.parse(path.read_text())
+        renderers = _renderers(tree) if rel in migrated else set()
         parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
 
         for node in ast.walk(tree):
@@ -1415,6 +1861,8 @@ def _scan() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
                         if isinstance(c, ast.Constant) and isinstance(c.value, str)
                     )
                     failure = "[red]" in text or "failed" in text.lower() or "Error" in text
+                    if _func_of(stmt, parents) in renderers:
+                        continue
                     if failure and not any(_exits(s) for s in block[i + 1 :]):
                         prints.add((rel, _func_of(stmt, parents)))
     return handlers, prints

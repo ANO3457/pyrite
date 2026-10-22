@@ -22,10 +22,8 @@ if TYPE_CHECKING:
 # ``(entry_type, fields)`` form is not supported (#379, #376, #48).
 Validator = Callable[[str, dict, dict], list[dict]]
 
-# The plugin hook contract: a hook binds ``(entry, ctx)``. ``before_*`` hooks
-# may raise to abort the operation or return a (possibly modified) entry;
-# ``after_*`` hook exceptions are logged and swallowed (HookRunner owns this
-# raise/swallow contract).
+# Hooks bind ``(entry, ctx)``; see PyritePlugin.get_hooks for the lifecycle
+# contract. HookRunner owns before-hook propagation and after-hook logging.
 Hook = Callable[[Any, dict], Any]
 
 
@@ -170,8 +168,20 @@ class PyritePlugin(Protocol):
             Hook names: before_save, after_save, before_delete, after_delete, before_index
             Each callable receives (entry, context) where context contains:
                 kb_name, user, kb_schema, operation ("create"|"update"|"delete")
-            before_* hooks can modify the entry or raise to abort.
-            after_* hooks are for side effects (e.g. updating reputation).
+            A before_save hook may raise to refuse a write; do not use it to
+            set fields (ADR-0042 decision 4: refuse, never change). Return the
+            entry unchanged for compatibility with the current create path.
+
+            Current implementation gaps (kb/design.md): on create the returned
+            entry is validated and persisted. On update the return value is
+            ignored; in-place changes reach only this write's index row until
+            the next sync, never the file. Do not rely on either gap. Computed
+            values belong at read/index time under derived, not in frontmatter.
+
+            after_* hooks run after persistence; exceptions are logged and
+            swallowed. An after_save hook must not write another entry.
+            See tests/test_after_save_hooks_write_no_other_entry.py and the
+            KBService hook tests for the existing behavioural coverage.
         """
         ...
 
@@ -277,11 +287,11 @@ class PyritePlugin(Protocol):
                 existing_entry: Entry | None - the entry before an update,
                     or None for a create
 
-            Validators run twice per write: once on the entry as the caller
-            built it, and again after the ``before_save`` hooks, because a
-            hook may change the entry that is persisted. Both passes get the
-            same context (an update's ``existing_entry`` is set on both), so
-            a validator must be cheap and free of side effects: no I/O that
+            Creates validate the prepared entry and validate again after the
+            hooks. Updates validate the entry parsed from the proposed file
+            operations before running hooks (including a no-op update).
+            See get_hooks for the lifecycle contract and its current gaps.
+            A validator must be cheap and free of side effects: no I/O that
             changes state, no counters it relies on, no assumption that it
             runs once.
 

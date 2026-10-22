@@ -8,7 +8,7 @@ import pytest
 
 from pyrite.config import KBConfig, PyriteConfig
 from pyrite.storage.database import PyriteDB
-from pyrite.storage.index import IndexManager
+from pyrite.storage.index import IndexManager, _strip_code_regions
 
 ROOT = Path(__file__).resolve().parents[1]
 KB = ROOT / "kb"
@@ -49,7 +49,7 @@ def test_component_and_map_wikilinks_have_targets():
             ids.add(match[1].strip("\"'"))
     missing = []
     for path in navigation_pages()[1:]:
-        for target in re.findall(r"\[\[([^\]|#^]+)(?:[^\]]*)\]\]", body(path)):
+        for target in re.findall(r"\[\[([^\]|#^]+)(?:[^\]]*)\]\]", _strip_code_regions(body(path))):
             if ":" not in target and target not in ids:
                 missing.append((str(path.relative_to(KB)), target))
     assert missing == []

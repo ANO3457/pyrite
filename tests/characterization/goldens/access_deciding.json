@@ -90,13 +90,13 @@
     "status": 401
   },
   "DELETE /auth/invite-codes/does-not-exist-invite-code | global_user": {
-    "status": 401
+    "status": 403
   },
   "DELETE /auth/invite-codes/does-not-exist-invite-code | granted_user": {
-    "status": 401
+    "status": 403
   },
   "DELETE /auth/invite-codes/does-not-exist-invite-code | local_user": {
-    "status": 401
+    "status": 403
   },
   "DELETE /auth/invite-codes/does-not-exist-invite-code | read_key": {
     "status": 401
@@ -300,13 +300,13 @@
     "status": 401
   },
   "GET /auth/invite-codes | global_user": {
-    "status": 401
+    "status": 403
   },
   "GET /auth/invite-codes | granted_user": {
-    "status": 401
+    "status": 403
   },
   "GET /auth/invite-codes | local_user": {
-    "status": 401
+    "status": 403
   },
   "GET /auth/invite-codes | read_key": {
     "status": 401
@@ -566,27 +566,6 @@
   "POST /api/kbs/gc | write_key": {
     "status": 403
   },
-  "POST /api/site/render | admin_key": {
-    "status": 200
-  },
-  "POST /api/site/render | anonymous": {
-    "status": 403
-  },
-  "POST /api/site/render | global_user": {
-    "status": 403
-  },
-  "POST /api/site/render | granted_user": {
-    "status": 403
-  },
-  "POST /api/site/render | local_user": {
-    "status": 403
-  },
-  "POST /api/site/render | read_key": {
-    "status": 403
-  },
-  "POST /api/site/render | write_key": {
-    "status": 403
-  },
   "POST /auth/api-keys | admin_key": {
     "status": 422
   },
@@ -615,13 +594,13 @@
     "status": 401
   },
   "POST /auth/invite-codes | global_user": {
-    "status": 401
+    "status": 403
   },
   "POST /auth/invite-codes | granted_user": {
-    "status": 401
+    "status": 403
   },
   "POST /auth/invite-codes | local_user": {
-    "status": 401
+    "status": 403
   },
   "POST /auth/invite-codes | read_key": {
     "status": 401

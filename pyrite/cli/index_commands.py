@@ -11,7 +11,8 @@ from rich.console import Console
 from rich.table import Table
 
 from ..utils.errors import PARTIAL_EXIT, cli_error, exit_unless_whole
-from .context import cli_db_context, get_config_and_db
+from .context import cli_db_context, get_config_and_db, require_kb
+from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ def _format_output(data: dict, fmt: str) -> str | None:
     return format_output(data, fmt)
 
 
-def _settle_embed_queue(db) -> int:
+def _settle_embed_queue(db, model_name: str | None = None) -> int:
     """Pay off whatever ADR-0035 writes left in `embed_queue`.
 
     Shares one implementation with the server (`settle_embed_queue`), which is
@@ -44,7 +45,7 @@ def _settle_embed_queue(db) -> int:
     """
     from ..services.embedding_worker import settle_embed_queue
 
-    return settle_embed_queue(db)
+    return settle_embed_queue(db, model_name=model_name)
 
 
 def _embed_counts(stats: dict, from_queue: int, force: bool) -> tuple[int, int, int]:
@@ -99,6 +100,7 @@ def index_build(
     from ..storage import IndexManager
 
     config, db = get_config_and_db()
+    require_kb(config, kb_name, db=db, output_format="rich")
 
     if background:
         from ..services.index_worker import IndexWorker
@@ -187,7 +189,7 @@ def index_build(
                 # *skip* it -- it only asks whether a vector exists, not
                 # whether it is current -- so an update's row must be settled
                 # before, not after.
-                _settle_embed_queue(db)
+                _settle_embed_queue(db, model_name=config.settings.embedding_model)
                 svc = EmbeddingService(db, model_name=config.settings.embedding_model)
                 stats = svc.embed_all(kb_name=kb_name, force=force)
                 if stats["embedded"] > 0:
@@ -204,11 +206,20 @@ def index_sync(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB to sync (all if omitted)"),
     no_embed: bool = typer.Option(False, "--no-embed", help="Skip auto-embedding after sync"),
     background: bool = typer.Option(False, "--background", help="Run in background thread"),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Hash all known files whose stat is unchanged and sync changed content (foreground only).",
+    ),
 ):
-    """Incremental sync: update index for changed files only."""
+    """Incremental sync, with optional content-hash verification."""
     from ..storage import IndexManager
 
+    if background and verify:
+        raise typer.BadParameter("--verify cannot be combined with --background")
+
     config, db = get_config_and_db()
+    require_kb(config, kb_name, db=db, output_format="rich")
 
     if background:
         from ..services.index_worker import IndexWorker
@@ -221,7 +232,10 @@ def index_sync(
 
     index_mgr = IndexManager(db, config)
 
-    results = index_mgr.sync_incremental(kb_name)
+    if verify:
+        results = index_mgr.sync_incremental(kb_name, verify=True)
+    else:
+        results = index_mgr.sync_incremental(kb_name)
 
     console.print("[green]Sync complete:[/green]")
     console.print(f"  Added: {results['added']}")
@@ -236,6 +250,18 @@ def index_sync(
             console.print(f"    [dim]• {entry['path']}[/dim]")
         if len(malformed) > 5:
             console.print(f"    [dim]… and {len(malformed) - 5} more[/dim]")
+    skipped = results.get("skipped", [])
+    if skipped:
+        console.print(f"  [yellow]Non-regular: {len(skipped)} file(s) skipped[/yellow]")
+        for entry in skipped[:5]:
+            console.print(
+                f"    {entry['path']}: {entry['reason']}",
+                markup=False,
+                highlight=False,
+            )
+        if len(skipped) > 5:
+            console.print(f"    [dim]... and {len(skipped) - 5} more[/dim]")
+
     duplicates = results.get("duplicates", [])
     if duplicates:
         console.print(
@@ -255,7 +281,7 @@ def index_sync(
     # `embed_all(force=False)` would skip it because a (stale) vector exists.
     changed = results["added"] + results["updated"]
     if not no_embed:
-        _settle_embed_queue(db)
+        _settle_embed_queue(db, model_name=config.settings.embedding_model)
 
     if changed > 0 and not no_embed:
         try:
@@ -273,7 +299,10 @@ def index_sync(
 @index_app.command("stats")
 def index_stats(
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
 ):
     """Show index statistics."""
@@ -318,19 +347,23 @@ def index_embed(
 ):
     """Generate vector embeddings for semantic search."""
     from ..services.embedding_service import (
+        EmbeddingModelUnavailableError,
         EmbeddingService,
         is_available,
         semantic_unavailable,
     )
 
+    # The KB first (#952): a name that is not a KB is refused before the
+    # dependency check, so the answer names the thing that is wrong.
+    config, db = get_config_and_db()
+    require_kb(config, kb_name, db=db, output_format="rich")
     if not is_available():
+        missing = semantic_unavailable(False)  # never None while the package is absent
         cli_error(
             "sentence-transformers is not installed.",
             error_code="DEPENDENCY_MISSING",
-            suggestion="install with: pip install pyrite[semantic]",
+            suggestion=missing[2] if missing else None,
         )
-
-    config, db = get_config_and_db()
 
     if unavailable := semantic_unavailable(db.vec_available, getattr(db, "vec_load_error", None)):
         # The same cause and remedy `search` gives (one function), not an
@@ -357,9 +390,17 @@ def index_embed(
     # Before embed_all, not after: a queued row marks an entry whose body
     # changed, and only the drain re-embeds it. embed_all(force=False) skips
     # anything that already has a vector, stale or not.
-    from ..services.embedding_worker import settle_embed_queue_by_kb
+    from ..services.embedding_worker import EmbeddingWorker, settle_embed_queue_by_kb
 
-    by_kb = settle_embed_queue_by_kb(db)
+    queue_worker = EmbeddingWorker(db, model_name=config.settings.embedding_model)
+    if queue_worker.has_pending() and (model_problem := queue_worker.model_unavailable()):
+        typer.echo(model_problem)
+        # Nothing was embedded and the queued entries stay owed: the batch rule
+        # (docs/json-contracts.md, "Exit codes (CLI)": offline with nothing
+        # embedded is 1, never 0).
+        exit_unless_whole(queue_worker.get_status()["pending"], 0)
+
+    by_kb = settle_embed_queue_by_kb(db, model_name=config.settings.embedding_model)
     from_queue = sum(by_kb.values()) if kb_name is None else by_kb.get(kb_name, 0)
     # The drain settles every KB's queue, whatever --kb says; entries in other
     # KBs are embedded too, and are not in this run's counts below.
@@ -367,22 +408,33 @@ def index_embed(
 
     svc = EmbeddingService(db, model_name=config.settings.embedding_model)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("{task.completed}/{task.total}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Embedding entries...", total=None)
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Embedding entries...", total=None)
 
-        def update_progress(current: int, total: int):
-            progress.update(task, completed=current, total=total)
+            def update_progress(current: int, total: int):
+                progress.update(task, completed=current, total=total)
 
-        stats = svc.embed_all(
-            kb_name=kb_name,
-            force=force,
-            progress_callback=update_progress,
+            stats = svc.embed_all(
+                kb_name=kb_name,
+                force=force,
+                progress_callback=update_progress,
+            )
+    except EmbeddingModelUnavailableError as e:
+        # The finder in `is_available()` saw the package; its first real import
+        # failed. That is a missing dependency, not an entry error (#1101).
+        from ..utils.install_hints import extra_install_command
+
+        cli_error(
+            str(e),
+            error_code="DEPENDENCY_MISSING",
+            suggestion=extra_install_command("semantic"),
         )
 
     embedded, skipped, overshoot = _embed_counts(stats, from_queue, force)
@@ -421,7 +473,10 @@ def index_embed(
 @index_app.command("health")
 def index_health(
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
     kb_name: str = typer.Option(
         None, "--kb", "-k", help="Only check this KB (default: every configured KB)"
@@ -440,7 +495,7 @@ def index_health(
     """
     from ..storage import IndexManager
 
-    with cli_db_context() as (config, db):
+    with cli_db_context(kbs=(kb_name,), output_format=output_format) as (config, db):
         if kb_name is not None and config.get_kb(kb_name) is None:
             # Reporting a clean bill for a KB that does not exist would be the same
             # bug as exiting 0 while unhealthy: a non-answer that reads as success.
@@ -458,35 +513,22 @@ def index_health(
     missing_required = health.get("missing_required_fields", [])
     subdirectory_mismatches = health.get("subdirectory_mismatches", [])
     malformed_frontmatter = health.get("malformed_frontmatter", [])
+    unreadable_files = health.get("unreadable_files", [])
+    orphaned_entries = health.get("orphaned_entries", [])
     invalid_statuses = health.get("invalid_statuses", [])
     off_list_values = health.get("off_list_values", [])
-    # Off-list enum values roll up by row severity (#555): `error` (a kb.yaml
-    # enum in a KB with `validation.enforce_enums` on -- writes refuse it) is
-    # unhealthy; `warning` (switch off, or a plugin enum) is a warning; `info`
-    # (an `allow_other` field) does not move the status.
-    off_list_severities = {row.get("severity") for row in off_list_values}
     duplicates = health.get("duplicates", [])
-    is_unhealthy = (
-        health["missing_files"]
-        or health["unindexed_files"]
-        or health["stale_entries"]
-        or health.get("content_changed")
-        # Two files claiming one id: only the first path is indexed, so the
-        # other is invisible to search. Unhealthy, named loudly (maintainer,
-        # 2026-10-03, ADR-0038 decided question 3).
-        or duplicates
-        or "error" in off_list_severities
-    )
-    has_warning = (
-        bool(broken_links)
-        or bool(undeclared_types)
-        or bool(missing_required)
-        or bool(subdirectory_mismatches)
-        or bool(malformed_frontmatter)
-        or bool(invalid_statuses)
-        or "warning" in off_list_severities
-    )
-    status = "unhealthy" if is_unhealthy else ("warning" if has_warning else "healthy")
+    removed_extensions = health.get("removed_extensions", [])
+    unmodellable_frontmatter = health.get("unmodellable_frontmatter", [])
+    double_spellings = health.get("double_spellings", [])
+    # One verdict for every surface that reads this report (#1119); `status`
+    # also rolls off-list enum values up by row severity (#555).
+    from ..services.index_health import health_verdict
+
+    verdict = health_verdict(health)
+    is_unhealthy = verdict["is_unhealthy"]
+    has_warning = verdict["has_warning"]
+    status = verdict["status"]
 
     formatted = _format_output(
         {
@@ -496,13 +538,23 @@ def index_health(
             "stale_entries": len(health["stale_entries"]),
             "content_changed": len(health.get("content_changed", [])),
             "broken_links": broken_links,
+            "links_stale_kb": health.get("links_stale_kb", 0),
             "undeclared_types": undeclared_types,
             "missing_required_fields": missing_required,
             "subdirectory_mismatches": subdirectory_mismatches,
             "malformed_frontmatter": malformed_frontmatter,
+            "unreadable_files": unreadable_files,
+            "orphaned_entries": orphaned_entries,
             "invalid_statuses": invalid_statuses,
             "off_list_values": off_list_values,
             "duplicates": duplicates,
+            "removed_extensions": removed_extensions,
+            "type_name_drift": health.get("type_name_drift", []),
+            "type_name_drift_total": health.get("type_name_drift_total", 0),
+            "type_name_drift_has_more": health.get("type_name_drift_has_more", False),
+            "schema_errors": health.get("schema_errors", []),
+            "unmodellable_frontmatter": unmodellable_frontmatter,
+            "double_spellings": double_spellings,
             "checks": health,
         },
         output_format,
@@ -522,6 +574,9 @@ def index_health(
         invalid_statuses=invalid_statuses,
         off_list_values=off_list_values,
         duplicates=duplicates,
+        removed_extensions=removed_extensions,
+        unmodellable_frontmatter=unmodellable_frontmatter,
+        double_spellings=double_spellings,
         health=health,
     )
     if is_unhealthy and fail:
@@ -541,6 +596,9 @@ def _report_health(
     invalid_statuses,
     off_list_values,
     duplicates=(),
+    removed_extensions=(),
+    unmodellable_frontmatter=(),
+    double_spellings=(),
     health,
 ):
     """Print the health report. Returns nothing; the caller sets the exit code."""
@@ -562,6 +620,40 @@ def _report_health(
             f"[yellow]⚠ {broken_links} broken link(s) found.[/yellow]"
             " Run 'pyrite links check' for details."
         )
+
+    stale_rows = health.get("links_stale_kb") or 0
+    if stale_rows:
+        console.print(
+            f"[yellow]⚠ {stale_rows} link row(s) point at a different KB than their"
+            " file's prefix now names (a shortname changed since the file was indexed,"
+            " or a row from before the full name was stored).[/yellow]"
+            " Run 'pyrite index build' to rewrite them from the files."
+        )
+
+    if removed_extensions:
+        console.print(
+            f"[yellow]⚠ {len(removed_extensions)} KB(s) still using a removed extension's "
+            "types:[/yellow]"
+        )
+        for row in removed_extensions:
+            console.print(f"  • {row['message']}")
+    for err in health.get("schema_errors", []):
+        console.print(
+            f"kb.yaml failed to load for {err['kb']}: {err['error']}",
+            style="yellow",
+            markup=False,
+            highlight=False,
+        )
+
+    if health.get("type_name_drift_total"):
+        console.print(
+            f"[yellow]Type name drift: {health['type_name_drift_total']} group(s)[/yellow]"
+        )
+        for group in health["type_name_drift"][:10]:
+            names = ", ".join(f"{r['type']} ({r['count']})" for r in group["spellings"][:10])
+            console.print(f"  • {group['kb']}: {names}", markup=False)
+        if health["type_name_drift_total"] > 10:
+            console.print("  ... use --format json for the bounded report and totals")
 
     if undeclared_types:
         total = sum(row["count"] for row in undeclared_types)
@@ -608,6 +700,33 @@ def _report_health(
         if len(malformed_frontmatter) > 10:
             console.print(f"  ... and {len(malformed_frontmatter) - 10} more")
 
+    if double_spellings:
+        # Andon #994: `metadata.k` is a second spelling of `k`; a file that
+        # spells a field twice is read at one spelling and refused for update.
+        console.print(
+            f"[yellow]⚠ {len(double_spellings)} field(s) spelled twice in one file "
+            "(the top-level spelling is read; no update reaches the field until one "
+            "spelling is removed):[/yellow]"
+        )
+        for row in double_spellings[:10]:
+            console.print(
+                f"  • {row['kb']}/{row['id']}: {row['field']} as {', '.join(row['spellings'])}"
+            )
+        if len(double_spellings) > 10:
+            console.print(f"  ... and {len(double_spellings) - 10} more")
+
+    if unmodellable_frontmatter:
+        # #760 (b): no write reaches these files; said here, with the line,
+        # so they are never invisible.
+        console.print(
+            f"[yellow]⚠ {len(unmodellable_frontmatter)} file(s) whose frontmatter Pyrite "
+            "cannot model (no update reaches them; fix the key by hand):[/yellow]"
+        )
+        for row in unmodellable_frontmatter[:10]:
+            console.print(f"  • {row['kb']}: {row['path']}:{row['line']} — {row['reason']}")
+        if len(unmodellable_frontmatter) > 10:
+            console.print(f"  ... and {len(unmodellable_frontmatter) - 10} more")
+
     if invalid_statuses:
         console.print(
             f"[yellow]⚠ {len(invalid_statuses)} entries with an invalid status"
@@ -643,6 +762,26 @@ def _report_health(
         )
         for line in _duplicate_lines(list(duplicates)):
             console.print(f"  • {line}", markup=False, highlight=False)
+
+    unreadable_files = health.get("unreadable_files", [])
+    if unreadable_files:
+        console.print(f"[red]Unreadable files ({len(unreadable_files)}):[/red]")
+        for item in unreadable_files[:10]:
+            console.print(f"  {item['kb']}: {item['path']}  {item['error']}", markup=False)
+        if len(unreadable_files) > 10:
+            console.print(f"  ... and {len(unreadable_files) - 10} more")
+
+    orphaned_entries = health.get("orphaned_entries", [])
+    if orphaned_entries:
+        console.print(f"[red]Orphaned index entries ({len(orphaned_entries)}):[/red]")
+        for item in orphaned_entries[:10]:
+            replacement = f" (now {item['replacement_id']})" if item.get("replacement_id") else ""
+            console.print(
+                f"  {item['kb']}/{item['id']}: {item['path']}{replacement}",
+                markup=False,
+            )
+        if len(orphaned_entries) > 10:
+            console.print(f"  ... and {len(orphaned_entries) - 10} more")
 
     if health["missing_files"]:
         console.print(f"[red]Missing files ({len(health['missing_files'])}):[/red]")
@@ -687,6 +826,7 @@ def index_reconcile(
     from ..services.kb_service import KBService
 
     config, db = get_config_and_db()
+    require_kb(config, kb_name, db=db, output_format="rich")
     kb_config = config.get_kb(kb_name)
     if not kb_config:
         cli_error(

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from ...utils.json_utils import SafeEncoder as _SafeEncoder
 from ..models import Block, EdgeEndpoint, Entry, EntryRef, EntryTag, Link, Source, Tag
+from .protocol import DEFAULT_MIN_SIMILARITY
 
 
 def kb_names_clause(
@@ -48,6 +49,47 @@ def kb_names_clause(
         params[key] = name
         keys.append(f":{key}")
     return f"{column} IN ({', '.join(keys)})"
+
+
+#: A link row's identity: (target_id, target_kb, relation, target_prefix).
+LinkKey = tuple[Any, Any, Any, Any]
+
+
+def _link_rows(kb_name: str, links: list[dict[str, Any]]) -> dict[LinkKey, dict[str, Any]]:
+    """The link rows an entry's ``links`` make: one per written link (#1009).
+
+    Two links are one row when they have the same key: the target, KB and
+    relation as the TEXT their columns hold (``as_stored_text``, the one
+    conversion the write path's duplicate check uses too, #1022), and the
+    prefix as written. The prefix is part of the key, not a value: ``[[ops:x]]``
+    and ``[[ops-kb:x]]`` resolve to one KB but are two links, and each is
+    checked for a stale prefix on its own (``links_stale_kb``). The first link
+    with a key gives the row its note (``[[x]]`` before ``[[x#Part]]``).
+
+    Every value is converted here, so the row an insert writes is the key the
+    next sync compares. An explicit null stays None, so the refusals the index
+    already gave it are unchanged; a *missing* key is "" and stays storable.
+    """
+    from ...models.core_types import as_stored_text
+    from ...schema import get_inverse_relation
+
+    rows: dict[LinkKey, dict[str, Any]] = {}
+    for link in links:
+        relation = as_stored_text(link.get("relation", "related_to"))
+        key = (
+            as_stored_text(link.get("target", "")),
+            as_stored_text(link.get("kb", kb_name)),
+            relation,
+            as_stored_text(link.get("prefix")),
+        )
+        rows.setdefault(
+            key,
+            {
+                "note": as_stored_text(link.get("note", "")),
+                "inverse_relation": get_inverse_relation(relation),
+            },
+        )
+    return rows
 
 
 def _with_inverse_relation(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -119,6 +161,11 @@ class BaseBackend(ABC):
     def _upsert_entry_main(self, entry_id: str, kb_name: str, entry_data: dict[str, Any]) -> None:
         metadata = entry_data.get("metadata", {})
         metadata_json = json.dumps(metadata, cls=_SafeEncoder) if metadata is not None else "{}"
+        # `aliases` has its own column (#1001, decision 5): a read spells a
+        # field where the file does, so a top-level `aliases:` is never put
+        # under the row's `metadata`; the wikilink alias pass reads this.
+        aliases = entry_data.get("aliases") or []
+        aliases_json = json.dumps(list(aliases), cls=_SafeEncoder) if aliases else None
 
         existing = self._session.get(Entry, (entry_id, kb_name))
         if existing:
@@ -146,6 +193,7 @@ class BaseBackend(ABC):
             existing.state = entry_data.get("state")
             existing.lifecycle = entry_data.get("lifecycle", "active")
             existing.extra_data = metadata_json
+            existing.aliases = aliases_json  # type: ignore[assignment]
             existing.updated_at = entry_data.get("updated_at")
             # Microsecond precision + explicit UTC offset — second-level
             # truncation caused `_is_stale` to fire immediately after
@@ -183,6 +231,7 @@ class BaseBackend(ABC):
                 state=entry_data.get("state"),
                 lifecycle=entry_data.get("lifecycle", "active"),
                 extra_data=metadata_json,
+                aliases=aliases_json,
                 created_at=entry_data.get("created_at"),
                 updated_at=entry_data.get("updated_at"),
                 # Always set indexed_at explicitly — the Column's
@@ -313,6 +362,21 @@ class BaseBackend(ABC):
         return results
 
     @staticmethod
+    def _parse_aliases(raw: Any) -> list:
+        """The `aliases` column (a JSON list) as a list; empty when unset."""
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                return []
+            return parsed if isinstance(parsed, list) else []
+        return []
+
+    @staticmethod
     def _parse_metadata(raw: Any) -> dict:
         """Parse extra_data into a dict, handling JSON strings and edge cases."""
         if not raw:
@@ -351,39 +415,27 @@ class BaseBackend(ABC):
             "end_date": entry.end_date,
             "coordinates": entry.coordinates,
             "metadata": metadata,
+            "aliases": self._parse_aliases(entry.aliases),
             "created_at": entry.created_at,
             "updated_at": entry.updated_at,
             "indexed_at": entry.indexed_at,
             "created_by": entry.created_by,
             "modified_by": entry.modified_by,
         }
-        # Lift well-known top-level fields that live in metadata for legacy
-        # reasons (the software-kb plugin stores rank/effort/kind in the
-        # `metadata` JSON bag rather than as Prioritizable protocol fields).
-        # Consumers expect them at the top level — `pyrite sw backlog` already
-        # does this lift in its own projection. Surface them here so
-        # `pyrite get`, REST `/entries/{id}`, and the MCP `kb_get` tool all
-        # see the same shape. Regression for Tier A 1200
-        # (bug-pyrite-get-omits-rank-field-in-json-output).
-        for key in ("rank", "effort", "kind"):
-            if key in metadata and key not in result:
-                result[key] = metadata[key]
-        # status_reason is the per-transition audit field for the
-        # relaxed-mode state machine (Tier A r1175). Plugins and the
-        # task migration script read it directly off the entry dict;
-        # lift here so consumers don't have to special-case
-        # entry["metadata"]["status_reason"].
-        if "status_reason" in metadata and "status_reason" not in result:
-            result["status_reason"] = metadata["status_reason"]
-        # parked_awaiting is the conductor/dispatch-classifier convention for
-        # marking a task legitimately waiting rather than stalled (not a
-        # schema field on TaskEntry — it now round-trips into metadata via
-        # TaskEntry's unknown-frontmatter-key preservation). Lift here so
-        # TaskService.list_tasks()'s hydration path (which reads
-        # entry.get("parked_awaiting") directly) sees it.
-        # See: issue-pyrite-task-update-strips-non-schema-frontmatter-fields-silently-unparks-monitors
-        if "parked_awaiting" in metadata and "parked_awaiting" not in result:
-            result["parked_awaiting"] = metadata["parked_awaiting"]
+        # A field the type declares but the row has no column for (a backlog
+        # item's `rank`/`effort`/`kind`, a task's `status_reason`) lives in the
+        # `metadata` bag; a read spells it at its own name too, so `pyrite
+        # get`, REST `/entries/{id}` and MCP `kb_get` see the file's shape
+        # (Tier A 1200, r1175). The rule is `lift_declared_fields` (#1025),
+        # shared with `IndexManager.read_fields`; a key the type does not
+        # declare stays the bag's. The bag itself is kept whole here: this
+        # is the storage dict the plugins read declared fields from; only
+        # the single-entry read drops them from its `metadata`.
+        from ...models.core_types import get_entry_class
+        from ...schema.field_aliases import lift_declared_fields
+
+        entry_type = str(entry.entry_type)
+        lift_declared_fields(result, metadata, get_entry_class(entry_type), entry_type)
         return result
 
     def _get_entry_tags(self, entry_id: str, kb_name: str) -> list[str]:
@@ -497,10 +549,12 @@ class BaseBackend(ABC):
 
         query = query.limit(limit).offset(offset)
         rows = query.all()
+        entry_keys = [(entry.id, entry.kb_name) for entry in rows]
+        tags_by_entry = self._get_tags_for_entries(entry_keys)
         entries = []
         for entry in rows:
             e = self._entry_to_dict(entry)
-            e["tags"] = self._get_entry_tags(entry.id, entry.kb_name)
+            e["tags"] = tags_by_entry.get((entry.id, entry.kb_name), [])
             entries.append(e)
         return entries
 
@@ -599,6 +653,7 @@ class BaseBackend(ABC):
         fips: str | None = None,
         state: str | None = None,
         status: str | None = None,
+        non_empty: bool = False,
     ) -> list[dict[str, Any]]:
         """Full-text search — FTS5 (SQLite) or tsvector (Postgres)."""
         ...
@@ -635,7 +690,7 @@ class BaseBackend(ABC):
         embedding: list[float],
         kb_name: str | None = None,
         limit: int = 20,
-        max_distance: float = 1.3,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
         entry_type: str | None = None,
         tags: list[str] | None = None,
         date_from: str | None = None,
@@ -644,10 +699,14 @@ class BaseBackend(ABC):
         state: str | None = None,
         status: str | None = None,
         include_archived: bool = False,
+        kb_names: set[str] | list[str] | None = None,
+        non_empty: bool = False,
     ) -> list[dict[str, Any]]: ...
 
     @abstractmethod
-    def has_embeddings(self) -> bool: ...
+    def has_embeddings(
+        self, kb_name: str | None = None, kb_names: set[str] | list[str] | None = None
+    ) -> bool: ...
 
     @abstractmethod
     def embedding_stats(self) -> dict[str, Any]: ...
@@ -685,6 +744,10 @@ class BaseBackend(ABC):
         - ``inverse_relation``: the declared inverse of ``forward_relation``,
           ``None`` when it is not a declared type. Computed at query time, so
           an index built before a plugin registered the type still answers.
+        - ``prefix``: the KB prefix the source wrote for this link, exactly
+          as written (``None`` for a row indexed before #980). It is part of
+          the link's identity: ``[[ops:x]]`` and ``[[ops-kb:x]]`` are two
+          rows, and a reader that merges rows must keep them apart (#1062).
 
         ``readable_kbs`` (the caller's ``ReadScope`` set; ``None`` unscoped)
         drops a source the caller cannot read -- the same answer as a source
@@ -693,7 +756,7 @@ class BaseBackend(ABC):
         sql = """
             SELECT e.id, e.kb_name, e.title, e.entry_type,
                    l.inverse_relation as relation, l.relation as forward_relation,
-                   l.note
+                   l.target_prefix as prefix, l.note
             FROM link l
             JOIN entry e ON l.source_id = e.id AND l.source_kb = e.kb_name
             WHERE l.target_id = :entry_id AND l.target_kb = :kb_name
@@ -723,7 +786,7 @@ class BaseBackend(ABC):
         return self._exec(
             f"""
             SELECT l.target_id as id, l.target_kb as kb_name,
-                   e.title, e.entry_type, l.relation, l.note
+                   e.title, e.entry_type, l.relation, l.target_prefix as prefix, l.note
             FROM link l
             LEFT JOIN entry e ON l.target_id = e.id AND l.target_kb = e.kb_name
                 {f"AND {scope}" if scope else ""}
@@ -738,7 +801,7 @@ class BaseBackend(ABC):
             """
             SELECT l.target_id, e.id, e.kb_name, e.title, e.entry_type,
                    l.inverse_relation as relation, l.relation as forward_relation,
-                   l.note
+                   l.target_prefix as prefix, l.note
             FROM link l
             JOIN entry e ON l.source_id = e.id AND l.source_kb = e.kb_name
             WHERE l.target_kb = :kb_name
@@ -758,7 +821,7 @@ class BaseBackend(ABC):
             """
             SELECT l.source_id,
                    l.target_id as id, l.target_kb as kb_name,
-                   e.title, e.entry_type, l.relation, l.note
+                   e.title, e.entry_type, l.relation, l.target_prefix as prefix, l.note
             FROM link l
             LEFT JOIN entry e ON l.target_id = e.id AND l.target_kb = e.kb_name
             WHERE l.source_kb = :kb_name
@@ -920,30 +983,24 @@ class BaseBackend(ABC):
                 frontier = next_frontier
         else:
             params: dict[str, Any] = {}
-            if readable_kbs is None:
-                sql = """
-                    SELECT e.id, e.kb_name, e.title, e.entry_type
-                    FROM entry e
-                    WHERE (e.id IN (SELECT source_id FROM link)
-                       OR e.id IN (SELECT target_id FROM link))
-                """
-            else:
-                # A node earns its place by a link the caller can see: one it
-                # makes itself, or one made to it from a readable source.
-                # Otherwise a readable entry linked only from a private KB
-                # would appear, and take a slot of `limit`, because of it.
-                inbound = kb_names_clause("l.source_kb", readable_kbs, params)
-                entry_scope = kb_names_clause("e.kb_name", readable_kbs, params)
-                sql = f"""
-                    SELECT e.id, e.kb_name, e.title, e.entry_type
-                    FROM entry e
-                    WHERE (EXISTS (SELECT 1 FROM link l
-                                   WHERE l.source_id = e.id AND l.source_kb = e.kb_name)
-                       OR EXISTS (SELECT 1 FROM link l
-                                  WHERE l.target_id = e.id AND l.target_kb = e.kb_name
-                                    AND {inbound}))
-                      AND {entry_scope}
-                """
+            # A node earns its place by a link that names it by id *and* KB:
+            # one it makes itself, or one made to it from a readable source
+            # (when the caller is scoped). The id alone pulled in `kb:x`
+            # because `ka:x` was linked (#1058), and a readable entry linked
+            # only from a private KB would appear, and take a slot of
+            # `limit`, because of it.
+            inbound = kb_names_clause("l.source_kb", readable_kbs, params)
+            entry_scope = kb_names_clause("e.kb_name", readable_kbs, params)
+            sql = f"""
+                SELECT e.id, e.kb_name, e.title, e.entry_type
+                FROM entry e
+                WHERE (EXISTS (SELECT 1 FROM link l
+                               WHERE l.source_id = e.id AND l.source_kb = e.kb_name)
+                   OR EXISTS (SELECT 1 FROM link l
+                              WHERE l.target_id = e.id AND l.target_kb = e.kb_name
+                                {f"AND {inbound}" if inbound else ""}))
+                  {f"AND {entry_scope}" if entry_scope else ""}
+            """
             if kb_name:
                 sql += " AND e.kb_name = :kb_name"
                 params["kb_name"] = kb_name
@@ -961,7 +1018,11 @@ class BaseBackend(ABC):
                 for r in link_rows:
                     src = (r["source_id"], r["source_kb"])
                     tgt = (r["target_id"], r["target_kb"])
-                    if src in nodes and tgt in nodes:
+                    # One edge per pair of entries, as the centred walk draws
+                    # it: a source writes one link row per link (#1009), and
+                    # two links between one pair are not two edges.
+                    if src in nodes and tgt in nodes and (*src, *tgt) not in edge_set:
+                        edge_set.add((*src, *tgt))
                         edges.append(r)
 
         node_list = []
