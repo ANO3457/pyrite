@@ -15,10 +15,10 @@ from rich.console import Console
 
 from .cli.context import require_kb
 from .config import (
-    CONFIG_FILE,
     KBConfig,
     Repository,
     auto_discover_kbs,
+    current_config_file,
     load_config,
     save_config,
 )
@@ -591,10 +591,11 @@ def auth_logout():
 @config_app.command("show")
 def config_show():
     """Show current configuration."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Repositories:[/bold] {len(config.repositories)}")
