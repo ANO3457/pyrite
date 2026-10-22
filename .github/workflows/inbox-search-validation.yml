@@ -1,0 +1,28 @@
+name: Inbox search validation
+on:
+  push:
+    branches: ['validation/inbox1229-world']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - run: |
+          ruff check tests/test_search_filters_across_modes.py
+          ruff format --check tests/test_search_filters_across_modes.py
+          pytest tests/test_search_filters_across_modes.py tests/test_production_wiring_guard.py -q --no-cov
+        env:
+          HF_HUB_OFFLINE: '1'
+          GITHUB_BASE_REF: dev
