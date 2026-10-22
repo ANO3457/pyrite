@@ -22,7 +22,7 @@ jobs:
       - run: |
           ruff check pyrite/services/qa_service.py tests/test_effective_status_everywhere.py
           ruff format --check pyrite/services/qa_service.py tests/test_effective_status_everywhere.py
-          pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_requested_effect_exit_code.py tests/test_production_wiring_guard.py tests/test_cli_output_contract.py -q --no-cov
+          pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_requested_effect_exit_code.py tests/test_production_wiring_guard.py tests/test_default_output_is_the_result.py -q --no-cov
         env:
           HF_HUB_OFFLINE: '1'
           GITHUB_BASE_REF: dev
