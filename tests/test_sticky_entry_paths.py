@@ -51,6 +51,7 @@ def test_rename_keeps_filename_and_new_id_is_addressable(env, subdir, after):
     assert result["index_verified"] is True
     assert path.exists()
     assert repo.find_file("omega") == path
+    assert repo.load("omega").body == "Body"
     assert repo.find_file("alpha") is None
     assert service.db.get_entry("omega", "test") is not None
     assert service.db.get_entry("alpha", "test") is None
@@ -62,8 +63,8 @@ def test_rename_keeps_filename_and_new_id_is_addressable(env, subdir, after):
         assert not path.exists()
 
 
-@pytest.mark.control(reason="Current dev keeps update paths even when template fields change")
-def test_template_field_update_preserves_current_folder(env):
+@pytest.mark.control(reason="Templated folders still move when their folder fields change")
+def test_template_folder_move_remains_supported(env):
     from pyrite.schema.field_schema import TypeSchema
     from pyrite.schema.kb_schema import KBSchema
 
@@ -76,8 +77,9 @@ def test_template_field_update_preserves_current_folder(env):
     path = repo.save(entry)
     _index(service)
     assert path.parent == kb.path / "notes" / "active"
-    assert service.update("alpha", "test", {"status": "done"}).entry.file_path == path
-    assert path.exists()
+    moved = service.update("alpha", "test", {"status": "done"}).entry.file_path
+    assert moved.parent == kb.path / "notes" / "done"
+    assert moved.exists() and not path.exists()
 
 
 @pytest.mark.control(reason="File-pattern types already keep their filename on rename")

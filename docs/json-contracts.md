@@ -1447,8 +1447,8 @@ is the error shape above in one line.
 
 Renaming an entry changes its id while preserving its filename and folder.
 A subsequent update or delete resolves the new id in the existing file.
-Updates preserve deliberate placement, including the KB root, even when a
-field used by a templated subdirectory changes (ADR-0042 decision 12).
+Updates preserve deliberate placement, including the KB root; a schema with
+a templated subdirectory may still move the file when its folder fields change.
 
 ## QA results: only what ran
 
