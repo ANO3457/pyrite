@@ -15,7 +15,7 @@ from rich.table import Table
 from .cli.context import open_index_db, require_kb
 from .cli.output import validate_output_format
 from .cli.search_commands import register_search_command
-from .config import CONFIG_FILE, load_config
+from .config import current_config_file, load_config
 from .exceptions import PyriteError, refusal_fields
 from .logging import configure_entry_point_logging, logging_epilog
 from .services.access_policy import UNSCOPED
@@ -378,10 +378,11 @@ def backlinks_cmd(
 @app.command("config")
 def show_config():
     """Show current configuration (read-only)."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Subscriptions:[/bold] {len(config.subscriptions)}")
