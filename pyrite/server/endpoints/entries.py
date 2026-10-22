@@ -867,12 +867,9 @@ def update_entry(
         except ValueError:
             pass  # KB not in a git repo — fall back to main
 
-    # `id` is not a field `UpdateEntryRequest` accepts (unknown keys are
-    # refused above), so a client that reads an entry and PUTs it straight
-    # back cannot trip `split_echoed_update`'s own "this looks like an
-    # echoed read" heuristic (`id`/`file_path`/index-only keys) the way MCP
-    # `kb_update` does. A REST PUT to `/entries/{id}` is always that
-    # caller's current view of the resource, so `id` is added here to put
+    # A whole GET response is not a valid PUT body: read-only `id`,
+    # `file_path` and other unknown request keys are refused above. Clients
+    # must select accepted fields. Add the path id internally to put
     # every PUT through the same reading-comparison MCP gets for an echo:
     # `importance`/`tags` sent back unchanged from a GET are left alone
     # instead of rewriting `importance: high` as `5` or `tags: Foo` as
