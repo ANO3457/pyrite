@@ -473,6 +473,9 @@ class UpdateEntryRequest(BaseModel):
     # Transport control, not an entry field. The body-bounds dependency
     # refuses truthy markers on a body write; explicit false remains valid.
     body_truncated: Any = False
+    body_length: Any = None
+    body_offset: Any = None
+    body_chunk_size: Any = None
     kb: str
     title: str | None = None
     body: str | None = None

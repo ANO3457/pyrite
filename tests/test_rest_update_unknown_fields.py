@@ -88,3 +88,29 @@ def test_post_writes_declared_adr_status_from_metadata(make_client):
     path = next(Path(config.knowledge_bases[0].path).rglob("*decision*.md"))
     frontmatter, _ = load_frontmatter(path.read_text(encoding="utf-8"))
     assert frontmatter["status"] == "accepted"
+
+
+@pytest.mark.parametrize("truncated", [False, True])
+def test_put_read_transport_markers_are_not_entry_content(make_client, truncated):
+    client, config, _ = make_client()
+    created = client.post(
+        "/api/entries",
+        json={"kb": "test-kb", "title": "Transport test", "entry_type": "note", "body": "Original"},
+    )
+    assert created.status_code == 200, created.text
+    entry_id = created.json()["id"]
+    marker = {"body_truncated": truncated, "body_length": 8, "body_offset": 0, "body_chunk_size": 8}
+    result = client.put(
+        f"/api/entries/{entry_id}", json={"kb": "test-kb", "body": "Complete", **marker}
+    )
+    if truncated:
+        assert result.status_code == 400, result.text
+        assert result.json()["detail"]["code"] == "VALIDATION_FAILED"
+    else:
+        assert result.status_code == 200, result.text
+    path = next(Path(config.knowledge_bases[0].path).rglob("*transport-test*.md"))
+    from pyrite.utils.frontmatter import load_frontmatter
+
+    frontmatter, body = load_frontmatter(path.read_text(encoding="utf-8"))
+    assert not (set(marker) & set(frontmatter))
+    assert body.strip() == ("Original" if truncated else "Complete")
