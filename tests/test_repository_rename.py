@@ -6,7 +6,7 @@ and users avoid renaming even when the new name is clearly better,
 because the cleanup cost is high enough that the KB accumulates
 slug-drift. This test pins the contract for the smallest useful slice:
 
-  - rename file on disk
+  - preserve the file path on disk
   - rewrite frontmatter `id:` field
   - rewrite `[[<old-id>]]` and `[[<old-id>|alias]]` wikilinks within
     the same KB
