@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .protocol import DEFAULT_MIN_SIMILARITY
+
 
 class OverlaySearchBackend:
     """Overlays a user's diff index on top of the shared main index.
@@ -179,6 +181,7 @@ class OverlaySearchBackend:
         fips: str | None = None,
         state: str | None = None,
         status: str | None = None,
+        non_empty: bool = False,
     ) -> list[dict[str, Any]]:
         main_results = self._main.search(
             query,
@@ -194,6 +197,7 @@ class OverlaySearchBackend:
             fips=fips,
             state=state,
             status=status,
+            non_empty=non_empty,
         )
         diff_results = self._diff.search(
             query,
@@ -209,6 +213,7 @@ class OverlaySearchBackend:
             fips=fips,
             state=state,
             status=status,
+            non_empty=non_empty,
         )
         merged = self._merge_entry_lists(main_results, diff_results)
         return merged[offset : offset + limit] if limit else merged
@@ -262,9 +267,12 @@ class OverlaySearchBackend:
     ) -> list[dict[str, Any]]:
         main = self._main.get_backlinks(entry_id, kb_name, limit=10000, readable_kbs=readable_kbs)
         diff = self._diff.get_backlinks(entry_id, kb_name, limit=10000, readable_kbs=readable_kbs)
-        # The inverse relation may be shared by distinct custom relations.
+        # The inverse relation may be shared by distinct custom relations, and
+        # one source may write the same target twice through two prefixes:
+        # rows are per written link (#1009), so the prefix is part of the
+        # identity this merge may collapse on (#1062).
         merged = self._merge_entry_lists(
-            main, diff, key_fields=("id", "kb_name", "forward_relation")
+            main, diff, key_fields=("id", "kb_name", "forward_relation", "prefix")
         )
         if limit:
             return merged[offset : offset + limit]
@@ -275,7 +283,9 @@ class OverlaySearchBackend:
     ) -> list[dict[str, Any]]:
         main = self._main.get_outlinks(entry_id, kb_name, readable_kbs=readable_kbs)
         diff = self._diff.get_outlinks(entry_id, kb_name, readable_kbs=readable_kbs)
-        return self._merge_entry_lists(main, diff, key_fields=("id", "kb_name", "relation"))
+        return self._merge_entry_lists(
+            main, diff, key_fields=("id", "kb_name", "relation", "prefix")
+        )
 
     def get_graph_data(
         self,
@@ -370,7 +380,7 @@ class OverlaySearchBackend:
         embedding: list[float],
         kb_name: str | None = None,
         limit: int = 20,
-        max_distance: float = 1.3,
+        min_similarity: float = DEFAULT_MIN_SIMILARITY,
         entry_type: str | None = None,
         tags: list[str] | None = None,
         date_from: str | None = None,
@@ -379,6 +389,8 @@ class OverlaySearchBackend:
         state: str | None = None,
         status: str | None = None,
         include_archived: bool = False,
+        kb_names: set[str] | list[str] | None = None,
+        non_empty: bool = False,
     ) -> list[dict[str, Any]]:
         # For V1, semantic search from main only. Filters pass straight through
         # so the overlay honours them exactly as main does (#56).
@@ -386,7 +398,8 @@ class OverlaySearchBackend:
             embedding,
             kb_name,
             limit,
-            max_distance,
+            min_similarity,
+            kb_names=kb_names,
             entry_type=entry_type,
             tags=tags,
             date_from=date_from,
@@ -395,10 +408,13 @@ class OverlaySearchBackend:
             state=state,
             status=status,
             include_archived=include_archived,
+            non_empty=non_empty,
         )
 
-    def has_embeddings(self) -> bool:
-        return self._main.has_embeddings()
+    def has_embeddings(
+        self, kb_name: str | None = None, kb_names: set[str] | list[str] | None = None
+    ) -> bool:
+        return self._main.has_embeddings(kb_name, kb_names)
 
     def embedding_stats(self) -> dict[str, Any]:
         return self._main.embedding_stats()

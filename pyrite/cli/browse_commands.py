@@ -12,17 +12,17 @@ from rich.table import Table
 
 from ..exceptions import PyriteError
 from ..services.access_policy import UNSCOPED
-from ..services.read_shaping import parse_fields_param, project_fields
-from .context import cli_context
+from ..services.read_shaping import parse_cli_fields, project_fields
+from .context import cli_context, require_kb
 from .output import validate_output_format
 
 console = Console()
 
 
-def _format_output(data: dict, fmt: str) -> str | None:
+def _format_output(data: dict, fmt: str, **kwargs) -> str | None:
     from .output import format_output
 
-    return format_output(data, fmt)
+    return format_output(data, fmt, **kwargs)
 
 
 def _cli_error(message: str, output_format: str = "rich", error_code: str | None = None) -> None:
@@ -51,12 +51,15 @@ def register_browse_commands(app: typer.Typer) -> None:
         offset: int = typer.Option(0, "--offset", help="Pagination offset"),
         fields: str = typer.Option(None, "--fields", help="Comma-separated fields to return"),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """Browse entries with filters and pagination."""
         limit = min(limit, 200)
-        with cli_context() as (config, db, svc):
+        with cli_context(kbs=(kb_name,), output_format=output_format) as (config, db, svc):
             entries = svc.list_entries(
                 kb_name=kb_name,
                 entry_type=entry_type,
@@ -69,7 +72,7 @@ def register_browse_commands(app: typer.Typer) -> None:
             total = svc.count_entries(kb_name=kb_name, entry_type=entry_type, tag=tag)
 
             # Apply field projection. One rule for every read surface (#193).
-            fields_list = parse_fields_param(fields)
+            fields_list = parse_cli_fields(fields)
             if fields_list:
                 entries = [project_fields(record, fields_list) for record in entries]
 
@@ -81,13 +84,19 @@ def register_browse_commands(app: typer.Typer) -> None:
                 "has_more": offset + limit < total,
             }
 
-            formatted = _format_output(resp_data, output_format)
+            formatted = _format_output(resp_data, output_format, fields=fields_list)
             if formatted is not None:
                 typer.echo(formatted)
                 return
 
             if not entries:
                 console.print("[yellow]No entries found.[/yellow]")
+                return
+
+            if fields_list:
+                from ..formats.tabular import projected_rich_table
+
+                console.print(projected_rich_table(entries, fields_list, "Entries"))
                 return
 
             table = Table(title=f"Entries ({total} total)")
@@ -113,7 +122,10 @@ def register_browse_commands(app: typer.Typer) -> None:
         ),
         fields: str = typer.Option(None, "--fields", help="Comma-separated fields to return"),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """Fetch multiple entries in one call."""
@@ -129,10 +141,15 @@ def register_browse_commands(app: typer.Typer) -> None:
             parsed_ids.append((eid.strip(), kb.strip()))
 
         with cli_context() as (config, db, svc):
+            # Each spec's KB is resolved before anything is read (#952): an
+            # unknown KB or a shortname is refused, never reported as
+            # `not_found`. A spec with no KB (":id") is left to the read.
+            for _eid, kb in parsed_ids:
+                require_kb(config, kb, db=db, output_format=output_format)
             results = svc.get_entries(parsed_ids)
 
             # Apply field projection. One rule for every read surface (#193).
-            fields_list = parse_fields_param(fields)
+            fields_list = parse_cli_fields(fields)
             if fields_list:
                 results = [project_fields(record, fields_list) for record in results]
 
@@ -151,7 +168,7 @@ def register_browse_commands(app: typer.Typer) -> None:
 
             from ..utils.errors import exit_unless_whole
 
-            formatted = _format_output(resp_data, output_format)
+            formatted = _format_output(resp_data, output_format, fields=fields_list)
             if formatted is not None:
                 typer.echo(formatted)
                 # An id that was asked for and is not there: some read, some not (#526).
@@ -163,9 +180,14 @@ def register_browse_commands(app: typer.Typer) -> None:
                 exit_unless_whole(len(not_found), 0)
                 return
 
-            for r in results:
-                console.print(f"\n[bold cyan]{r.get('title', '')}[/bold cyan]")
-                console.print(f"[dim]KB: {r.get('kb_name', '')} | ID: {r.get('id', '')}[/dim]")
+            if fields_list:
+                from ..formats.tabular import projected_rich_table
+
+                console.print(projected_rich_table(results, fields_list, "Entries"))
+            else:
+                for r in results:
+                    console.print(f"\n[bold cyan]{r.get('title', '')}[/bold cyan]")
+                    console.print(f"[dim]KB: {r.get('kb_name', '')} | ID: {r.get('id', '')}[/dim]")
 
             if not_found:
                 console.print(f"\n[yellow]Not found: {len(not_found)} entries[/yellow]")
@@ -184,8 +206,17 @@ def register_browse_commands(app: typer.Typer) -> None:
             "--detail",
             help="full (default) or brief. brief omits the write-side schema blocks.",
         ),
+        overview_limit: int = typer.Option(
+            50, "--limit", help="KBs per no-name overview page (maximum 100)."
+        ),
+        overview_offset: int = typer.Option(
+            0, "--offset", min=0, help="KB offset for a no-name overview page."
+        ),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """One-shot KB orientation summary — types, tags, recent changes, and schema.
@@ -196,10 +227,15 @@ def register_browse_commands(app: typer.Typer) -> None:
         from ..services.access_policy import named_kb
         from ..utils.errors import cli_error, cli_error_from
 
-        with cli_context() as (config, db, svc):
+        with cli_context(kbs=(kb_name,), output_format=output_format) as (config, db, svc):
             try:
                 if not named_kb(kb_name):
-                    result = svc.orient_overview(readable_kbs=UNSCOPED, detail=detail)
+                    result = svc.orient_overview(
+                        readable_kbs=UNSCOPED,
+                        detail=detail,
+                        limit=overview_limit,
+                        offset=overview_offset,
+                    )
                 else:
                     result = svc.orient(kb_name, recent_limit=recent, detail=detail)
             except KBNotFoundError as e:
@@ -332,11 +368,14 @@ def register_browse_commands(app: typer.Typer) -> None:
         ),
         fields: str = typer.Option(None, "--fields", help="Comma-separated fields to return"),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """Show recently changed entries."""
-        with cli_context() as (config, db, svc):
+        with cli_context(kbs=(kb_name,), output_format=output_format) as (config, db, svc):
             entries = svc.list_entries(
                 kb_name=kb_name,
                 entry_type=entry_type,
@@ -349,19 +388,25 @@ def register_browse_commands(app: typer.Typer) -> None:
                 entries = [e for e in entries if (e.get("updated_at") or "") >= since]
 
             # Apply field projection. One rule for every read surface (#193).
-            fields_list = parse_fields_param(fields)
+            fields_list = parse_cli_fields(fields)
             if fields_list:
                 entries = [project_fields(record, fields_list) for record in entries]
 
             resp_data = {"entries": entries, "count": len(entries)}
 
-            formatted = _format_output(resp_data, output_format)
+            formatted = _format_output(resp_data, output_format, fields=fields_list)
             if formatted is not None:
                 typer.echo(formatted)
                 return
 
             if not entries:
                 console.print("[yellow]No recent entries found.[/yellow]")
+                return
+
+            if fields_list:
+                from ..formats.tabular import projected_rich_table
+
+                console.print(projected_rich_table(entries, fields_list, "Recent Entries"))
                 return
 
             table = Table(title=f"Recent Entries ({len(entries)})")
@@ -391,11 +436,14 @@ def register_browse_commands(app: typer.Typer) -> None:
             "desc", "--sort", "-s", help="Sort order: asc or desc (default: desc)"
         ),
         output_format: str = typer.Option(
-            "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+            "json",
+            "--format",
+            callback=validate_output_format,
+            help="Output format: json, rich, markdown, csv, yaml",
         ),
     ):
         """Query timeline events."""
-        with cli_context() as (config, db, svc):
+        with cli_context(kbs=(kb_name,), output_format=output_format) as (config, db, svc):
             results = svc.get_timeline(
                 date_from=date_from,
                 date_to=date_to,
@@ -443,7 +491,7 @@ def register_browse_commands(app: typer.Typer) -> None:
         ),
     ):
         """List tags with counts."""
-        with cli_context() as (config, db, svc):
+        with cli_context(kbs=(kb_name,), output_format=output_format) as (config, db, svc):
             tag_list = svc.get_tags(kb_name=kb_name, limit=limit)
 
             # Apply prefix filter
@@ -481,7 +529,7 @@ def register_browse_commands(app: typer.Typer) -> None:
         ),
     ):
         """Find entries that link to a given entry."""
-        with cli_context() as (config, db, svc):
+        with cli_context(kbs=(kb_name,), output_format=output_format) as (config, db, svc):
             from ..exceptions import PyriteError
             from ..services.graph_service import GraphService
             from ..utils.errors import cli_error_from

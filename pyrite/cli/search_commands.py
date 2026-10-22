@@ -5,6 +5,7 @@ Commands: search (with file-based fallback)
 """
 
 import logging
+import os
 
 import typer
 from rich.console import Console
@@ -12,11 +13,17 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import load_config
-from ..exceptions import QuerySyntaxError, QueryTooLongError
-from ..services.read_shaping import parse_fields_param, project_fields
-from ..storage.repository import KBRepository
+from ..exceptions import QuerySyntaxError, QueryTooLongError, StorageError, ValidationError
+from ..services.read_shaping import (
+    IDENTITY_FIELDS,
+    SEARCH_FIELDS_ENV,
+    parse_fields_param,
+    project_fields,
+    resolve_search_fields,
+    unmatched_search_fields,
+)
 from ..utils.errors import exit_unless_whole
-from .context import get_config_with_registered_kbs
+from .context import get_config_with_registered_kbs, require_kb
 from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
@@ -35,14 +42,12 @@ def _warn_if_stale(config, db, kb_name: str | None) -> None:
     never break a search). Scoped to ``kb_name`` when the caller passed ``-k``.
     """
     try:
-        from ..storage import IndexManager
+        from ..services.kb_service import KBService
 
-        stale = IndexManager(db, config).check_staleness()
-        if kb_name:
-            stale = [s for s in stale if s["kb"] == kb_name]
+        stale = KBService(config, db).stale_kbs(kb_name)
         if not stale:
             return
-        kbs = ", ".join(s["kb"] for s in stale)
+        kbs = ", ".join(stale)
         err_console.print(
             f"[yellow]Warning:[/yellow] index may be stale for: {kbs} "
             f"(a file on disk is newer than the index). Results could be out "
@@ -94,7 +99,13 @@ def register_search_command(app: typer.Typer):
             False, "--debug", help="Print the search trace (mode, fallback reason, latency)"
         ),
         fields: str = typer.Option(
-            None, "--fields", help="Comma-separated fields to return (e.g. id,title,tags)"
+            None,
+            "--fields",
+            help=(
+                "Comma-separated fields per result (e.g. id,title,date); '*' for "
+                "every field. Default: id, kb_name, entry_type, title, snippet and "
+                "the score. Overrides PYRITE_SEARCH_FIELDS."
+            ),
         ),
         output_format: str = typer.Option(
             "json",
@@ -122,24 +133,39 @@ def register_search_command(app: typer.Typer):
         "cross-link"' NOT 'miller -bannon' (a bare hyphen there is parsed
         as the NOT operator, not a literal exclude — matching Bannon
         entries, not excluding them).
+
+        Each result carries id, kb_name, entry_type, title, snippet and the
+        score the mode produced (rank, rrf_score, similarity); `--fields '*'`
+        (or PYRITE_SEARCH_FIELDS='*') returns every field, a named list
+        returns those. `--fields` wins over the variable. The page-level keys
+        below are in every response whatever the row carries.
+
+        JSON output says what the page is worth: "match" (strong, weak or
+        none) with "match_basis", and "similarity" on each result of the
+        semantic leg. `match: none` means the KB does not contain an answer;
+        say so, do not build an answer from these results. `weak` means verify
+        the entries before using them. `weak` with no results means the search
+        could not run in full or found nothing strong, not that the KB lacks an
+        answer: read `match_basis` and `legs_run`, then try keyword mode or
+        other words. `similarity` compares results of the same model; it is not
+        a probability. The results are returned
+        whatever the verdict. The contract is stated once, in the docstring of
+        SearchService.search.
         """
+        asked = bool(
+            parse_fields_param(fields) or parse_fields_param(os.environ.get(SEARCH_FIELDS_ENV))
+        )
+        row_fields = resolve_search_fields(
+            fields, os.environ.get(SEARCH_FIELDS_ENV), include_body=include_body
+        )
+
         config = load_config()
         if kb_name:
             config = get_config_with_registered_kbs(config, name=kb_name)
 
-        # A search scoped to an unregistered KB used to return an empty result
-        # set (exit 0), which looks like a query miss rather than a wrong KB.
-        # Fail loudly with a distinct KB_NOT_FOUND instead.
-        if kb_name and config.get_kb(kb_name) is None:
-            from ..utils.errors import cli_error
-
-            known = ", ".join(sorted(kb.name for kb in config.all_kbs())) or "none"
-            cli_error(
-                f"KB not found: {kb_name}",
-                output_format,
-                error_code="KB_NOT_FOUND",
-                suggestion=f"known KBs: {known} (or run `pyrite kb list`)",
-            )
+        # A search scoped to a name that is not a KB is refused, never an
+        # empty result that looks like a query miss: the one resolver (#952).
+        require_kb(config, kb_name, output_format=output_format)
 
         # Every surface refuses an over-long query the same way, file search
         # included; the index path must not fall back to file search with it.
@@ -159,21 +185,22 @@ def register_search_command(app: typer.Typer):
             )
 
         if use_files:
+            _warn_fields_not_applied(fields)
             _search_files(config, query, kb_name, entry_type, limit)
             return
 
-        from ..storage import IndexManager
+        from ..services.kb_service import KBService
         from .context import open_index_db
 
         db = None
         try:
             db = open_index_db(config)
 
-            index_mgr = IndexManager(db, config)
-            if index_mgr.is_empty():
+            kb_svc = KBService(config, db)
+            if kb_svc.index_is_empty():
                 # Status to stderr — stdout must stay clean for -f json callers.
                 err_console.print("[yellow]Index is empty. Building index...[/yellow]")
-                index_mgr.index_all()
+                kb_svc.build_index()
             else:
                 # Warn (never silently) when the index is behind the files on
                 # disk — otherwise search returns a confidently-wrong stale
@@ -191,7 +218,10 @@ def register_search_command(app: typer.Typer):
             # Anything the search could not do as asked — today, a filter a
             # backend's vector leg cannot honour (#56).
             search_warnings: list[str] = []
-            results = search_svc.search(
+            # The one assembler (#668): the rows, the verdict (`match`,
+            # `match_basis`, `keyword_match`) and any `warnings`. Every key but
+            # `results` goes into the JSON payload as it is.
+            response = search_svc.search_response(
                 query=query,
                 kb_name=kb_name,
                 entry_type=entry_type,
@@ -208,6 +238,7 @@ def register_search_command(app: typer.Typer):
                 trace=search_trace,
                 warnings=search_warnings,
             )
+            results = response.pop("results")
 
             for warning in search_warnings:
                 # stderr, like the trace and the staleness notice, so it never
@@ -228,6 +259,10 @@ def register_search_command(app: typer.Typer):
                     f"relaxed={search_trace.get('relaxed')}"
                 )
 
+            # `fields_list` is what the caller asked for (--fields or the variable):
+            # it also shapes csv/markdown/rich. The lean default only trims the
+            # rows, so markdown keeps its list and the verdict keeps its keys.
+            fields_list = row_fields if asked else None
             if not results:
                 if output_format != "rich":
                     # Machine formats get a valid empty-result payload, not a
@@ -235,7 +270,9 @@ def register_search_command(app: typer.Typer):
                     from ..formats import format_response
 
                     content, _ = format_response(
-                        {"query": query, "count": 0, "results": []}, output_format
+                        {"query": query, "count": 0, "results": [], **response},
+                        output_format,
+                        fields=fields_list,
                     )
                     typer.echo(content)
                 else:
@@ -243,9 +280,15 @@ def register_search_command(app: typer.Typer):
                 return
 
             # Apply field projection. One rule for every read surface (#193).
-            fields_list = parse_fields_param(fields)
-            if fields_list:
-                results = [project_fields(record, fields_list) for record in results]
+            if row_fields:
+                missing = unmatched_search_fields(results, row_fields) if asked else []
+                if missing:
+                    typer.echo(
+                        f"warning: no result carries: {', '.join(missing)} "
+                        "(field names are case-sensitive; '*' returns every field)",
+                        err=True,
+                    )
+                results = [project_fields(record, row_fields) for record in results]
             elif not include_body:
                 for r in results:
                     r.pop("body", None)
@@ -253,16 +296,33 @@ def register_search_command(app: typer.Typer):
             if output_format != "rich":
                 from ..formats import format_response
 
-                resp_data = {"query": query, "count": len(results), "results": results}
-                content, _ = format_response(resp_data, output_format)
+                resp_data = {"query": query, "count": len(results), "results": results, **response}
+                table_fields = fields_list
+                if table_fields is None and output_format == "csv" and row_fields:
+                    # The columns the lean row has: a score column no row of this
+                    # mode carries would be an empty column that looks like data.
+                    table_fields = [
+                        f
+                        for f in row_fields
+                        if f not in IDENTITY_FIELDS and any(f in r for r in results)
+                    ]
+                content, _ = format_response(resp_data, output_format, fields=table_fields)
                 typer.echo(content)
+                return
+
+            if fields_list:
+                from ..formats.tabular import projected_rich_table
+
+                console.print(projected_rich_table(results, fields_list, "Search Results"))
                 return
 
             table = Table(title=f"Search Results ({len(results)})")
             table.add_column("KB", style="cyan", width=12)
             table.add_column("Type", style="green", width=10)
             table.add_column("Title", width=40)
-            table.add_column("Date", width=10)
+            show_date = any(r.get("date") for r in results)
+            if show_date:
+                table.add_column("Date", width=10)
             table.add_column("Snippet", width=50)
 
             for r in results:
@@ -271,13 +331,8 @@ def register_search_command(app: typer.Typer):
                 snippet = (raw_snippet[:97] + "...") if len(raw_snippet) > 100 else raw_snippet
                 raw_title = r.get("title", "") or ""
                 title = (raw_title[:37] + "...") if len(raw_title) > 40 else raw_title
-                table.add_row(
-                    r.get("kb_name", ""),
-                    r.get("entry_type", ""),
-                    title,
-                    date,
-                    snippet,
-                )
+                cells = [r.get("kb_name", ""), r.get("entry_type", ""), title]
+                table.add_row(*cells, *([date] if show_date else []), snippet)
 
             console.print(table)
 
@@ -299,6 +354,10 @@ def register_search_command(app: typer.Typer):
                 ),
                 retryable=False,
             )
+        except StorageError as e:
+            from ..utils.errors import cli_error_from
+
+            cli_error_from(e, output_format)
         except Exception as e:
             # Log the full exception (with traceback) so operators can tell a
             # corrupt index from a bad query from a locked DB — the one-line
@@ -319,12 +378,36 @@ def register_search_command(app: typer.Typer):
                     )
                 )
                 raise typer.Exit(1)
+            if isinstance(e, ValidationError):
+                # A refused request (an unknown --mode) is not an index
+                # failure: falling back to file search answered a question the
+                # caller did not ask, with exit 0 (#1006). Refuse on every
+                # format, as the machine formats already did.
+                from ..utils.errors import cli_error
+
+                cli_error(str(e), output_format, error_code="VALIDATION_FAILED", retryable=False)
             console.print(f"[red]Search error ({type(e).__name__}):[/red] {e}")
             console.print("[dim]Falling back to file search...[/dim]")
+            _warn_fields_not_applied(fields)
             _search_files(config, query, kb_name, entry_type, limit)
         finally:
             if db is not None:
                 db.close()
+
+
+def _warn_fields_not_applied(fields):
+    """File search prints its own table (KB, Type, Title, ID) whatever the caller asked.
+
+    Both ways of asking are named: `--fields`, and `PYRITE_SEARCH_FIELDS` when
+    `--fields` is absent.
+    """
+    if parse_fields_param(fields):
+        source = "--fields"
+    elif parse_fields_param(os.environ.get(SEARCH_FIELDS_ENV)):
+        source = SEARCH_FIELDS_ENV
+    else:
+        return
+    typer.echo(f"{source} is not applied by file search; showing its own table.", err=True)
 
 
 def _search_files(config, query, kb_name, entry_type, limit):
@@ -349,35 +432,10 @@ def _search_files(config, query, kb_name, entry_type, limit):
 
     console.print(f"[dim]Searching for '{query}'...[/dim]")
 
-    results = []
-    unreadable = 0
-    scanned = 0
-    for kb in kbs:
-        if not kb.path.exists():
-            continue
+    from ..services.file_search import search_kb_files
 
-        repo = KBRepository(kb)
-        for md_file in repo.list_files():
-            try:
-                content = md_file.read_text(encoding="utf-8")
-                scanned += 1
-                if query.lower() in content.lower():
-                    entry = repo._load_entry(md_file)
-
-                    if entry_type and entry.entry_type != entry_type:
-                        continue
-
-                    results.append((kb.name, entry, md_file))
-
-                    if len(results) >= limit:
-                        break
-            except Exception:
-                logger.warning("Search failed for KB %s", kb.name, exc_info=True)
-                unreadable += 1
-                continue
-
-        if len(results) >= limit:
-            break
+    found = search_kb_files(kbs, query, entry_type, limit)
+    results, unreadable, scanned = found.hits, found.unreadable, found.scanned
 
     if unreadable:
         # The answer is incomplete: say so, and do not exit 0 (#526).

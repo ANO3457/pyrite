@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..utils.errors import PARTIAL_EXIT, cli_error
+from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +51,10 @@ def extension_init(
         "A Pyrite extension", "--description", "-d", help="Extension description"
     ),
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
 ):
     """Scaffold a new Pyrite extension with plugin boilerplate."""
@@ -303,11 +307,12 @@ class Test{pascal}Plugin:
 _VERIFY_SCRIPT = """
 import json, sys
 from importlib.metadata import distribution
+from pyrite.plugins.registry import load_plugin_entry_point
 eps = [e for e in distribution(sys.argv[1]).entry_points if e.group == "pyrite.plugins"]
 errors = []
 for ep in eps:
     try:
-        ep.load()()
+        load_plugin_entry_point(ep)
     except BaseException as exc:
         errors.append(f"entry point {ep.name!r} ({ep.value}): {type(exc).__name__}: {exc}")
 print(json.dumps({"found": len(eps), "errors": errors}))
@@ -344,9 +349,16 @@ def _verify_distribution(dist_name: str) -> list[str]:
 @extension_app.command("install")
 def extension_install(
     path: Path = typer.Argument(..., help="Path to extension directory"),
-    verify: bool = typer.Option(False, "--verify", help="Verify plugin loads after install"),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Verify plugin loads after install; exit 3 if verification fails or no pyrite.plugins entry points are declared",
+    ),
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
 ):
     """Install a Pyrite extension from a local path."""
@@ -395,7 +407,7 @@ def extension_install(
         verify_errors = _verify_distribution(plugin_name)
         verified = not verify_errors
         for err in verify_errors:
-            console.print(f"[yellow]Warning:[/yellow] Plugin verification failed: {err}")
+            typer.echo(f"Warning: Plugin verification failed: {err}", err=True)
 
     output = {
         "status": "installed",
@@ -426,7 +438,10 @@ def extension_install(
 @extension_app.command("list")
 def extension_list(
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
 ):
     """List installed Pyrite extensions."""
@@ -500,7 +515,10 @@ def extension_uninstall(
     name: str = typer.Argument(..., help="Extension name to uninstall"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
 ):
     """Uninstall a Pyrite extension."""

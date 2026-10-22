@@ -253,6 +253,48 @@ class TestOverlayWrite:
 
 
 class TestOverlayLinks:
+    def test_two_prefixes_of_one_link_survive_the_merge(self, tmp_path):
+        """#1062: the index keeps one row per written link (#1009), so the
+        overlay's merge must not collapse `[[ops:x]]` and `[[ops-kb:x]]`."""
+        main_db = _make_db(tmp_path / "main.db")
+        diff_db = _make_db(tmp_path / "diff.db")
+        try:
+            for db, title in [(main_db, "Main"), (diff_db, "Overlay")]:
+                _insert_entry(db, "source", "test", f"{title} source")
+                _insert_entry(db, "target", "test", f"{title} target")
+
+            main_db._backend._sync_links(
+                "source",
+                "test",
+                [{"target": "target", "kb": "test", "relation": "x", "prefix": "ops", "note": "m"}],
+            )
+            main_db.session.commit()
+            diff_db._backend._sync_links(
+                "source",
+                "test",
+                [
+                    {
+                        "target": "target",
+                        "kb": "test",
+                        "relation": "x",
+                        "prefix": "ops-kb",
+                        "note": "o",
+                    }
+                ],
+            )
+            diff_db.session.commit()
+
+            overlay = OverlaySearchBackend(main_db._backend, diff_db._backend)
+            back = overlay.get_backlinks("target", "test", readable_kbs=None)
+            out = overlay.get_outlinks("source", "test", readable_kbs=None)
+
+            assert sorted(row["prefix"] for row in back) == ["ops", "ops-kb"]
+            assert sorted(row["note"] for row in back) == ["m", "o"]
+            assert sorted(row["prefix"] for row in out) == ["ops", "ops-kb"]
+        finally:
+            main_db.close()
+            diff_db.close()
+
     @pytest.mark.parametrize("direction", ["backlinks", "outlinks"])
     @pytest.mark.parametrize(
         "relations",
