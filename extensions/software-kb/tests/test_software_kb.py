@@ -153,7 +153,7 @@ class TestPluginRegistration:
 
 
 # =========================================================================
-# Entry types — ADR
+# Entry types â€” ADR
 # =========================================================================
 
 
@@ -249,7 +249,7 @@ class TestADREntry:
 
 
 # =========================================================================
-# Entry types — DesignDoc
+# Entry types â€” DesignDoc
 # =========================================================================
 
 
@@ -304,7 +304,7 @@ class TestDesignDocEntry:
 
 
 # =========================================================================
-# Entry types — Standard
+# Entry types â€” Standard
 # =========================================================================
 
 
@@ -344,7 +344,7 @@ class TestStandardEntry:
 
 
 # =========================================================================
-# Entry types — ProgrammaticValidation
+# Entry types â€” ProgrammaticValidation
 # =========================================================================
 
 
@@ -423,7 +423,7 @@ class TestProgrammaticValidationEntry:
 
 
 # =========================================================================
-# Entry types — DevelopmentConvention
+# Entry types â€” DevelopmentConvention
 # =========================================================================
 
 
@@ -575,7 +575,7 @@ class TestStandardsMigration:
 
 
 # =========================================================================
-# Entry types — Component
+# Entry types â€” Component
 # =========================================================================
 
 
@@ -620,7 +620,7 @@ class TestComponentEntry:
 
 
 # =========================================================================
-# Entry types — BacklogItem
+# Entry types â€” BacklogItem
 # =========================================================================
 
 
@@ -680,7 +680,7 @@ class TestBacklogItemEntry:
 
 
 # =========================================================================
-# Entry types — Runbook
+# Entry types â€” Runbook
 # =========================================================================
 
 
@@ -1480,7 +1480,7 @@ class TestMilestonePluginRegistration:
 
 
 # =========================================================================
-# Kanban Flow Tools — helpers
+# Kanban Flow Tools â€” helpers
 # =========================================================================
 
 
@@ -2475,7 +2475,7 @@ class TestBacklogDependencies:
             )
             try:
                 plugin = _make_plugin_with_db(db)
-                # claim_entry needs KBService — mock it
+                # claim_entry needs KBService â€” mock it
                 from unittest.mock import MagicMock, patch
 
                 mock_svc = MagicMock()
@@ -2498,7 +2498,7 @@ class TestBacklogDependencies:
 
 
 # =========================================================================
-# TestReview — sw_review tool
+# TestReview â€” sw_review tool
 # =========================================================================
 
 
@@ -2512,7 +2512,7 @@ class TestReview:
         assert "sw_review" not in read_tools
 
     def test_review_approved_transitions_to_done(self):
-        """Item in review → approved → status becomes done."""
+        """Item in review â†’ approved â†’ status becomes done."""
         from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2553,7 +2553,7 @@ class TestReview:
                 assert result["outcome"] == "approved"
                 assert result["new_status"] == "done"
                 assert "review_id" in result
-                # CAS was called with review → done
+                # CAS was called with review â†’ done
                 mock_svc.claim_entry.assert_called_once_with(
                     "item-1",
                     "test",
@@ -2565,7 +2565,7 @@ class TestReview:
                 db.close()
 
     def test_review_changes_requested_transitions_to_in_progress(self):
-        """Item in review → changes_requested → status becomes in_progress."""
+        """Item in review â†’ changes_requested â†’ status becomes in_progress."""
         from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2617,7 +2617,7 @@ class TestReview:
                 db.close()
 
     def test_review_changes_requested_requires_feedback(self):
-        """changes_requested without feedback → error."""
+        """changes_requested without feedback â†’ error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2646,7 +2646,7 @@ class TestReview:
                 db.close()
 
     def test_review_not_in_review_status_fails(self):
-        """Item in accepted → review → error."""
+        """Item in accepted â†’ review â†’ error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2675,7 +2675,7 @@ class TestReview:
                 db.close()
 
     def test_review_not_found_fails(self):
-        """Nonexistent item → error."""
+        """Nonexistent item â†’ error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(tmpdir)
             try:
@@ -2742,7 +2742,7 @@ class TestReview:
                 db.close()
 
     def test_context_for_item_shows_reviews(self):
-        """Item with prior review → reviews in context response."""
+        """Item with prior review â†’ reviews in context response."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2778,7 +2778,7 @@ class TestReview:
 
 
 # =========================================================================
-# TestSubmit — sw_submit tool
+# TestSubmit â€” sw_submit tool
 # =========================================================================
 
 
@@ -2792,7 +2792,7 @@ class TestSubmit:
         assert "sw_submit" not in read_tools
 
     def test_submit_transitions_to_review(self):
-        """Item in in_progress → submit → status becomes review."""
+        """Item in in_progress â†’ submit â†’ status becomes review."""
         from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2835,7 +2835,7 @@ class TestSubmit:
                 db.close()
 
     def test_submit_not_in_progress_fails(self):
-        """Item in accepted → submit → error."""
+        """Item in accepted â†’ submit â†’ error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2858,7 +2858,7 @@ class TestSubmit:
                 db.close()
 
     def test_submit_not_found_fails(self):
-        """Nonexistent item → error."""
+        """Nonexistent item â†’ error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(tmpdir)
             try:
@@ -3022,7 +3022,7 @@ class TestSwLog:
                 db.close()
 
     def test_sw_log_item_not_found(self):
-        """Nonexistent item → error."""
+        """Nonexistent item â†’ error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(tmpdir)
             try:
@@ -3230,7 +3230,7 @@ class TestColumnFirstStatusFallback:
     def test_board_lane_items_bounded_by_default(self):
         """A lane with many items does not return every one unbounded (#233).
 
-        `sw_board` grows with the project the same way `sw_backlog` does —
+        `sw_board` grows with the project the same way `sw_backlog` does â€”
         it embeds a full item list per lane. Counts stay exact; only the
         embedded item list per lane is bounded.
         """
@@ -4526,7 +4526,7 @@ class TestOrphanBacklogItemChecker:
 
 
 # =========================================================================
-# TestPrioritizeAfterAnchor — Tier A 1050
+# TestPrioritizeAfterAnchor â€” Tier A 1050
 # =========================================================================
 
 
@@ -4822,52 +4822,43 @@ class TestNewBacklogKindsThroughTheCli:
     """Create and update accept each kind the maintainer added (2026-10-14)."""
 
     @pytest.fixture
-    def cli_env(self, tmp_path):
+    def world(self, tmp_path):
         import yaml
 
-        from pyrite.config import KBConfig, PyriteConfig, Settings
+        from pyrite.config import KBConfig
         from pyrite.plugins import get_registry
-        from pyrite.storage.database import PyriteDB
-        from pyrite.storage.index import IndexManager
+        from tests._world import build_world
 
         get_registry().register(SoftwareKBPlugin())
         kb_path = tmp_path / "sw-kb"
         kb_path.mkdir()
-        (kb_path / "kb.yaml").write_text(yaml.safe_dump(SOFTWARE_KB_PRESET, sort_keys=False))
-        config = PyriteConfig(
-            knowledge_bases=[KBConfig(name="sw-kb", path=kb_path, kb_type="software")],
-            settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+        (kb_path / "kb.yaml").write_text(
+            yaml.safe_dump(SOFTWARE_KB_PRESET, sort_keys=False), encoding="utf-8"
         )
-        db = PyriteDB(config.settings.index_path)
-        IndexManager(db, config).index_all()
-        db.close()
-        return config
+        world = build_world(
+            tmp_path / "cli-world",
+            kbs=[KBConfig(name="sw-kb", path=kb_path, kb_type="software")],
+            rest=False,
+        )
+        yield world
+        world.close()
 
-    def _run(self, config, args):
-        from unittest.mock import patch
+    def _run(self, world, args):
+        return world.cli(*args)
 
-        from typer.testing import CliRunner
-
-        from pyrite.cli import app
-
-        with (
-            patch("pyrite.cli.load_config", return_value=config),
-            patch("pyrite.cli.context.load_config", return_value=config),
-        ):
-            return CliRunner().invoke(app, args, env={"COLUMNS": "300"})
-
-    def _kind_on_disk(self, config, entry_id):
+    def _kind_on_disk(self, world, entry_id):
         import yaml
 
-        kb_path = config.get_kb("sw-kb").path
+        kb_path = world.kb_path("sw-kb")
         for candidate in kb_path.rglob(f"{entry_id}.md"):
-            return yaml.safe_load(candidate.read_text().split("---", 2)[1])["kind"]
+            text = candidate.read_text(encoding="utf-8")
+            return yaml.safe_load(text.split("---", 2)[1])["kind"]
         raise AssertionError(f"{entry_id}.md not written under {kb_path}")
 
     @pytest.mark.parametrize("kind", NEW_BACKLOG_KINDS)
-    def test_create_writes_the_kind(self, cli_env, kind):
+    def test_create_writes_the_kind(self, world, kind):
         result = self._run(
-            cli_env,
+            world,
             [
                 "create",
                 "-k",
@@ -4883,12 +4874,12 @@ class TestNewBacklogKindsThroughTheCli:
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
-        assert self._kind_on_disk(cli_env, payload["entry_id"]) == kind
+        assert self._kind_on_disk(world, payload["entry_id"]) == kind
 
     @pytest.mark.parametrize("kind", NEW_BACKLOG_KINDS)
-    def test_update_writes_the_kind(self, cli_env, kind):
+    def test_update_writes_the_kind(self, world, kind):
         created = self._run(
-            cli_env,
+            world,
             [
                 "create",
                 "-k",
@@ -4904,7 +4895,7 @@ class TestNewBacklogKindsThroughTheCli:
         assert created.exit_code == 0, created.output
         entry_id = json.loads(created.stdout)["entry_id"]
 
-        result = self._run(cli_env, ["update", entry_id, "-k", "sw-kb", "-f", f"kind={kind}"])
+        result = self._run(world, ["update", entry_id, "-k", "sw-kb", "-f", f"kind={kind}"])
 
         assert result.exit_code == 0, result.output
-        assert self._kind_on_disk(cli_env, entry_id) == kind
+        assert self._kind_on_disk(world, entry_id) == kind
