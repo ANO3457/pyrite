@@ -52,19 +52,19 @@ def request_claim(config, route):
     if route.startswith("rest_"):
         world = build_world(config.settings.index_path.parent / "rest-world", config=config)
         try:
-        response = (
-            world.client.post(
-                "/api/tasks/parent/claim", params={"kb": "work"}, json={"assignee": "worker"}
+            response = (
+                world.client.post(
+                    "/api/tasks/parent/claim", params={"kb": "work"}, json={"assignee": "worker"}
+                )
+                if route == "rest_claim"
+                else world.client.patch(
+                    "/api/entries/parent",
+                    json={"kb": "work", "field": "status", "value": "claimed"},
+                )
             )
-            if route == "rest_claim"
-            else world.client.patch(
-                "/api/entries/parent",
-                json={"kb": "work", "field": "status", "value": "claimed"},
-            )
-        )
-        assert response.status_code in (200, 400), response.text
-        result = response.json()
-        return result.get("detail", result)
+            assert response.status_code in (200, 400), response.text
+            result = response.json()
+            return result.get("detail", result)
         finally:
             world.close()
     db = PyriteDB(config.settings.index_path)
