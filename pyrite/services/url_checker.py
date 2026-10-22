@@ -130,7 +130,18 @@ class URLChecker:
         try:
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", "Pyrite-QA/1.0 (URL liveness check)")
-            with self._urlopen(req) as resp:
+            try:
+                response = self._urlopen(req)
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                if exc.code not in (405, 501):
+                    raise
+                # A server may serve a live page without implementing HEAD.
+                # GET the headers instead, then close without reading its body.
+                req = urllib.request.Request(url, method="GET")
+                req.add_header("User-Agent", "Pyrite-QA/1.0 (URL liveness check)")
+                response = self._urlopen(req)
+            with response as resp:
                 return URLCheckResult(
                     url=url,
                     status_code=resp.status,
