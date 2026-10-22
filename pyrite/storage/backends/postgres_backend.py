@@ -162,6 +162,9 @@ def ensure_schema(engine) -> None:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.execute(text("ALTER TABLE entry ADD COLUMN IF NOT EXISTS fts_vector tsvector"))
         conn.execute(text("ALTER TABLE entry ADD COLUMN IF NOT EXISTS embedding vector(384)"))
+        # The entry's `aliases` as a JSON list (#1001, #1011): create_all never alters
+        # an existing table, so a database from before it gets the column here.
+        conn.execute(text("ALTER TABLE entry ADD COLUMN IF NOT EXISTS aliases TEXT"))
         # The link's `kb:` prefix as written (#980): create_all never alters an
         # existing table, so a database from before it gets the column here.
         conn.execute(text("ALTER TABLE link ADD COLUMN IF NOT EXISTS target_prefix TEXT"))
