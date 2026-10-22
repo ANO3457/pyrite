@@ -13,14 +13,16 @@ def test_empty_registry_is_silent(tmp_path):
     registry = tmp_path / "empty.json"
     registry.write_text("[]", encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), str(registry)], capture_output=True, text=True
+        [sys.executable, str(SCRIPT), str(registry)], capture_output=True, text=True, timeout=10
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
 
 
 def test_default_brief_names_live_tests_and_does_not_waive_ci():
-    result = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)], capture_output=True, text=True, timeout=10
+    )
     assert result.returncode == 0, result.stderr
     registry = json.loads((ROOT / "scripts/known-cloud-failures.json").read_text())
     for record in registry:
