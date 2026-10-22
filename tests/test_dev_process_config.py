@@ -1579,7 +1579,8 @@ class TestTheRedLineIsFirstAndEveryGatingRunLeavesATimingRecord:
         job = ci["jobs"]["mypy"]
         run = "\n".join(str(s.get("run", "")) for s in job["steps"])
         assert "mypy_ratchet.py mypy.out --base mypy-base.out" in run
-        assert "HEAD^1" in run and "PUSH_BEFORE" in run
+        assert "bash scripts/mypy_base.sh" in run
+        assert "PUSH_BEFORE" in job["steps"][-1]["env"]
         checkout = next(s for s in job["steps"] if "checkout" in str(s.get("uses", "")))
         assert checkout["with"]["fetch-depth"] >= 2, "HEAD^1 of the merge ref must exist"
 
