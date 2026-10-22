@@ -1,0 +1,57 @@
+name: Verify existing claim edits
+on:
+  push:
+    branches: ['validation/codex23-832']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Verify real regression against merged base
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+          path = Path('pyrite/services/kb_service.py')
+          fixed = path.read_bytes()
+          try:
+              path.write_bytes(subprocess.check_output(['git','show','3704b1b:pyrite/services/kb_service.py']))
+              result = subprocess.run(['pytest','tests/test_complete_parent_claim_routes.py','-k','unrelated','-q','--no-cov','--junitxml=red.xml'])
+              failures = ET.parse('red.xml').findall('.//testcase/failure')
+              assert result.returncode == 1 and len(failures) == 4
+              assert all('counts as done' in (f.text or '') for f in failures)
+          finally:
+              path.write_bytes(fixed)
+          PY
+      - name: Verify fixed code and adjacent containment
+        run: |
+          ruff check pyrite/services/kb_service.py tests/test_complete_parent_claim_routes.py
+          ruff format --check pyrite/services/kb_service.py tests/test_complete_parent_claim_routes.py
+          git fetch https://github.com/pyrite-wiki/pyrite.git dev:refs/remotes/upstream/dev
+          git update-ref refs/remotes/origin/dev "$(git merge-base HEAD upstream/dev)"
+          python scripts/check_fix_commit_has_tests.py --range
+          pytest tests/test_complete_parent_claim_routes.py tests/test_derived_task_completion.py tests/test_kb_writes_stay_inside_the_root.py tests/test_production_wiring_guard.py -q --no-cov --junitxml=green.xml
+        env:
+          HF_HUB_OFFLINE: '1'
+          GITHUB_BASE_REF: dev
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: focused-evidence
+          path: |
+            red.xml
+            green.xml
