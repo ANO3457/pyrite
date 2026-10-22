@@ -933,10 +933,32 @@ def update_entry(
     )
 
 
+async def refuses_unknown_patch_keys(request: Request) -> None:
+    """Refuse a PATCH typo before a missing value can become a null write (#1221)."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        return  # FastAPI reports malformed JSON through its normal validation path.
+    if not isinstance(payload, dict):
+        return
+    unknown = sorted(set(payload) - set(PatchEntryRequest.model_fields))
+    if unknown:
+        accepted = ", ".join(sorted(PatchEntryRequest.model_fields))
+        raise refusal_http(
+            ValidationError(
+                f"Unknown field(s) on a patch: {', '.join(unknown)}. A patch accepts: {accepted}."
+            )
+        )
+
+
 @router.patch(
     "/entries/{entry_id}",
     response_model=UpdateResponse,
-    dependencies=[Depends(requires_kb_tier("write")), Depends(refuses_truncated_body)],
+    dependencies=[
+        Depends(requires_kb_tier("write")),
+        Depends(refuses_truncated_body),
+        Depends(refuses_unknown_patch_keys),
+    ],
 )
 @limiter.limit("30/minute")
 def patch_entry_field(
