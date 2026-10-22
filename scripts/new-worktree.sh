@@ -23,7 +23,16 @@ wt_parent="$(dirname "$repo_root")/pyrite-wt"
 wt_dir="$wt_parent/${branch//\//-}"
 
 cd "$repo_root"
-git fetch -q origin dev
+if ! git remote | grep -qx "origin"; then
+  echo >&2 "new-worktree: remote 'origin' is missing."
+  echo >&2 "Add it with: git remote add origin <url> (or: git remote rename <name> origin)"
+  exit 1
+fi
+if ! git fetch -q origin dev 2>/dev/null; then
+  echo >&2 "new-worktree: cannot fetch 'dev' from remote 'origin'."
+  echo >&2 "Verify network access or check available branches with: git remote show origin"
+  exit 1
+fi
 
 mkdir -p "$wt_parent"
 if git show-ref --verify --quiet "refs/heads/$branch"; then
