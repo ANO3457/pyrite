@@ -784,33 +784,26 @@ def test_cli_search_honours_type_filter_in_hybrid(cli_index, monkeypatch):
     ids=["include", "exclude", "both"],
 )
 def test_cli_search_honours_repeated_and_excluded_type_filters_across_vector_modes(
-    cli_index, mode, type_flags, expected_ids
+    cli_world, stub_embeddings, mode, type_flags, expected_ids
 ):
-    """#627: repeatable ``--type`` and ``--exclude-type`` hold in semantic and hybrid CLI modes."""
+    """#627: type filters traverse real config loading and SQLite/vector search."""
     import json
-    from unittest.mock import patch
 
-    from typer.testing import CliRunner
-
-    from pyrite.cli import app
-
-    config, _index_path = cli_index
-    runner = CliRunner()
-    with patch("pyrite.cli.search_commands.load_config", return_value=config):
-        result = runner.invoke(
-            app,
-            [
-                "search",
-                "detention",
-                "-k",
-                "test-kb",
-                "-m",
-                mode,
-                *type_flags,
-                "--format",
-                "json",
-            ],
-        )
+    world = cli_world()
+    if not world.db.vec_available:
+        pytest.skip("sqlite-vec not available")
+    _populate(world.db)
+    result = world.cli(
+        "search",
+        "detention",
+        "-k",
+        "test-kb",
+        "-m",
+        mode,
+        *type_flags,
+        "--format",
+        "json",
+    )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert {r["id"] for r in payload["results"]} == expected_ids
