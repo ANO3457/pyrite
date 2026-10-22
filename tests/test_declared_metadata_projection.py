@@ -56,3 +56,48 @@ def test_json_and_missing_bags_still_accept_declared_fields(raw):
     projection = declared_over_bag(entry, ("query",))
     assert projection["query"] == "type:note"
     assert entry["metadata"] == raw
+
+
+def test_collection_endpoint_and_service_read_twice_without_mutating_source_entry():
+    """Reading a collection through get_collection and KBService.get_collection_entries twice leaves the source entry unchanged."""
+    from starlette.requests import Request
+    from pyrite.server.endpoints.collections import get_collection
+    from pyrite.services.kb_service import KBService
+
+    source_entry = {
+        "id": "col-1",
+        "kb_name": "main",
+        "entry_type": "collection",
+        "title": "My Collection",
+        "description": "Declared desc",
+        "source_type": "folder",
+        "icon": "folder",
+        "view_config": {"columns": ["title"]},
+        "folder_path": "",
+        "query": "type:note",
+        "tags": ["t1"],
+        "metadata": {"custom": "keep"},
+    }
+    before = deepcopy(source_entry)
+
+    class _StubScope:
+        def as_set(self):
+            return {"main"}
+
+    class _StubService:
+        def get_entry(self, entry_id, kb_name=None, readable_kbs=None):
+            return source_entry if entry_id == "col-1" else None
+
+    req = Request(
+        {"type": "http", "method": "GET", "path": "/api/collections/col-1", "headers": []}
+    )
+    svc = _StubService()
+    r1 = get_collection(req, "col-1", kb="main", svc=svc, scope=_StubScope())
+    r2 = get_collection(req, "col-1", kb="main", svc=svc, scope=_StubScope())
+    assert r1.query == "type:note"
+    assert r2.description == "Declared desc"
+    assert source_entry == before
+
+    KBService.get_collection_entries(svc, "col-1", "main", readable_kbs={"main"})
+    KBService.get_collection_entries(svc, "col-1", "main", readable_kbs={"main"})
+    assert source_entry == before
