@@ -16,23 +16,24 @@ Your AI agents have no memory. Your knowledge is trapped in platform silos. Ever
 **Why Pyrite instead of vectors-in-Postgres or Notion+AI?**
 
 - **Typed entries with schema validation** — not flat vector blobs. Define `person`, `decision`, `event`, `component` types with validated fields. Query structurally, not just by vibes.
-- **Git-native** — every change is a versioned commit, not a database mutation. Branch, diff, review, rollback. Your knowledge has a full audit trail.
+- **Git-native** — every change is a file you commit to git (`git commit` or `pyrite kb commit`), not a database mutation. Branch, diff, review, rollback. Your knowledge has a full audit trail. In 0.26, **Your files, exactly** means an edit changes only what you asked; hand-maintained comments, order and quoting survive. See [how Pyrite edits your files](docs/how-pyrite-edits-your-files.md).
 - **MCP server with three-tier access control** — read/write/admin tiers. Give untrusted agents read-only access. Give your own agents write access. Keep admin for yourself.
 - **Semantic + structured search** — find by meaning (vector embeddings) AND by type, tag, date range, or relationship. Both at once in hybrid mode.
 - **Plugin system with 19 extension points** — custom entry types, MCP tools, CLI commands, validators, lifecycle hooks, relationship semantics, schema migrations.
 - **Zero running cost locally** — markdown files + SQLite index on your disk. No cloud dependency, no subscription, no vendor lock-in. Your data is plain text files you can read in any editor.
 
-> **Multi-user is experimental. Here be dragons.** Pyrite is solid for one person, their agents, and a team that trusts each other. Accounts, per-KB permissions and the public `/site` work, and each release closes more gaps, but they have not had the review a system holding other people's private data needs. Don't put knowledge on a shared or internet-facing instance that you couldn't live with every user of that instance reading. See [SECURITY.md](SECURITY.md#multi-user-is-experimental).
+> **Multi-user is experimental. Here be dragons.** Pyrite is solid for one person, their agents, and a team that trusts each other. Accounts and per-KB permissions work, and each release closes more gaps, but they have not had the review a system holding other people's private data needs. Don't put knowledge on a shared or internet-facing instance that you couldn't live with every user of that instance reading. See [SECURITY.md](SECURITY.md#multi-user-is-experimental).
 
 ## Quick Start
 
 ```bash
-# Install (no PyPI wheel yet -- from source)
+# Install (no PyPI wheel yet -- from source). Needs Python 3.11+.
 git clone https://github.com/pyrite-wiki/pyrite.git && cd pyrite
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all]"
 
-# Initialize a knowledge base
-pyrite init --template research --path my-kb
+# Initialize a knowledge base outside the clone
+pyrite init --template research --path ~/my-kb
 
 # Create some entries
 pyrite create -k my-kb --type person --title "Sarah Chen" \
@@ -55,15 +56,18 @@ pyrite mcp-setup                  # write tier; --tier read|admin, --client, --p
 ```
 
 `pyrite mcp-setup` points a `pyrite` server entry at this install where each
-client reads it: `claude mcp add` for Claude Code (or `./.mcp.json` with
-`--project`), and Claude Desktop's own `claude_desktop_config.json`. Run it
+client reads it: `claude mcp add -s user` for Claude Code (or `./.mcp.json`
+with `--project`), and Claude Desktop's own `claude_desktop_config.json`. Run it
 again any time. An entry that already points here is not rewritten; one that
 points elsewhere gets its command path changed (and its tier, if you pass
 `--tier`), and keeps its `env`, extra arguments and other keys. Other servers
 are never touched. Each client is all or nothing: one it cannot change safely
 is left as it was with the reason, while another may still be changed, and
 the exit code is 1 unless every client ended up pointing here. The JSON report
-names each client and what changed.
+names each client and what changed, says what the file holds when a change
+could not be finished, and names a `pyrite` entry in another Claude Code scope
+(one project's, from `claude mcp add` without `-s user`) that would be used
+instead of this one.
 [Getting started](docs/getting-started.md#connect-an-ai-via-mcp) lists the
 cases.
 
@@ -99,7 +103,7 @@ Your files (git)  →  SQLite index (derived)  →  MCP server / CLI / REST API 
 
 ## MCP Server
 
-Three permission tiers. Each tier includes the tools from lower tiers. Counts below are the core `kb_*`/`task_*` tools only; installed plugins add more per tier (e.g. software-kb adds `sw_adrs`, `sw_backlog`, `sw_new_adr`) — run `pyrite mcp --help` for the live total including plugin tools, generated from the tool registry so it can't drift from what a running server exposes.
+Three permission tiers. Each tier includes the tools from lower tiers. Counts below are the core `kb_*`/`task_*` tools only; installed plugins add more per tier (e.g. software-kb adds `sw_adrs`, `sw_backlog`, `sw_create_adr`) — run `pyrite mcp --help` for the live total including plugin tools, generated from the tool registry so it can't drift from what a running server exposes.
 
 | Tier | Core tools |
 |------|-------|
@@ -109,40 +113,36 @@ Three permission tiers. Each tier includes the tools from lower tiers. Counts be
 
 Pagination and totals differ by tool and by transport (CLI/MCP/REST) — see `docs/json-contracts.md` for the measured shape of each, rather than assuming a uniform `has_more`/`total` contract. `kb_bulk_create` handles up to 50 entries per call. After parameter validation, a missing or empty title is reported per entry without rejecting valid siblings, and results preserve input order. Invalid parameter types, an unavailable KB, or an invalid batch size still reject the whole call. `kb_orient` provides a one-shot KB summary for agent onboarding. `kb_batch_read` fetches multiple entries in one call. Search results return snippets by default (use `include_body` for full text, `fields` for projection).
 
-Plugins add their own tools per tier (e.g., software-kb adds `sw_adrs`, `sw_backlog`, `sw_new_adr`).
+Plugins add their own tools per tier (e.g., software-kb adds `sw_adrs`, `sw_backlog`, `sw_create_adr`).
 
-Also exposes: 4 prompts (`research_topic`, `summarize_entry`, `find_connections`, `daily_briefing`), resources (`pyrite://kbs`, `pyrite://kbs/{name}/entries`, `pyrite://entries/{id}`).
+Also exposes: 4 prompts (`research_topic`, `summarize_entry`, `find_connections`, `daily_briefing`), resources (`pyrite://kbs`, `pyrite://kbs/{name}/entries`, `pyrite://entries/{id}`, `pyrite://kbs/{name}/entries/{id}`).
 
 Use `pyrite mcp --tier read` for a read-only server.
 
 ## CLI
 
+These commands continue from Quick Start's `my-kb` and its two entries.
+
 ```bash
-# Search (keyword, semantic, or hybrid)
-pyrite search "immigration policy"
-pyrite search "immigration" --kb=timeline --type=event --mode=hybrid
+# Search and read the entries created above
+pyrite search "consulting" -k my-kb
+pyrite get sarah-chen -k my-kb
+pyrite backlinks sarah-chen -k my-kb
+pyrite collections list -k my-kb
 
-# Read
-pyrite get stephen-miller
-pyrite backlinks stephen-miller --kb=research
-pyrite timeline --from=2025-01-01 --to=2025-06-30
-pyrite collections list --kb=research
+# Create one more note
+pyrite create -k my-kb --type note --title "Release checklist" \
+  --body "Review the upgrade guide before updating." --tags "process"
 
-# Write
-pyrite create --kb=research --type=person --title="Jane Doe" \
-  --body="Senior policy advisor." --tags="policy,doj"
-
-# Admin
-pyrite index sync          # Incremental re-index after file edits
-pyrite index health        # Check for stale/missing entries
-pyrite kb discover         # Auto-find KBs by kb.yaml presence
-
-# Schema versioning
-pyrite schema diff --kb=research      # Show type versions and field annotations
-pyrite schema migrate --kb=research   # Migrate entries to current schema version
+# Reconcile hand edits and inspect the schema
+pyrite index sync
+pyrite index health
+pyrite schema diff -k my-kb
+pyrite schema migrate -k my-kb
 ```
 
-All commands support `--format json` for agent consumption.
+
+Most commands print JSON by default; `--format` (or `PYRITE_FORMAT`) picks json, yaml or rich where a command offers it. See [docs/json-contracts.md](docs/json-contracts.md), "--format defaults", for the commands that do not.
 
 ## Custom Types
 
@@ -204,7 +204,7 @@ Extensions implement a Python protocol class with up to 19 methods:
 - `get_relationship_types()` — semantic relationship definitions
 - `get_hooks()` — lifecycle hooks: `before_save`, `after_save`, `before_delete`, `after_delete`, `before_index`
 
-Six extensions ship:
+Five extensions ship:
 
 | Extension | Purpose | Key Types |
 |-----------|---------|-----------|
@@ -212,13 +212,17 @@ Six extensions ship:
 | **zettelkasten** *(example plugin)* | CEQRC maturity workflow | Notes with maturity progression |
 | **encyclopedia** *(example plugin)* | Articles with review workflow | Articles, reviews, voting |
 | **social** *(example plugin)* | Engagement tracking | Social interactions |
-| **journalism-investigation** | Investigative research | Sources, claims, actors, evidence chains |
-| **cascade** | Timeline research | Timeline events, actors, capture lanes |
+| **journalism-investigation** *(experimental; unsupported)* | Investigative research | Sources, claims, actors, evidence chains |
 
 `zettelkasten`, `encyclopedia` and `social` are example plugins: reference
 code showing how a Pyrite plugin adds entry types, CLI commands, MCP tools
 and a preset, not supported products. See each extension's `README.md` for
 what it demonstrates.
+
+**EXPERIMENTAL: Unsupported until the 0.28 alpha plugin/API contract.**
+The journalism-investigation MCP tools are not a supported product surface.
+
+Tracked issues: [#92](https://github.com/pyrite-wiki/pyrite/issues/92), [#93](https://github.com/pyrite-wiki/pyrite/issues/93), [#94](https://github.com/pyrite-wiki/pyrite/issues/94), and [#98](https://github.com/pyrite-wiki/pyrite/issues/98).
 
 ## Web UI
 
@@ -262,7 +266,7 @@ pyrite/
 ├── plugins/         # Plugin discovery and protocol
 └── formats/         # Content negotiation (JSON, Markdown, CSV, YAML)
 
-extensions/          # Domain-specific plugins (software-kb, zettelkasten [example], encyclopedia [example], social [example], journalism-investigation, cascade)
+extensions/          # Domain-specific plugins (software-kb, zettelkasten [example], encyclopedia [example], social [example], journalism-investigation)
 web/                 # SvelteKit 2 + Svelte 5 frontend (TypeScript + Tailwind)
 kb/                  # Pyrite's own KB (ADRs, backlog, components, standards)
 ```
@@ -291,7 +295,7 @@ fly volumes create pyrite_data --size 1
 fly deploy
 ```
 
-All three platforms use the included Dockerfile, persist data at `/data`, and expose port 8088. They start with accounts turned on (`PYRITE_AUTH_ENABLED=true`). Registration stays closed until an admin exists: create yours after the first deploy with `pyrite-admin user create <name> --role admin` in the container. Set `PYRITE_OPENAI_API_KEY` and other env vars in your platform's dashboard.
+All three platforms use the included Dockerfile, persist data at `/data`, and expose port 8088. They start with accounts turned on (`PYRITE_AUTH_ENABLED=true`). Registration stays closed until an admin exists: create yours after the first deploy with `pyrite-admin user create <name> --role admin` in the container. Set `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`) and `PYRITE_AI_PROVIDER` for AI features, and other env vars, in your platform's dashboard; see [docs/configuration.md](docs/configuration.md#ai-features).
 
 The container image binds `0.0.0.0` (`PYRITE_HOST`) and honours the platform `$PORT` when `PYRITE_PORT` is unset (`PYRITE_PORT` wins if both are set). Railway does not attach a persistent volume from the one-click button — add a volume mounted at `/data` in the Railway dashboard after the first deploy, or data will not survive restarts.
 
@@ -308,7 +312,7 @@ This installs Docker, starts Pyrite + Caddy (auto TLS), and seeds Pyrite's own K
 
 ```bash
 docker compose -f deploy/selfhost/docker-compose.yml exec pyrite \
-  python /app/deploy/selfhost/create-user.py admin yourpassword
+  pyrite-admin user create admin --role admin
 ```
 
 Auth is required, registration is closed by default — add users manually with the same command.
@@ -329,6 +333,14 @@ without a credential on a non-loopback address; a server started some other way
 (for example `uvicorn pyrite.server.api:app --host 0.0.0.0`) does not, because
 the app cannot see its own bind address.
 
+The `pyrite.server.api:app` uvicorn entry point configures the Pyrite logger
+when first loaded. Importing the module or calling `create_app()` leaves host
+logging alone. Operators supplying their own logging use the factory:
+
+```bash
+uvicorn --factory pyrite.server.api:create_app --log-config logging.yaml
+```
+
 ## Install
 
 No PyPI wheel yet. From source (CLI, server, MCP **and** the web UI):
@@ -342,7 +354,7 @@ cd web && npm ci && npm run build && cd ..   # the web UI (optional)
 Or straight from a release tag, no clone:
 
 ```bash
-pip install "pyrite[server,cli] @ git+https://github.com/pyrite-wiki/pyrite@v0.25.6"
+pip install "pyrite[server,cli] @ git+https://github.com/pyrite-wiki/pyrite@v0.25.8"
 ```
 
 That gives you the CLI, the REST API and the MCP server, but **not the web
@@ -351,7 +363,9 @@ and `npm run build` above if you want it). Semantic search needs the
 `semantic` extra too (`pyrite[server,cli,semantic] @ git+...`, a large
 download); without it, keyword search works and a semantic search says so.
 
-Narrower extras: `pip install -e ".[server]"` (REST API + web UI),
+Already running Pyrite? [Upgrading](docs/upgrading.md) lists what changes between releases.
+
+Narrower extras: `pip install -e ".[server,cli]"` (REST API, MCP and the CLI; the web UI also needs `cd web && npm ci && npm run build`),
 `pip install -e ".[ai]"` (OpenAI + Anthropic SDKs),
 `pip install -e ".[semantic]"` (sentence-transformers + sqlite-vec).
 
@@ -362,7 +376,6 @@ pip install -e extensions/software-kb
 pip install -e extensions/zettelkasten
 pip install -e extensions/encyclopedia
 pip install -e extensions/social
-pip install -e extensions/cascade
 pip install -e extensions/journalism-investigation
 ```
 
@@ -381,8 +394,8 @@ pip install -e ".[all]"
 for ext in extensions/*/; do pip install -e "$ext"; done
 pre-commit install
 
-# Tests (core and extensions; in parallel with -n auto)
-pytest tests/ extensions/ -n auto
+# Tests (core and extensions; -n 4, not -n auto, and through the heavy-run lock)
+scripts/heavy_lock.py -- pytest tests/ extensions/ -n 4
 
 # Frontend
 cd web && npm install && npm run dev
@@ -405,11 +418,14 @@ pyrite sw standards      # Coding conventions
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) — install, create a KB, connect an AI
+- [Pyrite in 20 minutes](docs/tutorials/pyrite-in-20-minutes.md) — a hands-on first tutorial
+- [Upgrading](docs/upgrading.md) — changes to check before updating an existing install
+- [How Pyrite edits your files](docs/how-pyrite-edits-your-files.md) — the file-editing contract
 - [Configuration](docs/configuration.md) — `config.yaml` and every `PYRITE_*` environment variable
-- [Plugin Writing Tutorial](docs/tutorials/plugin-writing.md) — build a custom plugin step by step
+- [JSON contracts](docs/json-contracts.md) — result and error shapes for agent integrators
 - [Plugins Directory](docs/plugins.md) — official and community plugins
-- [OpenAI / Codex MCP Integration](docs/openai-mcp-integration.md)
-- [Gemini CLI MCP Integration](docs/gemini-mcp-integration.md)
+
+[All documentation](docs/README.md) — pages grouped by reader and task
 
 ## Background
 

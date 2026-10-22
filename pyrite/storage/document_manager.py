@@ -36,10 +36,15 @@ class DocumentManager:
         kb_name: str,
         kb_config: KBConfig,
         *,
-        touch_updated_at: bool = True,
         is_create: bool = False,
     ) -> Path:
         """Save an entry to disk, register the KB, and index it.
+
+        The whole-file emit of a create (``is_create=True`` is its only
+        caller). An update, ``add_link`` and ``add_links`` no longer come
+        here: they are operations applied to the file's own bytes in
+        ``KBService._update``, published by ``storage/entry_writer.py``
+        (#955, B6 P3a and P4).
 
         If the entry's resolved path has changed (e.g. due to a templated
         subdirectory like ``backlog/{status}``), the old file is removed.
@@ -48,8 +53,6 @@ class DocumentManager:
             entry: The entry to save.
             kb_name: Name of the knowledge base.
             kb_config: KB configuration (provides path, type, description).
-            touch_updated_at: Passed through to ``KBRepository.save``; ``False``
-                keeps a caller-supplied ``updated_at`` (#151).
             is_create: ``True`` only for a brand-new entry (the sole caller is
                 ``KBService``'s create pipeline). A file's name is fixed at
                 creation (#391 cold read): the default ``False`` keeps the
@@ -72,8 +75,14 @@ class DocumentManager:
         """
         repo = KBRepository(kb_config)
 
-        # Find current on-disk location before saving to new path
-        old_path = repo.find_file(entry.id)
+        # Find current on-disk location before saving to new path. A create
+        # has none: KBService looked the id up (exists(), again after a
+        # before_save hook that changed it), and a second walk here doubled a
+        # create's cost (#135). The exclusive publish refuses only a file at
+        # this same path: a concurrent create of the same id at another path
+        # between the lookup and the write is not guarded, as it was not
+        # when this lookup ran here.
+        old_path = None if is_create else repo.find_file(entry.id)
 
         # Preserve deliberate placement on update. By default repo.save()
         # re-infers the type-default subdirectory, which would relocate a file
@@ -90,7 +99,6 @@ class DocumentManager:
         file_path = repo.save(
             entry,
             subdir=subdir,
-            touch_updated_at=touch_updated_at,
             keep_filename=not is_create,
             exclusive=is_create,
         )
@@ -128,13 +136,14 @@ class DocumentManager:
 
     @staticmethod
     def _subdir_of(path: Path, kb_root: Path) -> str | None:
-        """Return the relative folder (empty for root), or None outside the KB."""
+        """Subdirectory of ``path`` relative to the KB root, or None if the file
+        sits at the KB root. Used to keep an entry in its existing location."""
         try:
             rel = path.resolve().relative_to(kb_root.resolve())
         except (ValueError, OSError):
             return None
         parent = rel.parent
-        return "" if str(parent) == "." else str(parent)
+        return None if str(parent) == "." else str(parent)
 
     def _remove_old_file(self, old_path: Path, kb_root: Path) -> None:
         """Remove old file after a template-driven path change. Git-aware."""
