@@ -266,3 +266,22 @@ Run either set locally:
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4 -m "not slow and not e2e and not experimental"
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4 -m "experimental and not slow and not e2e"
 ```
+# Automatic shard timing refresh
+
+`refresh-test-durations.yml` checks the latest successful `dev` merge-group
+CI run weekly and on manual dispatch. It downloads that run's merged
+`test-durations` and all three junit shard reports. Above the same 25% spread
+threshold used by the shard report, it proposes a draft changing only
+`.test_durations.gz`; an existing refresh stays open for review. Balanced,
+unchanged or missing evidence never silently rewrites the baseline.
+
+The draft lists the source run and old/new greedy least-duration estimates
+over recorded test IDs. These are estimates, not a collection replay or a
+wall-clock promise. The refresh never changes test selection.
+
+Repository Actions must be allowed to create pull requests. The workflow
+needs contents/pull-requests write permission to propose its draft, and
+actions write to dispatch CI explicitly: PRs created by `GITHUB_TOKEN` do
+not trigger `pull_request` workflows. Only trusted `dev` code runs in this
+workflow; downloaded timing/report artifacts are parsed as data.
+

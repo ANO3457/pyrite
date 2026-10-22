@@ -1,0 +1,66 @@
+name: Refresh test duration estimates
+on:
+  schedule:
+    - cron: '20 5 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+concurrency:
+  group: refresh-test-durations
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Leave an existing refresh for review
+        id: existing
+        run: |
+          count=$(gh pr list --state open --search 'in:title "Refresh recorded test durations"' --json number --jq length)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - name: Find the latest successful dev merge-group run
+        if: steps.existing.outputs.count == '0'
+        id: latest
+        run: python3 scripts/refresh_test_durations.py --latest >> "$GITHUB_OUTPUT"
+      - name: Download its timing and junit evidence
+        if: steps.latest.outputs.run_id != ''
+        env:
+          SOURCE_RUN: ${{ steps.latest.outputs.run_id }}
+        run: |
+          gh run download "$SOURCE_RUN" --name test-durations --dir "$RUNNER_TEMP/fresh-timings"
+          gh run download "$SOURCE_RUN" --pattern 'junit-test-*' --dir "$RUNNER_TEMP/shard-reports"
+      - name: Prepare a refresh only above the observed spread threshold
+        if: steps.latest.outputs.run_id != ''
+        id: prepare
+        env:
+          SOURCE_RUN: ${{ steps.latest.outputs.run_id }}
+        run: |
+          python3 scripts/refresh_test_durations.py --root . \
+            --fresh "$RUNNER_TEMP/fresh-timings/test_durations.gz" \
+            --reports "$RUNNER_TEMP/shard-reports" --body "$RUNNER_TEMP/duration-pr.md" \
+            --run-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" >> "$GITHUB_OUTPUT"
+      - name: Open the single-file draft and start its CI
+        if: steps.prepare.outputs.changed == 'true'
+        env:
+          SOURCE_RUN: ${{ steps.latest.outputs.run_id }}
+        run: |
+          branch="chore/refresh-test-durations-$SOURCE_RUN"
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- .test_durations.gz
+          git diff --cached --name-only | grep -Fx '.test_durations.gz'
+          test "$(git diff --cached --name-only | wc -l)" -eq 1
+          git commit -m 'ci: refresh recorded test durations'
+          git push origin "$branch"
+          gh pr create --draft --base dev --head "$branch" --title 'ci: Refresh recorded test durations' --body-file "$RUNNER_TEMP/duration-pr.md"
+          # GITHUB_TOKEN-created PRs do not trigger pull_request workflows.
+          gh workflow run ci.yml --ref "$branch"
