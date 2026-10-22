@@ -237,7 +237,7 @@ Tests carry no size marker yet.
 **Everything**
 
 ```bash
-scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4   # backend, ~6,000 tests, ~10 min on a busy laptop
+scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4   # backend, ~16,500 tests, ~20 min on a busy laptop (1,240 s shard time across 4 vCPUs)
 cd web && npm ci && npm run check && npm run test:unit && npm run build   # frontend
 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/e2e -m e2e -n 4 --dist loadfile   # large: real server and MCP processes
 PATH="$PWD/.venv/bin:$PATH" bash scripts/run_tutorial.sh                  # large: docs/getting-started.md as a test
@@ -289,6 +289,18 @@ scripts/test-affected --list          # what your branch affects, against origin
 scripts/test-affected --explain       # ... and why each test was chosen
 scripts/test-affected --run           # run it: core + affected, -n 4 (-n N or -n auto)
 ```
+
+**Regenerating goldens**
+
+Characterization goldens (`tests/characterization/goldens/`) pin the response contracts for REST, MCP, and error bodies across all principals. Gating tests compare against these files; they are never regenerated in CI.
+
+A migration PR may not change a golden (ADR-0037). When an intentional behavior change updates responses:
+
+```bash
+PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/ -m characterization
+```
+
+Regenerate serially without `-n` (or xdist) so each principal writes without lost updates (#712). Review `git diff tests/characterization/goldens/` carefully before committing.
 
 `test-affected` diffs your working tree, uncommitted and untracked files
 included, against the merge base with `--base` (default `origin/dev`;

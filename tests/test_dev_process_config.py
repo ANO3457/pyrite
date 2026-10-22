@@ -1169,6 +1169,10 @@ class TestRunningTheTestsDoc:
         assert (REPO / "scripts" / "run_tutorial.sh").exists()
         assert "--dist loadfile" in section and (REPO / "tests" / "e2e").is_dir()
 
+    def test_the_golden_regeneration_is_documented(self, section):
+        assert "PYRITE_CHARACTERIZATION_REGENERATE=1" in section
+        assert "tests/characterization/" in section
+
 
 class TestDevPushReusesTheMergeQueuesPass:
     """Each commit is tested once (maintainer, 2026-09-25).
