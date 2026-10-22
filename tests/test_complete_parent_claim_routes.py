@@ -1,12 +1,12 @@
 """Every task claim/write route uses the derived-completion refusal."""
 
 import json
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
+from pyrite.config import save_config
 from pyrite.cli import app
 from pyrite.exceptions import ValidationError
 from pyrite.server import api
@@ -37,8 +37,8 @@ def request_claim(config, route):
             if route == "cli_claim"
             else ["task", "update", "parent", "-k", "work", "-s", "claimed", "-f", "json"]
         )
-        with patch("pyrite.cli.context.load_config", return_value=config):
-            result = CliRunner().invoke(app, command)
+        save_config(config)
+        result = CliRunner().invoke(app, command)
         return json.loads(result.stdout)
     if route.startswith("mcp_"):
         tool, args = (
@@ -97,6 +97,7 @@ def test_complete_parent_refused_then_claimable_after_open_child(tmp_path, route
     assert "counts as done" in message, refusal
     assert "pyrite task create" in message, refusal
     assert "--parent parent" in message, refusal
+    assert "pyrite task update parent -k work -s done" in message, refusal
     assert (path / "tasks/parent.md").read_bytes() == before
     db = PyriteDB(config.settings.index_path)
     try:
@@ -112,13 +113,26 @@ def test_complete_parent_refused_then_claimable_after_open_child(tmp_path, route
         db.close()
 
 
-@pytest.mark.control(reason="Explicit completion is not a claim")
-def test_explicit_done_is_allowed(tmp_path):
-    config, _ = _build(tmp_path, {"parent": ("in_progress", ""), "child": ("done", "parent")})
+@pytest.mark.parametrize("status", ["open", "in_progress"])
+def test_explicit_done_is_allowed(tmp_path, status):
+    config, _ = _build(tmp_path, {"parent": (status, ""), "child": ("done", "parent")})
     db = PyriteDB(config.settings.index_path)
     try:
         assert (
             TaskService(config, db).update_task("parent", "work", status="done")["status"] == "done"
         )
+    finally:
+        db.close()
+
+
+@pytest.mark.control(reason="An unfinished parent cannot skip the task workflow")
+def test_open_parent_with_unresolved_child_cannot_skip_to_done(tmp_path):
+    config, path = _build(tmp_path, {"parent": ("open", ""), "child": ("open", "parent")})
+    before = (path / "tasks/parent.md").read_bytes()
+    db = PyriteDB(config.settings.index_path)
+    try:
+        with pytest.raises(ValidationError, match="Cannot move task"):
+            TaskService(config, db).update_task("parent", "work", status="done")
+        assert (path / "tasks/parent.md").read_bytes() == before
     finally:
         db.close()
