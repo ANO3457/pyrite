@@ -13,6 +13,7 @@ import warnings
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from typing import TypeGuard
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import ExceptionContext
@@ -71,7 +72,7 @@ CORRUPT_INDEX_SUGGESTION = (
 )
 
 
-def is_index_corruption(exc: BaseException) -> bool:
+def is_index_corruption(exc: BaseException) -> TypeGuard[sqlite3.DatabaseError]:
     """Distinguish a broken index from query syntax, locks and other SQL errors."""
     code = getattr(exc, "sqlite_errorcode", 0)
     return isinstance(exc, sqlite3.DatabaseError) and (code & 0xFF) in (
