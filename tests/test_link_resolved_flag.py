@@ -187,3 +187,11 @@ def test_rest_entry_read_carries_the_same_fields(link_world, tmp_path):
     row = next(r for r in outlinks if r["id"] == "widget")
     assert row["resolved"] is False
     assert row["resolved_in_kbs"] == [OTHER]
+
+
+def test_a_backlink_is_resolved_even_when_its_source_title_is_null():
+    from pyrite.storage.backends.base_backend import _with_resolved
+
+    # The backlink JOIN proves existence; title nullability cannot undo it.
+    rows = _with_resolved([{"id": "source", "title": None}], None, None)
+    assert rows == [{"id": "source", "title": None, "resolved": True}]

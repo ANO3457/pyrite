@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -107,7 +108,9 @@ def _with_inverse_relation(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _with_resolved(
-    rows: list[dict[str, Any]], readable_kbs: set[str] | None, lookup
+    rows: list[dict[str, Any]],
+    readable_kbs: set[str] | None,
+    lookup: Callable[[list[str]], dict[str, list[str]]] | None,
 ) -> list[dict[str, Any]]:
     """Add ``resolved`` -- and ``resolved_in_kbs`` on the unresolved -- to link rows (#64).
 
@@ -135,6 +138,8 @@ def _with_resolved(
     for row in unresolved:
         row["resolved"] = False
         row["resolved_in_kbs"] = []
+    if lookup is None:
+        return [{**row, "resolved": True} for row in rows]
     ids = sorted({str(row["id"]) for row in unresolved})
     hits = lookup(ids)
     for row in unresolved:
