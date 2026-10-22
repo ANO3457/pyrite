@@ -300,7 +300,7 @@ A migration PR may not change a golden (ADR-0037). When an intentional behavior 
 PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/
 ```
 
-`golden_io.py` guards per-principal writes under a file lock so `-n4` can be used, though running serially without `-n` avoids xdist worker contention entirely (see #712). Review `git diff tests/characterization/goldens/` carefully before committing.
+Run the regenerate serially without `-n`. `golden_io.py` refuses regeneration under pytest-xdist because each worker records only the goldens its own tests observed (#712, fixed by #1225). The per-principal file lock does not make parallel regeneration supported. Review `git diff tests/characterization/goldens/` carefully before committing.
 
 `test-affected` diffs your working tree, uncommitted and untracked files
 included, against the merge base with `--base` (default `origin/dev`;

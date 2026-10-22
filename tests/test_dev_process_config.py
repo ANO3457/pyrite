@@ -1175,6 +1175,10 @@ class TestRunningTheTestsDoc:
             in section
         )
         assert "-m characterization" not in section
+        regeneration = section.split("### Regenerating goldens", 1)[1].split("\n##", 1)[0]
+        assert "serially without `-n`" in regeneration
+        assert "refuses" in regeneration and "xdist" in regeneration
+        assert "so `-n4` can be used" not in regeneration
         assert (REPO / "tests" / "characterization").is_dir()
 
 
