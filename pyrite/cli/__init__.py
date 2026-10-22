@@ -22,9 +22,9 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import (
-    CONFIG_FILE,
     Repository,
     auto_discover_kbs,
+    current_config_file,
     load_config,
     open_registration_warning,
     save_config,
@@ -491,10 +491,11 @@ def list_kbs(
 @app.command("config")
 def show_config():
     """Show current configuration."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Subscriptions:[/bold] {len(config.subscriptions)}")
