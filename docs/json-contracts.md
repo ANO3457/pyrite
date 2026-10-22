@@ -1558,3 +1558,36 @@ fixes were attempted and failed. `manual` keeps only the issues a person must
 decide. One failed entry does not
 stop the rest. With `--dry-run`, `fixed` lists what would be attempted and
 `failed` is empty.
+
+## QA duplicate candidates
+
+`pyrite qa duplicates -t <type>` reports pairs of live entries that may
+describe the same thing. It is a **report**, not a merge: finding candidates
+is not a failure, so the exit code is `0` when the scan ran; an unknown
+`--format` or an out-of-range `--threshold` is a usage error (`2`).
+
+Scores are word-overlap (Jaccard) over the id slug, after removing each
+`--strip-prefix`, and over the title. A pair is a candidate when either
+score is at or above `--threshold` (default `0.62`); `score` is the
+higher one and `signal` names every signal that matched (`id`, `title`,
+or `id+title`). Without `--status`, an entry is live while its lifecycle
+is `active` and its status is not `done`, `cancelled`, `failed`,
+`archived` or `closed`.
+
+```json
+{
+  "entry_type": "task",
+  "threshold": 0.62,
+  "count": 1,
+  "pairs": [
+    {
+      "a": {"id": "election-day", "kb_name": "notes", "title": "Election Day"},
+      "b": {"id": "2026-11-03", "kb_name": "notes", "title": "Election Day"},
+      "score": 1.0,
+      "signal": "title"
+    }
+  ]
+}
+```
+
+`--format text` prints one line per pair (`score kb/id ~ kb/id [signal]`).

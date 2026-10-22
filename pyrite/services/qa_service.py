@@ -10,6 +10,7 @@ Orchestrates QA operations by delegating to focused services:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -53,6 +54,31 @@ def require_qa_tier(tier: int, *, llm_available: Callable[[], bool]) -> None:
             "QA tier 2 runs the model-judged rubric and no model is configured; "
             "nothing was assessed"
         )
+
+
+#: Statuses a duplicate scan treats as settled when the caller names no
+#: ``--status`` filter. A note (no status) is live while its lifecycle is
+#: ``active``; a task is live until one of these (#934).
+_DUPLICATE_RESOLVED = frozenset({"done", "cancelled", "canceled", "failed", "archived", "closed"})
+_WORD_SPLIT = re.compile(r"[^a-z0-9]+")
+
+
+def _duplicate_tokens(value: str, prefixes: tuple[str, ...] = ()) -> set[str]:
+    """Lowercase word tokens, with at most one matching id prefix removed."""
+    text = (value or "").lower()
+    for prefix in prefixes:
+        lowered = prefix.lower()
+        if lowered and text.startswith(lowered):
+            text = text[len(lowered) :]
+            break
+    return {token for token in _WORD_SPLIT.split(text) if token}
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    union = left | right
+    return len(left & right) / len(union)
 
 
 class QAService:
@@ -228,6 +254,121 @@ class QAService:
             "total": total,
             "checked": total,
             "issues": issues,
+        }
+
+    def find_duplicates(
+        self,
+        entry_type: str,
+        *,
+        readable_kbs: set[str] | None,
+        statuses: set[str] | None = None,
+        threshold: float = 0.62,
+        strip_prefixes: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Candidate near-duplicate entries of one type; never merges (#934).
+
+        Two signals are scored over word tokens: the id slug (after removing
+        a matching ``strip_prefixes`` entry) and the title. A pair is a
+        candidate when either score reaches ``threshold``; ``score`` is the
+        higher of the two and ``signal`` names every signal that matched.
+
+        With ``statuses`` the scan keeps only those statuses. Without it, an
+        entry is live while its lifecycle is ``active`` and its status is not
+        one of ``done``/``cancelled``/``failed``/``archived``/``closed``.
+
+        Candidate pairs come from an inverted token index, and a token shared
+        by more than ``max(64, entries // 25)`` entries is not expanded: a
+        pair whose only shared token is that common would score far below the
+        default threshold, and expanding it would make a common word
+        quadratic on a 2,000-entry KB. The returned ``pairs`` are sorted by
+        score and then by identity, so two runs agree.
+        """
+        params: dict[str, Any] = {"entry_type": entry_type}
+        scope = kb_names_clause("kb_name", readable_kbs, params)
+        sql = (
+            "SELECT id, kb_name, title, status, lifecycle FROM entry WHERE entry_type = :entry_type"
+        )
+        if scope:
+            sql += f" AND {scope}"
+        rows = self.db.execute_sql(sql, params)
+
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            status = (row["status"] or "").lower()
+            lifecycle = (row["lifecycle"] or "active").lower()
+            if statuses is not None:
+                if status not in statuses:
+                    continue
+            elif lifecycle != "active" or status in _DUPLICATE_RESOLVED:
+                continue
+            entries.append(
+                {
+                    "id": row["id"],
+                    "kb_name": row["kb_name"],
+                    "title": row["title"] or "",
+                    "id_tokens": _duplicate_tokens(row["id"], strip_prefixes),
+                    "title_tokens": _duplicate_tokens(row["title"] or ""),
+                }
+            )
+
+        positions: dict[str, list[int]] = {}
+        for position, entry in enumerate(entries):
+            for token in entry["id_tokens"] | entry["title_tokens"]:
+                positions.setdefault(token, []).append(position)
+
+        max_shared = max(64, len(entries) // 25)
+        candidates: set[tuple[int, int]] = set()
+        for shared in positions.values():
+            if len(shared) < 2 or len(shared) > max_shared:
+                continue
+            for left in range(len(shared)):
+                for right in range(left + 1, len(shared)):
+                    candidates.add((shared[left], shared[right]))
+
+        pairs: list[dict[str, Any]] = []
+        for left, right in candidates:
+            first, second = entries[left], entries[right]
+            id_score = _jaccard(first["id_tokens"], second["id_tokens"])
+            title_score = _jaccard(first["title_tokens"], second["title_tokens"])
+            matched = [
+                (name, score)
+                for name, score in (("id", id_score), ("title", title_score))
+                if score >= threshold
+            ]
+            if not matched:
+                continue
+            if (first["kb_name"], first["id"]) > (second["kb_name"], second["id"]):
+                first, second = second, first
+            pairs.append(
+                {
+                    "a": {
+                        "id": first["id"],
+                        "kb_name": first["kb_name"],
+                        "title": first["title"],
+                    },
+                    "b": {
+                        "id": second["id"],
+                        "kb_name": second["kb_name"],
+                        "title": second["title"],
+                    },
+                    "score": round(max(score for _, score in matched), 4),
+                    "signal": "+".join(name for name, _ in matched),
+                }
+            )
+        pairs.sort(
+            key=lambda pair: (
+                -pair["score"],
+                pair["a"]["kb_name"],
+                pair["a"]["id"],
+                pair["b"]["kb_name"],
+                pair["b"]["id"],
+            )
+        )
+        return {
+            "entry_type": entry_type,
+            "threshold": threshold,
+            "count": len(pairs),
+            "pairs": pairs,
         }
 
     def _report_unreadable_kb(

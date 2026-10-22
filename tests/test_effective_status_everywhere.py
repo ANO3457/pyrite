@@ -278,6 +278,7 @@ CLI_STATUS_OPTIONS = {
     "search": "effective",
     "task list": "effective",
     "create": "write",
+    "qa duplicates": "never-tasks",
     "task update": "write",
     "sw new-adr": "write",
     "investigation claims": "never-tasks",
