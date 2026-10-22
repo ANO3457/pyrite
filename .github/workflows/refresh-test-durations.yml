@@ -4,9 +4,8 @@ on:
     - cron: '20 5 * * 1'
   workflow_dispatch:
 permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+  contents: read
+  actions: read
 concurrency:
   group: refresh-test-durations
   cancel-in-progress: false
@@ -14,6 +13,8 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      changed: ${{ steps.prepare.outputs.changed }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -21,13 +22,7 @@ jobs:
         with:
           ref: dev
           fetch-depth: 0
-      - name: Leave an existing refresh for review
-        id: existing
-        run: |
-          count=$(gh pr list --state open --search 'in:title "Refresh recorded test durations"' --json number --jq length)
-          echo "count=$count" >> "$GITHUB_OUTPUT"
       - name: Find the latest successful dev merge-group run
-        if: steps.existing.outputs.count == '0'
         id: latest
         run: python3 scripts/refresh_test_durations.py --latest >> "$GITHUB_OUTPUT"
       - name: Download its timing and junit evidence
@@ -45,22 +40,44 @@ jobs:
         run: |
           python3 scripts/refresh_test_durations.py --root . \
             --fresh "$RUNNER_TEMP/fresh-timings/test_durations.gz" \
-            --reports "$RUNNER_TEMP/shard-reports" --body "$RUNNER_TEMP/duration-pr.md" \
+            --reports "$RUNNER_TEMP/shard-reports" --body "$RUNNER_TEMP/duration-refresh.md" \
             --run-url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" >> "$GITHUB_OUTPUT"
-      - name: Open the single-file draft and start its CI
+      - name: Publish the proposed timings and evidence
         if: steps.prepare.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: proposed-test-durations
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .test_durations.gz
+            ${{ runner.temp }}/duration-refresh.md
+  notify:
+    needs: refresh
+    if: needs.refresh.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: proposed-test-durations
+          path: proposal
+      - name: Open or update one timing refresh issue
         env:
-          SOURCE_RUN: ${{ steps.latest.outputs.run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          branch="chore/refresh-test-durations-$SOURCE_RUN"
-          git switch -c "$branch"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- .test_durations.gz
-          git diff --cached --name-only | grep -Fx '.test_durations.gz'
-          test "$(git diff --cached --name-only | wc -l)" -eq 1
-          git commit -m 'ci: refresh recorded test durations'
-          git push origin "$branch"
-          gh pr create --draft --base dev --head "$branch" --title 'ci: Refresh recorded test durations' --body-file "$RUNNER_TEMP/duration-pr.md"
-          # GITHUB_TOKEN-created PRs do not trigger pull_request workflows.
-          gh workflow run ci.yml --ref "$branch"
+          title='ci: Test duration refresh evidence'
+          body=$(find proposal -name duration-refresh.md -print -quit)
+          test -n "$body"
+          printf '\nProposed baseline artifact: https://github.com/%s/actions/runs/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> "$body"
+          number=$(gh issue list --state open --search 'in:title "Test duration refresh evidence"' --json number,title --jq 'map(select(.title == "ci: Test duration refresh evidence")) | first | .number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file "$body"
+          else
+            gh issue create --title "$title" --body-file "$body"
+          fi

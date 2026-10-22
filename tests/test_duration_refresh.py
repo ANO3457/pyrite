@@ -112,7 +112,7 @@ def test_workflow_yaml_and_all_bash_steps_parse_without_executing_them():
     root = Path(__file__).parents[1]
     workflow = yaml.safe_load((root / ".github/workflows/refresh-test-durations.yml").read_text())
     assert workflow.get(True, workflow.get("on"))["schedule"]
-    for step in workflow["jobs"]["refresh"]["steps"]:
+    for step in [step for job in workflow["jobs"].values() for step in job["steps"]]:
         if "run" in step:
             result = subprocess.run(
                 ["bash", "-n"],
@@ -122,3 +122,62 @@ def test_workflow_yaml_and_all_bash_steps_parse_without_executing_them():
                 timeout=10,
             )
             assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the workflow runs Bash on Ubuntu")
+@pytest.mark.parametrize("existing", ["", "42"])
+def test_notification_step_creates_or_updates_one_issue_without_pushing_a_branch(
+    tmp_path, existing
+):
+    import os
+
+    root = Path(__file__).parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/refresh-test-durations.yml").read_text())
+    step = workflow["jobs"]["notify"]["steps"][-1]
+    proposal = tmp_path / "proposal"
+    proposal.mkdir()
+    body = proposal / "duration-refresh.md"
+    body.write_text("Source timing evidence\n")
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    gh = binary / "gh"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1:3] == ['issue', 'list']: print(os.environ['EXISTING'])\n"
+    )
+    gh.chmod(0o755)
+    log = tmp_path / "calls.jsonl"
+    env = dict(
+        os.environ,
+        PATH=str(binary) + os.pathsep + os.environ["PATH"],
+        CALLS=str(log),
+        EXISTING=existing,
+        GITHUB_REPOSITORY="owner/repo",
+        GITHUB_RUN_ID="123",
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 2
+    assert calls[0][:2] == ["issue", "list"]
+    assert calls[1][:2] == ["issue", "edit" if existing else "create"]
+    if existing:
+        assert calls[1][2] == existing
+    sent = Path(calls[1][calls[1].index("--body-file") + 1])
+    assert (tmp_path / sent).read_text().startswith("Source timing evidence")
+    assert "https://github.com/owner/repo/actions/runs/123" in body.read_text()
+    for job in workflow["jobs"].values():
+        for candidate in job["steps"]:
+            command = candidate.get("run", "")
+            assert "git push" not in command and "gh pr create" not in command
+    assert workflow["permissions"] == {"contents": "read", "actions": "read"}
+    assert workflow["jobs"]["notify"]["permissions"]["issues"] == "write"
