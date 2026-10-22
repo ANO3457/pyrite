@@ -25,7 +25,14 @@ def snapshot(path):
                 if row[1] not in IGNORE and not (table != "entry" and row[1] == "id")
             ]
             rows = []
-            for row in connection.execute(f"SELECT * FROM {table}"):
+            query = (
+                "SELECT et.entry_id, et.kb_name, t.name AS tag FROM entry_tag et JOIN tag t ON t.id = et.tag_id"
+                if table == "entry_tag"
+                else f"SELECT * FROM {table}"
+            )
+            if table == "entry_tag":
+                columns = ["entry_id", "kb_name", "tag"]
+            for row in connection.execute(query):
                 values = dict(row)
                 for column in JSON_COLUMNS & values.keys():
                     if values[column]:
