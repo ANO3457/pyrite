@@ -142,5 +142,8 @@ def test_keyboard_interrupt_in_body_is_not_overwritten_by_cleanup_failure():
         _current_context().find_root().call_on_close(lambda: 1 / 0)
         raise KeyboardInterrupt()
 
-    with pytest.raises(KeyboardInterrupt):
-        runner.invoke(app, ["probe"], catch_exceptions=False)
+    # Typer's real command entry point turns Ctrl-C into exit 130; CliRunner
+    # does not propagate KeyboardInterrupt even with catch_exceptions=False.
+    result = runner.invoke(app, ["probe"], catch_exceptions=False)
+    assert result.exit_code == 130
+    assert result.stdout == ""

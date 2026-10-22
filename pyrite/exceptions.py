@@ -52,7 +52,6 @@ phrase themselves safely, which is exactly the trap: a class-level
 path).
 """
 
-
 import logging
 
 logger = logging.getLogger(__name__)
