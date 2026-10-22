@@ -69,7 +69,7 @@ def format_adr_relations(relations: dict[str, list[dict]]) -> str:
 
 
 def resolve_adr_kb(
-    config: Any, kb_name: str | None = None, readable_kbs: set[str] | None = None
+    config: Any, kb_name: str | None = None, *, readable_kbs: set[str] | None
 ) -> Any:
     """Pick the KB holding ADRs: explicitly named, the single configured KB,
     otherwise the (single) KB whose schema declares the ``adr`` type.

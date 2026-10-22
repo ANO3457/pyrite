@@ -180,7 +180,7 @@ def sw_new_adr(
     # Resolve the KB up front: with none resolved, refuse -- do NOT fall back
     # to writing into the cwd, where the ADR is never indexed and the
     # numbering query (scoped to KBs) would never see it again.
-    kb_conf = resolve_adr_kb(config, kb_name)
+    kb_conf = resolve_adr_kb(config, kb_name, readable_kbs=UNSCOPED)
     if kb_conf is None:
         cli_error(
             "No KB resolved for the ADR (pass --kb).",

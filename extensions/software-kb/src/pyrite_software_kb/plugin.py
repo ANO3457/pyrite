@@ -1745,7 +1745,7 @@ class SoftwareKBPlugin:
 
         config = self._get_config()
         kb_name = args.get("kb_name")
-        kb_conf = resolve_adr_kb(config, kb_name, readable_kbs)
+        kb_conf = resolve_adr_kb(config, kb_name, readable_kbs=readable_kbs)
         if kb_conf is None:
             return {
                 "created": False,

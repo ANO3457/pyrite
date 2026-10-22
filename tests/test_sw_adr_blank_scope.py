@@ -48,5 +48,5 @@ def test_shared_resolver_preserves_explicit_db_registered_kbs(tmp_path):
 
     config = PyriteConfig()
     config.register_db_kbs([{"name": "registered", "path": str(tmp_path), "kb_type": "software"}])
-    assert resolve_adr_kb(config, "registered").name == "registered"
-    assert resolve_adr_kb(config, "registered", set()) is None
+    assert resolve_adr_kb(config, "registered", readable_kbs=None).name == "registered"
+    assert resolve_adr_kb(config, "registered", readable_kbs=set()) is None
