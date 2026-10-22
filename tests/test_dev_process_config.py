@@ -779,7 +779,13 @@ class TestCloudEnvironment:
 
         repo = tmp_path / "checkout"
         (repo / "scripts").mkdir(parents=True)
-        for name in ("cloud-env-setup.sh", "setup-checkout.sh", "cloud-postgres.sh"):
+        for name in (
+            "cloud-env-setup.sh",
+            "setup-checkout.sh",
+            "cloud-postgres.sh",
+            "known_cloud_failures.py",
+            "known-cloud-failures.json",
+        ):
             shutil.copy(REPO / "scripts" / name, repo / "scripts" / name)
         (repo / "pyproject.toml").write_text("[project]\nname='x'\n")
         (repo / "extensions" / "ext").mkdir(parents=True)
@@ -904,6 +910,8 @@ class TestCloudEnvironment:
         lines = env_file.read_text().splitlines()
         assert any(l.startswith('export PATH="') and ".venv/bin" in l for l in lines)
         assert any("PYRITE_TEST_PG_URL=" in l and f":{listener}/pyrite_test" in l for l in lines)
+        assert "Known cloud-only failures (not a CI waiver):" in result.stdout
+        assert "issues/1098" in result.stdout
 
     def test_contributing_pastes_the_line_the_script_documents_and_names_the_opt_out(self):
         line = "curl -fsSL https://raw.githubusercontent.com/pyrite-wiki/pyrite/dev/scripts/cloud-env-setup.sh | bash"
