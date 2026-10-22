@@ -3,9 +3,9 @@
 axis (ADR-0037 theme 0).
 
 Regenerate: ``PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest
-tests/characterization/test_rest_matrix.py -n4``, then review the diff to
-``tests/characterization/goldens/rest.*.json`` and commit it as its own
-reviewed change. Never set in CI or the pre-push hook.
+tests/characterization/test_rest_matrix.py (serial, no `-n`)``, then review
+the diff to ``tests/characterization/goldens/rest.*.json`` and commit it as its
+own reviewed change. Never set in CI or the pre-push hook.
 
 **What "every operation" means here.** `surfaces.kb_bearing_rest_operations`
 narrows `tests/_surface_inventory.py`'s 144 REST operations to the 74 that a

@@ -67,6 +67,18 @@ well as the main checkout. The examples use each command's default output.
 
 ### When to Use KB Tools
 
+Before a feature, search for its backlog item, ADRs and component docs. Before
+modifying a shared file, search for its path to see what docs reference it.
+
+Other useful lookups (semantic search requires configured embeddings):
+
+```bash
+.venv/bin/pyrite sw backlog -k pyrite
+.venv/bin/pyrite sw standards -k pyrite
+.venv/bin/pyrite tags -k pyrite
+.venv/bin/pyrite search "<question>" -k pyrite --mode semantic
+```
+
 For binding context, search ADRs and component docs separately with their
 type filters. An untyped search can also return closed backlog items;
 a result is not a current decision just because it matched. Before modifying
