@@ -360,7 +360,6 @@ class SearchBackend(Protocol):
     ) -> list[dict[str, Any]]:
         """Get timeline events ordered by date."""
         ...
-        ...
 
     # ── object refs ──────────────────────────────────────────────────
 

@@ -176,7 +176,7 @@ def mcp_task_list(cfg, s):
 def mcp_kb_timeline(cfg, s):
     """`kb_timeline` narrows the same way (#62): the filter runs in SQL
     before `LIMIT` through the effective status."""
-    out = _mcp(cfg, "kb_timeline", {"status": s, "kb_name": KB})
+    out = _mcp(cfg, "kb_timeline", {"status": s, "kb_names": [KB]})
     return _ids(out["events"])
 
 
@@ -277,6 +277,8 @@ MCP_STATUS_PARAMS = {
     "kb_find_by_assignee": "effective",
     "kb_find_by_status": "effective",
     "kb_timeline": "effective",
+    "investigation_claims": "never-tasks",
+    "sw_transition": "write",
     "kb_search": "effective",
     "task_list": "effective",
     "kb_update": "write",
