@@ -98,6 +98,33 @@ class TestEntryLifecycle:
         ids2 = {e["id"] for e in page2}
         assert ids1.isdisjoint(ids2)
 
+    def test_list_entries_issues_two_statements_not_n_plus_one(self, backend_with_db):
+        """list_entries(limit=50) issues two statements: 1 for entries, 1 for batch tags (#1044)."""
+        from sqlalchemy import event
+
+        backend, db = backend_with_db
+        for i in range(50):
+            backend.upsert_entry(_make_entry(f"e{i:02d}", kb_name="test", tags=[f"tag{i % 5}"]))
+
+        statement_count = 0
+
+        def count_statement(conn, cursor, statement, parameters, context, executemany):
+            nonlocal statement_count
+            statement_count += 1
+
+        # Postgres fixtures have a real backend/session but no PyriteDB.
+        engine = backend._session.get_bind()
+        event.listen(engine, "before_cursor_execute", count_statement)
+        try:
+            entries = backend.list_entries(kb_name="test", limit=50)
+            assert len(entries) == 50
+            for e in entries:
+                num = int(e["id"][1:])
+                assert e["tags"] == [f"tag{num % 5}"]
+            assert statement_count == 2, f"Expected 2 queries, got {statement_count}"
+        finally:
+            event.remove(engine, "before_cursor_execute", count_statement)
+
     def test_count_entries(self, backend):
         for i in range(3):
             backend.upsert_entry(_make_entry(f"e{i}"))
@@ -392,19 +419,19 @@ class TestGraph:
         backend.upsert_entry(
             _make_entry(
                 "stale-source",
-                links=[{"target": "target", "relation": "transclusion"}],
+                links=[{"target": "target", "relation": "late_declared_relation_621"}],
             )
         )
 
         declared_types = dict(provenance.get_all_relationship_types())
-        assert "transclusion" not in declared_types
+        assert "late_declared_relation_621" not in declared_types
         monkeypatch.setattr(
             provenance,
             "get_all_relationship_types",
             lambda: {
                 **declared_types,
-                "transclusion": {
-                    "inverse": "transcluded_by",
+                "late_declared_relation_621": {
+                    "inverse": "late_inverse_621",
                     "description": "Declared after the link was indexed",
                 },
             },
@@ -422,9 +449,9 @@ class TestGraph:
                 "inverse_relation": None,
             },
             "stale-source": {
-                "forward_relation": "transclusion",
+                "forward_relation": "late_declared_relation_621",
                 "relation": "related_to",
-                "inverse_relation": "transcluded_by",
+                "inverse_relation": "late_inverse_621",
             },
         }
 
@@ -803,6 +830,81 @@ class TestMultiKB:
         backend.delete_entry("e1", "test")
         assert backend.get_entry("e1", "test") is None
         assert backend.get_entry("e1", "other") is not None
+
+
+class TestOneRowPerWrittenLink:
+    """The link rows a backend stores for an entry's ``links``: one per written
+    link, keyed by (target, KB, relation, written prefix) as stored text, the
+    same on SQLite's diff and Postgres's re-insert (#1009, #1022). The links
+    are given as the indexer passes them: the KB resolved, the prefix as
+    written beside it."""
+
+    @staticmethod
+    def _link(target, kb, prefix=None, relation="wikilink", note=""):
+        return {"target": target, "kb": kb, "prefix": prefix, "relation": relation, "note": note}
+
+    @staticmethod
+    def _outlinks(backend):
+        return sorted(
+            (r["id"], r["kb_name"], r["relation"])
+            for r in backend.get_outlinks("s", "test", readable_kbs=UNSCOPED)
+        )
+
+    @pytest.mark.control(
+        reason="the backend key always held the KB; the loss was at extraction (tested there)"
+    )
+    def test_one_id_in_two_kbs_is_two_backlinked_rows(self, backend_with_db):
+        backend, _ = backend_with_db
+        backend.upsert_entry(_make_entry("x", kb_name="test"))
+        backend.upsert_entry(_make_entry("x", kb_name="other"))
+        links = [self._link("x", "test", "test"), self._link("x", "other", "other")]
+        backend.upsert_entry(_make_entry("s", links=links))
+        for kb in ("test", "other"):
+            rows = backend.get_backlinks("x", kb, readable_kbs=UNSCOPED)
+            assert [(r["id"], r["kb_name"]) for r in rows] == [("s", "test")], kb
+
+    def test_two_prefixes_of_one_target_are_two_rows(self, backend_with_db):
+        backend, _ = backend_with_db
+        backend.upsert_entry(_make_entry("x", kb_name="other"))
+        links = [self._link("x", "other", "other"), self._link("x", "other", "o")]
+        backend.upsert_entry(_make_entry("s", links=links))
+        assert self._outlinks(backend) == [("x", "other", "wikilink")] * 2
+
+    def test_one_link_spelled_twice_is_one_row(self, backend_with_db):
+        """`2024` and `'2024'`, and `true` and `'1'`: one stored text, one row;
+        the first spelling's note is kept."""
+        backend, _ = backend_with_db
+        links = [
+            self._link(2024, "test", relation="related_to", note="first"),
+            self._link("2024", "test", relation="related_to", note="second"),
+            self._link(True, "test", relation="related_to"),
+            self._link("1", "test", relation="related_to"),
+        ]
+        backend.upsert_entry(_make_entry("s", links=links))
+        rows = backend.get_outlinks("s", "test", readable_kbs=UNSCOPED)
+        assert sorted((r["id"], r["note"]) for r in rows) == [("1", ""), ("2024", "first")]
+
+    def test_reindexing_the_same_links_changes_no_row(self, backend_with_db):
+        backend, _ = backend_with_db
+        links = [
+            self._link("x", "test"),
+            self._link("x", "test", "test"),
+            self._link("x", "other", "other"),
+            self._link("x", "test", relation="related_to"),
+        ]
+        backend.upsert_entry(_make_entry("s", links=links))
+        first = self._outlinks(backend)
+        assert len(first) == 4
+        backend.upsert_entry(_make_entry("s", links=links))
+        assert self._outlinks(backend) == first
+
+    def test_the_whole_index_graph_has_one_edge_per_pair(self, backend_with_db):
+        backend, _ = backend_with_db
+        backend.upsert_entry(_make_entry("x"))
+        links = [self._link("x", "test"), self._link("x", "test", relation="related_to")]
+        backend.upsert_entry(_make_entry("s", links=links))
+        graph = backend.get_graph_data(readable_kbs=UNSCOPED)
+        assert [(e["source_id"], e["target_id"]) for e in graph["edges"]] == [("s", "x")]
 
 
 # =========================================================================

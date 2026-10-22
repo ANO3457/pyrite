@@ -19,7 +19,7 @@ export_app = typer.Typer(help="Export KB entries to external formats")
 
 def _legacy_format_option():
     """`--format`/`-f` named the export target until #873 gave `--format` to the
-    shared output option (ADR-0046). Kept one release as a hidden alias."""
+    shared output option (ADR-0046). Kept as a hidden alias until 0.27."""
     return typer.Option(None, "--format", "-f", hidden=True)
 
 
@@ -44,8 +44,8 @@ def _resolve_target(target: str | None, legacy_format: str | None, valid: tuple[
     if legacy_format is None:
         return target if target is not None else valid[0]
     typer.echo(
-        "Warning: --format/-f on `pyrite export` is deprecated and will be removed in the "
-        f"next release; use --target {legacy_format}.",
+        "Warning: --format/-f on `pyrite export` is deprecated and will be removed in "
+        f"0.27; use --target {legacy_format}.",
         err=True,
     )
     return legacy_format
@@ -118,7 +118,7 @@ def export_collection(
         console.print(f"Valid options: {', '.join(source_map.keys())}")
         raise typer.Exit(1)
 
-    with cli_context() as (config, db, svc):
+    with cli_context(kbs=(kb,), output_format="rich") as (config, db, svc):
         entries: list[Entry] = []
         unreadable: list[object] = []  # matched, but could not be loaded for the export
 
@@ -255,7 +255,7 @@ def export_site(
     type_filter = set(exclude_types.split(",")) if exclude_types else set()
     status_filter = set(exclude_status.split(",")) if exclude_status else set()
 
-    with cli_context() as (config, db, svc):
+    with cli_context(kbs=(kb,), output_format="rich") as (config, db, svc):
         kb_config = config.get_kb(kb)
         if not kb_config:
             console.print(f"[red]KB not found: {kb}[/red]")

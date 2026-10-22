@@ -12,7 +12,8 @@ Plugins register via pyproject.toml:
 import inspect
 import logging
 from collections.abc import Callable
-from typing import Any
+from importlib.metadata import EntryPoint
+from typing import Any, cast
 
 from ..exceptions import PluginError
 from .capabilities import Capability
@@ -20,6 +21,15 @@ from .context import PluginContext
 from .protocol import PyritePlugin
 
 logger = logging.getLogger(__name__)
+
+
+def load_plugin_entry_point(ep: EntryPoint) -> PyritePlugin:
+    """Instantiate an entry point using the discovery contract."""
+    plugin = ep.load()()
+    if not hasattr(plugin, "name"):
+        raise ValueError(f"Plugin {ep.name} has no 'name' attribute")
+    return cast(PyritePlugin, plugin)
+
 
 # Probe arguments used only to check that a callable's signature *binds* the
 # plugin contract's arity (inspect.signature(...).bind never calls the
@@ -268,16 +278,9 @@ class PluginRegistry:
 
             for ep in plugin_eps:
                 try:
-                    plugin_class = ep.load()
-                    plugin = plugin_class()
-                    if hasattr(plugin, "name"):
-                        self._plugins[plugin.name] = plugin
-                        logger.info("Loaded plugin: %s", plugin.name)
-                    else:
-                        msg = f"Plugin {ep.name} has no 'name' attribute"
-                        if strict:
-                            raise PluginError(msg)
-                        logger.warning("%s, skipping", msg)
+                    plugin = load_plugin_entry_point(ep)
+                    self._plugins[plugin.name] = plugin
+                    logger.info("Loaded plugin: %s", plugin.name)
                 except PluginError:
                     raise
                 except Exception as e:
@@ -293,10 +296,20 @@ class PluginRegistry:
             logger.warning("Plugin discovery failed: %s", e)
 
         self._discovered = True
+        self._aliases_changed()
+
+    @staticmethod
+    def _aliases_changed() -> None:
+        """A plugin arrived: a type's aliases, and so its declared fields, may
+        have changed (``schema.field_aliases.declared_fields`` caches them)."""
+        from ..schema.field_aliases import clear_declared_fields_cache
+
+        clear_declared_fields_cache()
 
     def register(self, plugin: PyritePlugin) -> None:
         """Manually register a plugin (for testing or programmatic use)."""
         self._plugins[plugin.name] = plugin
+        self._aliases_changed()
         # A re-register (e.g. a test replacing a plugin instance under the
         # same name) must not serve a stale conformance result computed from
         # the previous instance's validators/hooks.
@@ -929,10 +942,10 @@ class PluginRegistry:
         the factory (it must be able to build any declared type) but wrong
         for type *resolution*, where picking the first subclass of a core
         type out of a globally-merged dict makes the answer depend on
-        site-packages enumeration order. Concretely: both cascade's `actor`
-        and social's `user_profile` subclass PersonEntry, so `person`
-        resolved to whichever plugin happened to be discovered first --
-        `actor` on one machine, `user_profile` on another, for the same code.
+        site-packages enumeration order. Concretely: two plugins' PersonEntry
+        subclasses (the former cascade `actor` and social's `user_profile`)
+        made `person` resolve to whichever plugin happened to be discovered
+        first -- `actor` on one machine, `user_profile` on another, for the same code.
         See plugin-type-resolution-scoping.
         """
         return self._aggregate_dict_for_kb("get_entry_types", kb_type)

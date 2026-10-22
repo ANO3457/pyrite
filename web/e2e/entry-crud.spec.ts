@@ -10,9 +10,10 @@ import { E2E_BACKEND_URL } from './global-setup';
  *
  * This spec CREATES entries (the New Entry flow). Every title it writes comes
  * from `uniqueTitle()` so a second run of the same seeded world, and any
- * sibling spec running in the same pass, never collides with it. Each test
- * that creates an entry deletes it in a `finally` via the backend API — there
- * is no delete affordance in the web UI to drive instead (see the report).
+ * sibling spec running in the same pass, never collides with it. Cleanup uses
+ * the backend API even though the detail page now has a delete affordance
+ * (#117): a spec's own teardown must not depend on UI behaviour under test
+ * elsewhere, and the API delete needs no seeded session state.
  */
 
 // Per-worktree, not a hardcoded 8088 — see E2E_BACKEND_URL's own doc (#118).
@@ -35,11 +36,11 @@ test.describe('Entries Page', () => {
 	test('lists the seeded people, events, and notes by their known ids', async ({ page }) => {
 		await page.goto('/entries');
 		const [first, ...rest] = [...SEEDED_PEOPLE, ...SEEDED_EVENTS, ...SEEDED_NOTES];
-		await expect(page.locator(`a[href="/entries/${first.id}"]`)).toBeVisible({
+		await expect(page.locator(`a[href="/entries/${first.id}?kb=${E2E_KB}"]`)).toBeVisible({
 			timeout: COLD_ROUTE_TIMEOUT
 		});
 		for (const entry of rest) {
-			await expect(page.locator(`a[href="/entries/${entry.id}"]`)).toBeVisible();
+			await expect(page.locator(`a[href="/entries/${entry.id}?kb=${E2E_KB}"]`)).toBeVisible();
 		}
 	});
 
@@ -150,6 +151,11 @@ test.describe('New Entry Page', () => {
 
 			// Editor step: the title input here is the untitled one in the header row.
 			await expect(page.getByRole('heading', { name: title })).toBeVisible();
+			// Since #473, a KB with more than one declared type preselects none,
+			// and Create stays disabled until one is chosen (TypeChoice.svelte;
+			// the research template has note, event, person, ...). Blank Entry
+			// keeps whatever the picker step chose, so choose here.
+			await page.locator('#entry-type-select-edit').selectOption('note');
 			// The Create button is disabled until `kb` (kbStore.activeKB) has
 			// resolved (web/src/routes/entries/new/+page.svelte) -- Playwright's
 			// .click() auto-waits for that, so this click itself rides out the
@@ -160,7 +166,7 @@ test.describe('New Entry Page', () => {
 			// same rationale as COLD_ROUTE_TIMEOUT above.
 			await page.getByRole('button', { name: 'Create' }).click();
 
-			await expect(page).toHaveURL(new RegExp(`/entries/${id}$`), { timeout: COLD_ROUTE_TIMEOUT });
+			await expect(page).toHaveURL(new RegExp(`/entries/${id}\\?kb=${E2E_KB}$`), { timeout: COLD_ROUTE_TIMEOUT });
 			await expect(page.getByRole('heading', { name: title, level: 1 })).toBeVisible();
 		} finally {
 			await deleteEntry(request, id);
@@ -237,5 +243,50 @@ test.describe('Entry Detail Page', () => {
 		// to <header> rather than by role/href alone.
 		const breadcrumbs = page.locator('header').getByRole('navigation');
 		await expect(breadcrumbs.getByRole('link', { name: 'Entries' })).toHaveAttribute('href', '/entries');
+	});
+
+	// The two ways a reader destroys an entry without reading the prompt. Both
+	// are timing, not intent, so both need a real browser: jsdom fires no
+	// keydown-to-click default action, so the component test can only pin the
+	// mechanism (focus lands on the inert step, not on Confirm).
+	test('a double-click and an Enter-Enter on Delete cannot delete the entry', async ({
+		page,
+		request
+	}) => {
+		const title = uniqueTitle('E2E Crud Delete Guard');
+		const id = idForTitle(title);
+		try {
+			await page.goto('/entries/new');
+			await page.getByLabel('Title').fill(title);
+			await page.getByTestId('template-blank').click();
+			await page.getByRole('button', { name: 'Create' }).click();
+			await expect(page).toHaveURL(new RegExp(`/entries/${id}\\?kb=${E2E_KB}$`), {
+				timeout: COLD_ROUTE_TIMEOUT
+			});
+
+			const del = page.getByRole('button', { name: 'Delete' });
+
+			// Double-click: the second click lands on a disabled Delete.
+			await del.dblclick();
+			await expect(page.getByRole('button', { name: 'Confirm delete' })).toBeVisible();
+
+			// Enter-Enter: focus starts on Delete. The first Enter opens the
+			// step and focus moves to it, so the second Enter presses nothing.
+			await page.getByRole('button', { name: 'Cancel' }).click();
+			await expect(del).toBeEnabled();
+			await del.focus();
+			await page.keyboard.press('Enter');
+			await page.keyboard.press('Enter');
+
+			// Still on the entry, still not deleted.
+			await expect(page).toHaveURL(new RegExp(`/entries/${id}\\?kb=${E2E_KB}$`));
+			await expect(page.getByRole('heading', { name: title, level: 1 })).toBeVisible();
+			const stillThere = await request.get(
+				`${API_BASE}/api/entries/${encodeURIComponent(id)}?kb=${E2E_KB}`
+			);
+			expect(stillThere.ok()).toBe(true);
+		} finally {
+			await deleteEntry(request, id);
+		}
 	});
 });

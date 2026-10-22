@@ -21,7 +21,12 @@ from typing import Any, Literal
 
 from dotenv import load_dotenv
 
-from pyrite.exceptions import ConfigError, ConfigFileUnreadableError, ConfigSaveRefusedError
+from pyrite.exceptions import (
+    ConfigError,
+    ConfigFileUnreadableError,
+    ConfigSaveRefusedError,
+    ValidationError,
+)
 from pyrite.utils.yaml import dump_yaml_file, load_yaml_file
 
 logger = logging.getLogger(__name__)
@@ -147,11 +152,6 @@ class Repository:
         self.path = Path(self.path).expanduser().resolve()
 
     @property
-    def is_remote(self) -> bool:
-        """Check if this repo has a remote."""
-        return self.remote is not None
-
-    @property
     def is_github(self) -> bool:
         """Check if this is a GitHub repo."""
         if not self.remote:
@@ -215,11 +215,6 @@ class GitHubAuth:
             except Exception:
                 logger.warning("Failed to parse token expiry: %s", self.token_expiry, exc_info=True)
         return True
-
-    @property
-    def has_app_credentials(self) -> bool:
-        """Check if GitHub App credentials are configured."""
-        return bool(self.app_id and self.private_key_path and self.installation_id)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary (excluding secrets for display)."""
@@ -393,7 +388,7 @@ class Settings:
     # Embed entries on write. Off = keyword search only, no torch import, no
     # model download; `pyrite index embed` can backfill later. Env: PYRITE_AUTO_EMBED
     auto_embed: bool = True
-    # Extra Content-Security-Policy sources for the public /site pages, in CSP
+    # Extra Content-Security-Policy sources for the web app's pages, in CSP
     # syntax, appended to the built-in policy (script-src 'self' ...), e.g.
     # "script-src https://plausible.io 'sha256-...'; connect-src https://plausible.io"
     # for a reverse proxy that injects an analytics script. Env: PYRITE_SITE_CSP_EXTRA
@@ -477,6 +472,30 @@ class PyriteConfig:
         """Rebuild the lookup indexes."""
         self._kb_by_name = {kb.name: kb for kb in self.knowledge_bases}
         self._repo_by_name = {repo.name: repo for repo in self.repositories}
+        for message in self._shortname_collisions():
+            logger.warning("%s; the full name wins", message)
+
+    def _shortname_collisions(self) -> list[str]:
+        """Shortnames that equal another KB's full name, or each other (#912).
+
+        A registry KB's name counts as a full name too (#949): the registry
+        cache is empty when the config is built, so `register_db_kbs` runs
+        this again for the rows it adds, and `validate()` sees both.
+        """
+        found: list[str] = []
+        seen: dict[str, str] = {}
+        for kb in self.knowledge_bases:
+            short = kb.shortname
+            if not short:
+                continue
+            if (short in self._kb_by_name or short in self._db_kb_cache) and short != kb.name:
+                found.append(
+                    f"KB '{kb.name}' has shortname '{short}', which is KB '{short}'s full name"
+                )
+            if short in seen and seen[short] != kb.name:
+                found.append(f"KBs '{seen[short]}' and '{kb.name}' share shortname '{short}'")
+            seen.setdefault(short, kb.name)
+        return found
 
     # Fallback lookup for DB-registered KBs not in config.yaml
     _db_kb_cache: dict[str, KBConfig] = field(default_factory=dict, repr=False)
@@ -496,6 +515,26 @@ class PyriteConfig:
         if kb:
             return kb
         return self._db_kb_cache.get(name)
+
+    def require_kb(self, name: str, *, db: Any = None) -> KBConfig:
+        """The KB a request names, or ``KBNotFoundError`` (``KB_NOT_FOUND``).
+
+        For a service read that would otherwise answer an empty result for a
+        name that matches no KB, so the caller is told the KB does not exist
+        instead of that it holds nothing (#846). The one resolver,
+        ``services/kb_resolver.resolve_kb`` (#952), for a caller with no
+        scope to apply: a shortname is refused with the full name suggested,
+        and with ``db`` a KB registered after this config was loaded is
+        found. A blank name names no KB (never "unknown", #846/#528); a
+        service that calls this acts on one KB, so a blank is refused as
+        ``ValidationError`` (``VALIDATION_FAILED``): the caller named none.
+        """
+        from .services.kb_resolver import resolve_kb
+
+        kb = resolve_kb(self, name, readable_kbs=None, db=db)
+        if kb is None:
+            raise ValidationError("A knowledge base must be named")
+        return kb
 
     def confined_default_role(self, value: str | None) -> str | None:
         """A default_role as this config may honour it. Under an untrusted
@@ -591,6 +630,10 @@ class PyriteConfig:
             new[name] = kb
             added += 1
         self._db_kb_cache = new
+        if added:
+            for message in self._shortname_collisions():
+                if any(f"KB '{name}'s full name" in message for name in new):
+                    logger.warning("%s; the full name wins", message)
         return added
 
     def forget_db_kb(self, name: str) -> None:
@@ -607,12 +650,54 @@ class PyriteConfig:
         """The config.yaml entry of KB `name` (not a registry KB), or None."""
         return self._kb_by_name.get(name)
 
-    def get_kb_by_shortname(self, shortname: str) -> KBConfig | None:
-        """Get a KB by its shortname alias."""
-        for kb in self.knowledge_bases:
-            if kb.shortname == shortname:
+    def readable_kb_with_shortname(
+        self, name: str, *, readable_kbs: set[str] | None
+    ) -> KBConfig | None:
+        """The KB among the caller's readable ones whose shortname is `name`.
+
+        Looked up in the readable set only (None: every KB), never in every
+        KB and then checked: a private KB sharing the shortname would
+        otherwise be the one found, and the caller's answer would change
+        with a KB it cannot see (#952, #965). `readable_kbs` is a required
+        keyword so that forgetting it is a TypeError, never "see everything".
+        The services' spelling is `services/kb_resolver.readable_kb_with_shortname`;
+        it lives here so that the index, which may not import services, can
+        store the KB a link prefix names (ADR-0049 Q3).
+        """
+        for kb in self.all_kbs():
+            if kb.shortname == name and (readable_kbs is None or kb.name in readable_kbs):
                 return kb
         return None
+
+    def readable_kb_named(self, name: str, *, readable_kbs: set[str] | None) -> KBConfig | None:
+        """The KB a link prefix (`[[name:id]]`) means for a caller who may read
+        `readable_kbs`: the readable KB with that full name, else the readable
+        KB with that shortname, else None.
+
+        Both steps consult the readable set only. Existence is never checked
+        first: a private KB whose full name is a readable KB's shortname would
+        otherwise turn the link into a miss, and the miss would say the
+        private name exists (#965 round 3). For the unscoped caller a full
+        name wins over another KB's shortname, as `validate` warns it will.
+        """
+        for kb in self.all_kbs():
+            if kb.name == name and (readable_kbs is None or kb.name in readable_kbs):
+                return kb
+        return self.readable_kb_with_shortname(name, readable_kbs=readable_kbs)
+
+    def link_kb(self, prefix: Any, kb_name: str) -> Any:
+        """The KB a link's prefix (``[[prefix:id]]``, a ``links:`` item's
+        ``kb:``) resolves to, as the index stores it: the full name of the KB
+        the prefix names (by full name, then shortname; unscoped), the owning
+        ``kb_name`` when there is no prefix, or the prefix as written when it
+        names no KB, so the link counts as broken, which it is (#979). The
+        index's row and the write path's duplicate check both ask here, so a
+        file's ``kb: ops`` and a request for ``ops-kb`` are one link (#1053
+        review)."""
+        if not prefix:
+            return kb_name
+        kb = self.readable_kb_named(prefix, readable_kbs=None)
+        return kb.name if kb is not None else prefix
 
     def list_kbs(self, kb_type: str | None = None) -> list[KBConfig]:
         """List all KBs, optionally filtered by type."""
@@ -678,6 +763,9 @@ class PyriteConfig:
     def validate(self) -> dict[str, list[str]]:
         """Validate all KBs and repos. Returns dict of name -> errors."""
         results = {}
+        collisions = self._shortname_collisions()
+        if collisions:
+            results["shortnames"] = collisions
         for kb in self.knowledge_bases:
             errors = kb.validate()
             if errors:

@@ -38,6 +38,7 @@ from ..config import KBConfig, PyriteConfig
 from ..exceptions import ValidationError
 from ..models.core_types import explicit_entry_id, id_text, read_entry_id
 from ..storage.repository import KBRepository
+from ..utils.file_lock import NotInGitRepository, file_lock
 from ..utils.frontmatter import Frontmatter, describe, load_frontmatter, split_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,10 @@ _YAML11_WORDS = {"y", "n", "yes", "no", "on", "off", "true", "false", "null"}
 
 class PinRefusedError(Exception):
     """One file cannot take the pin as a single added line; the reason."""
+
+
+class PinMetadataRefusedError(PinRefusedError):
+    """Pin cannot preserve the original file's owner or group."""
 
 
 @dataclass
@@ -208,8 +213,10 @@ def _write_pin(root: Path, path: Path, planned_original: bytes, new_text: str) -
     Not ``atomic_write_text``: it resolves the path with ``realpath`` and
     writes a multiply-linked file in place, both of which follow a link.
 
-    Known limit, no lock removes it: an edit that lands between the byte
-    re-read and the rename is overwritten by the pinned text.
+    Known limits, no lock removes them: an edit that lands between the byte
+    re-read and the rename is overwritten by the pinned text. A hard link
+    added in that window keeps the old inode and bytes. Replacing the inode
+    does not carry extended attributes or ACLs; add the id by hand to retain them.
     """
     if not (os.rename in os.supports_dir_fd and hasattr(os, "O_NOFOLLOW")):
         raise PinRefusedError("this platform cannot write without following links")
@@ -238,6 +245,19 @@ def _write_pin(root: Path, path: Path, planned_original: bytes, new_text: str) -
             pass
     finally:
         os.close(dir_fd)
+
+
+def _write_pin_locked(root: Path, path: Path, planned_original: bytes, new_text: str) -> None:
+    """``_write_pin`` under the entry's momentary lock (ADR-0042 decision 10;
+    #955, B6 P4), so a pin and an update of one file cannot interleave: the
+    pin's own compare-before-replace then decides, as before. A KB outside
+    git has no lock directory and is written without one (D1 (b)); any other
+    lock-directory fault is a refusal the caller reports."""
+    try:
+        with file_lock(path):
+            _write_pin(root, path, planned_original, new_text)
+    except NotInGitRepository:
+        _write_pin(root, path, planned_original, new_text)
 
 
 def _check_unchanged(dir_fd: int, name: str, planned_original: bytes) -> None:
@@ -271,8 +291,16 @@ def _replace_through(dir_fd: int, name: str, data: bytes) -> None:
     try:
         try:
             os.fchmod(fd, stat.S_IMODE(st.st_mode))
-            if (st.st_uid, st.st_gid) != (os.getuid(), os.getgid()):
-                os.fchown(fd, st.st_uid, st.st_gid)
+            from ..utils.atomic_write import file_owner_matches
+
+            if not file_owner_matches(fd, st):
+                try:
+                    os.fchown(fd, st.st_uid, st.st_gid)
+                except (OSError, AttributeError) as e:
+                    raise PinMetadataRefusedError(
+                        f"cannot preserve owner {st.st_uid} and group {st.st_gid}; "
+                        "ask the owner to pin it, or add the id by hand"
+                    ) from e
             view = memoryview(data)
             while view:
                 view = view[os.write(fd, view) :]
@@ -489,9 +517,12 @@ def apply(found: IdScan, the_plan: dict[str, Any]) -> dict[str, Any]:
     for item in the_plan["pinned"]:
         try:
             path, original, new_text = _prepared(found, item)
-            _write_pin(found.root, path, original, new_text)
+            _write_pin_locked(found.root, path, original, new_text)
         except (PinRefusedError, OSError, UnicodeDecodeError) as e:
-            the_plan["skipped"].append({"path": item["path"], "reason": str(e)})
+            if isinstance(e, PinMetadataRefusedError):
+                the_plan["refused"].append({**item, "reason": str(e)})
+            else:
+                the_plan["skipped"].append({"path": item["path"], "reason": str(e)})
             continue
         done.append(item)
     the_plan["pinned"] = done
@@ -519,7 +550,8 @@ def check(found: IdScan, the_plan: dict[str, Any]) -> dict[str, Any]:
 def find_kb_without_writes(kb_name: str) -> KBConfig | None:
     """The KB named ``kb_name``, found the way every command finds it
     (config.yaml, then the KBs ``pyrite kb add`` registered in the index),
-    without creating or changing a file.
+    without creating or changing a file; ``KBNotFoundError`` from the one
+    resolver when it is not a KB (an unknown name, a shortname).
 
     ``cli_context`` cannot be used for this: it creates the config directory,
     opens the index (creating ``index.db`` and its ``-wal``/``-shm`` files,
@@ -537,9 +569,15 @@ def find_kb_without_writes(kb_name: str) -> KBConfig | None:
     """
     config = pyrite_config.load_config(create_dir=False)
     kb = config.get_kb(kb_name)
+    if kb is None:
+        kb = _registered_kb(config, kb_name)
     if kb is not None:
         return kb
-    return _registered_kb(config, kb_name)
+    # Not a KB: the one refusal (#952), with the shortname rule and the hint.
+    from .access_policy import UNSCOPED
+    from .kb_resolver import resolve_kb
+
+    return resolve_kb(config, kb_name, readable_kbs=UNSCOPED)
 
 
 def _registered_kb(config: PyriteConfig, kb_name: str) -> KBConfig | None:
@@ -552,7 +590,9 @@ def _registered_kb(config: PyriteConfig, kb_name: str) -> KBConfig | None:
         try:
             rows = conn.execute(
                 "SELECT name, path, kb_type, description, default_role "
-                "FROM kb WHERE source = 'user' AND name = ?",
+                # A row with no source is a user row, as the registry, the
+                # resolver and merge_registered_kbs read it.
+                "FROM kb WHERE (source = 'user' OR source IS NULL) AND name = ?",
                 (kb_name,),
             ).fetchall()
         finally:

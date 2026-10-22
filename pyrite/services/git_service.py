@@ -232,38 +232,45 @@ class GitService:
         return ".." not in path.split("/")
 
     @staticmethod
-    def read_file_at(local_path: Path, commit: str, kb_relative_path: str) -> str | None:
-        """The text of `kb_relative_path` in `commit`'s tree, or None when the
+    def show(repo_path: Path, path: str, rev: str = "HEAD") -> str | None:
+        """The text of `path` at `rev` in `repo_path`'s tree, or None when the
         path is unsafe or git did not hand back a UTF-8 blob (absent, an
         unreadable object, a timeout, an OSError, a decode error). The one
         version read: never raises for a file it cannot serve.
 
         `<rev>:<path>` is resolved against the repo root unless anchored, so
-        the path is read as `./<path>` from the KB directory: a KB that is a
-        subdirectory of its repo is found (#415)."""
-        if not GitService.is_safe_kb_relative_path(kb_relative_path):
+        the path is read as `./<path>` from `repo_path`: a KB that is a
+        subdirectory of its repo is found (#415), and a caller that already
+        ran `git show HEAD:<path>` gets the same text with one home for the
+        subprocess (#1049)."""
+        if not GitService.is_safe_kb_relative_path(path):
             return None
         try:
             result = subprocess.run(
-                [*READ_BLOB_ARGV, f"{commit}:./{kb_relative_path}"],
-                cwd=str(local_path),
+                [*READ_BLOB_ARGV, f"{rev}:./{path}"],
+                cwd=str(repo_path),
                 capture_output=True,
                 timeout=10,
                 env=_git_env(),
             )
         except (subprocess.SubprocessError, OSError):
-            logger.warning("git cat-file failed for %s", local_path, exc_info=True)
+            logger.warning("git cat-file failed for %s", repo_path, exc_info=True)
             return None
         if result.returncode != 0:
             return None
         try:
             text = result.stdout.decode("utf-8")
         except UnicodeDecodeError:
-            logger.warning("Version of %s at %s is not UTF-8", kb_relative_path, commit)
+            logger.warning("Version of %s at %s is not UTF-8", path, rev)
             return None
         # Universal newlines, as the `text=True` read before #453 returned:
         # "\r\n" and a lone "\r" become "\n", so a CRLF file reads as it did.
         return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
+    def read_file_at(local_path: Path, commit: str, kb_relative_path: str) -> str | None:
+        """The KB-relative spelling of `show`, kept for its callers."""
+        return GitService.show(local_path, kb_relative_path, rev=commit)
 
     @staticmethod
     def version_servability(
@@ -288,6 +295,7 @@ class GitService:
         """
         from ..models.core_types import entry_id_from_markdown, explicit_entry_id
 
+        rel_path: str | None
         if versioned_path:
             # Stored KB-relative from #432 onward. Tolerate an absolute path
             # under the KB (a dev database may hold rows from before paths

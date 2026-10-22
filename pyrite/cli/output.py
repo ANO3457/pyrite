@@ -100,7 +100,7 @@ def _record_short_format(ctx: typer.Context, value: str | None) -> str | None:
         raise _two_answers()
     value = validate_shared_format(value)
     typer.echo(
-        f"Warning: -f is deprecated and will stop meaning --format in the next release; "
+        f"Warning: -f is deprecated and will stop meaning --format in 0.27; "
         f"use --format {value} (or set PYRITE_FORMAT).",
         err=True,
     )
@@ -122,8 +122,8 @@ OUTPUT_FORMAT = typer.Option(
     help="Output format: json (default), yaml, or rich for text. PYRITE_FORMAT sets the default.",
 )
 
-#: ``-f`` meant ``--format`` on the task commands. #303: it keeps working for one
-#: release, with a warning on stderr, then goes. Declared beside OUTPUT_FORMAT on
+#: ``-f`` meant ``--format`` on the task commands. #303: it keeps working until
+#: 0.27, with a warning on stderr, then goes. Declared beside OUTPUT_FORMAT on
 #: a command that had ``-f``; hidden from help.
 LEGACY_FORMAT_SHORT = typer.Option(None, "-f", hidden=True, callback=_record_short_format)
 
@@ -170,6 +170,11 @@ def backlinks_table(entry_id: str, links: list[dict]):
     no declared inverse); ``Written as`` is what the source's file says, so an
     undeclared relation such as ``informs`` is still visible (#527). An
     edge-derived row has no ``forward_relation`` and leaves the cell empty.
+
+    One table row per source (its KB and id): the index holds one row per
+    link the source writes (#1009), so a frontmatter link and a body
+    ``[[x]]`` are two rows from one source. Their relations stand one per
+    line in the cells, in the order the rows came.
     """
     from rich.markup import escape
     from rich.table import Table
@@ -180,13 +185,17 @@ def backlinks_table(entry_id: str, links: list[dict]):
     table.add_column("Type", style="dim")
     table.add_column("Relation", style="dim")
     table.add_column("Written as", style="dim")
+    sources: dict[tuple[str, str], list[dict]] = {}
     for link in links:
+        sources.setdefault((link.get("kb_name", ""), link.get("id", "")), []).append(link)
+    for rows in sources.values():
+        first = rows[0]
         # Cells are Rich markup: a relation is free text and may hold brackets.
         table.add_row(
-            link.get("id", ""),
-            link.get("title", ""),
-            link.get("entry_type", ""),
-            escape(link.get("relation") or ""),
-            escape(link.get("forward_relation") or ""),
+            first.get("id", ""),
+            first.get("title", ""),
+            first.get("entry_type", ""),
+            "\n".join(escape(r.get("relation") or "") for r in rows),
+            "\n".join(escape(r.get("forward_relation") or "") for r in rows),
         )
     return table

@@ -13,7 +13,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import load_config
-from ..exceptions import QuerySyntaxError, QueryTooLongError
+from ..exceptions import QuerySyntaxError, QueryTooLongError, StorageError, ValidationError
 from ..services.read_shaping import (
     IDENTITY_FIELDS,
     SEARCH_FIELDS_ENV,
@@ -23,7 +23,7 @@ from ..services.read_shaping import (
     unmatched_search_fields,
 )
 from ..utils.errors import exit_unless_whole
-from .context import get_config_with_registered_kbs
+from .context import get_config_with_registered_kbs, require_kb
 from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
@@ -163,19 +163,9 @@ def register_search_command(app: typer.Typer):
         if kb_name:
             config = get_config_with_registered_kbs(config, name=kb_name)
 
-        # A search scoped to an unregistered KB used to return an empty result
-        # set (exit 0), which looks like a query miss rather than a wrong KB.
-        # Fail loudly with a distinct KB_NOT_FOUND instead.
-        if kb_name and config.get_kb(kb_name) is None:
-            from ..utils.errors import cli_error
-
-            known = ", ".join(sorted(kb.name for kb in config.all_kbs())) or "none"
-            cli_error(
-                f"KB not found: {kb_name}",
-                output_format,
-                error_code="KB_NOT_FOUND",
-                suggestion=f"known KBs: {known} (or run `pyrite kb list`)",
-            )
+        # A search scoped to a name that is not a KB is refused, never an
+        # empty result that looks like a query miss: the one resolver (#952).
+        require_kb(config, kb_name, output_format=output_format)
 
         # Every surface refuses an over-long query the same way, file search
         # included; the index path must not fall back to file search with it.
@@ -364,6 +354,10 @@ def register_search_command(app: typer.Typer):
                 ),
                 retryable=False,
             )
+        except StorageError as e:
+            from ..utils.errors import cli_error_from
+
+            cli_error_from(e, output_format)
         except Exception as e:
             # Log the full exception (with traceback) so operators can tell a
             # corrupt index from a bad query from a locked DB — the one-line
@@ -384,6 +378,14 @@ def register_search_command(app: typer.Typer):
                     )
                 )
                 raise typer.Exit(1)
+            if isinstance(e, ValidationError):
+                # A refused request (an unknown --mode) is not an index
+                # failure: falling back to file search answered a question the
+                # caller did not ask, with exit 0 (#1006). Refuse on every
+                # format, as the machine formats already did.
+                from ..utils.errors import cli_error
+
+                cli_error(str(e), output_format, error_code="VALIDATION_FAILED", retryable=False)
             console.print(f"[red]Search error ({type(e).__name__}):[/red] {e}")
             console.print("[dim]Falling back to file search...[/dim]")
             _warn_fields_not_applied(fields)

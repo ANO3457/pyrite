@@ -205,9 +205,13 @@ class TestFixCommitCheckRunsInCI:
         assert checkout.get("with", {}).get("fetch-depth") == 0, checkout
 
     def test_the_step_walks_the_pr_commit_range(self, ci):
+        # The checkout is the PR's merge commit; its first parent is the base
+        # tip *now*. base.sha is the tip when the PR last opened or synced, so
+        # dev's commits merged since would be graded as this PR's (#1074).
         step = self._step(ci)
         run = str(step.get("run", ""))
-        assert "github.event.pull_request.base.sha" in run, run
+        assert "HEAD^1 HEAD" in run, run
+        assert "github.event.pull_request.base.sha" not in run, run
 
 
 class TestPrePushStage:
@@ -586,42 +590,52 @@ class TestCloudSessionSetup:
         text = self.START.read_text()
         assert "CLAUDE_ENV_FILE" in text and ".venv/bin" in text
 
-    def test_skills_and_agents_carry_no_machine_specific_paths(self):
+    def _agent_instruction_files(self):
+        """Every file a contributor's agent loads from this repo."""
+        skills = sorted((REPO / ".claude" / "skills").rglob("*.md"))
+        return [*skills, REPO / "CLAUDE.md", REPO / "AGENTS.md", REPO / "CONTRIBUTING.md"]
+
+    def test_agent_instructions_carry_no_machine_specific_paths(self):
         # A cloud session's (or a contributor's) checkout is not one
         # maintainer's home directory. (A bare "/Users/" grep pattern is fine.)
+        # CLAUDE.md, AGENTS.md and CONTRIBUTING.md are scanned too: CLAUDE.md
+        # once named /Users/markr/pyrite and nothing checked it.
         import re
 
         home = re.compile(r"/(Users|home)/[A-Za-z]")
         offenders = [
             f"{path.relative_to(REPO)}:{n}"
-            for base in (REPO / ".claude" / "skills", REPO / ".claude" / "agents")
-            for path in base.rglob("*.md")
+            for path in self._agent_instruction_files()
             for n, line in enumerate(path.read_text().splitlines(), 1)
             if home.search(line)
         ]
         assert offenders == []
 
-    def test_skills_and_agents_name_no_private_kb_or_plugin(self):
-        # The loop must run for any contributor: the tick log's location is a
-        # setting (PYRITE_CONDUCTOR_LOG_DIR), and the maintainer's private KB
-        # and plugin are not part of the project's workflow.
+    def test_agent_instructions_name_no_private_kb_or_plugin(self):
+        # The maintainer's private KB, desk and plugin are not part of the
+        # project's workflow; a contributor's agent must never be sent there.
         import re
 
         private = re.compile(r"tcp-kb-internal|tcp-skills|pyrite-desk|desk/notes")
         offenders = [
             f"{path.relative_to(REPO)}:{n}"
-            for base in (REPO / ".claude" / "skills", REPO / ".claude" / "agents")
-            for path in base.rglob("*.md")
+            for path in self._agent_instruction_files()
             for n, line in enumerate(path.read_text().splitlines(), 1)
             if private.search(line)
         ]
         assert offenders == []
 
-    def test_conductor_log_dir_setting_is_stated_once_and_gitignored(self):
-        conductor = (REPO / ".claude/skills/pyrite-conductor/SKILL.md").read_text()
-        meta = (REPO / ".claude/skills/pyrite-meta-conductor/SKILL.md").read_text()
-        assert conductor.count("PYRITE_CONDUCTOR_LOG_DIR") >= 1
-        assert "PYRITE_CONDUCTOR_LOG_DIR" in meta, "the retro must find the log"
+    def test_the_repo_ships_only_the_contributor_skills_and_no_loop_agents(self):
+        # The maintainer's orchestration loop (conductor, meta-conductor, the
+        # loop agents) lives outside the repo; a second copy here drifted from
+        # the real one (#244). What stays is what a contributor's agent loads.
+        skills = {p.name for p in (REPO / ".claude" / "skills").iterdir() if p.is_dir()}
+        assert skills == {"pyrite-dev", "kb", "software-kb", "extension-builder", "kb-lifecycle"}
+        assert not (REPO / ".claude" / "agents").exists()
+
+    def test_the_external_loops_default_log_dir_stays_gitignored(self):
+        # The loop outside the repo writes its tick log to `.pyrite-conductor/`
+        # at a checkout's root by default; it must never be committed.
         ignored = (REPO / ".gitignore").read_text().splitlines()
         assert ".pyrite-conductor/" in ignored, "the default log dir must be gitignored"
 
@@ -1159,10 +1173,10 @@ class TestRunningTheTestsDoc:
 class TestDevPushReusesTheMergeQueuesPass:
     """Each commit is tested once (maintainer, 2026-09-25).
 
-    The merge queue runs the full matrix and the frontend on the exact commit
-    that then lands on dev -- its head_sha is the push's SHA. The push to dev
-    used to run both again on that same commit. Now a successful merge_group
-    run for the SHA skips them on the push; smoke still runs (the queue does
+    The merge queue runs the frontend and `test` on 3.13 on the exact commit
+    that then lands on dev -- its head_sha is the push's SHA. A successful
+    merge_group run for the SHA skips the frontend on the push and narrows
+    `test` to 3.11 and 3.12 (2026-10-21); smoke still runs (the queue does
     not run it), and main and workflow_dispatch never skip.
     """
 
@@ -1196,12 +1210,19 @@ class TestDevPushReusesTheMergeQueuesPass:
         assert "event=merge_group" in run and "head_sha=$GITHUB_SHA" in run
         assert '.conclusion == \\"success\\"' in run
 
-    @pytest.mark.parametrize("name", ["test", "frontend"])
-    def test_test_and_frontend_skip_when_the_queue_passed(self, ci, name):
-        cond = str(ci["jobs"][name]["if"])
+    def test_frontend_skips_when_the_queue_passed(self, ci):
+        cond = str(ci["jobs"]["frontend"]["if"])
         assert "needs.changes.outputs.queue_passed != 'true'" in cond, cond
         # The skip is ANDed onto the existing condition, never ORed.
         assert cond.startswith("(") and ") && needs.changes.outputs.queue_passed" in cond, cond
+
+    @pytest.mark.parametrize("name", ["test", "collect"])
+    def test_test_runs_the_interpreters_the_queue_did_not(self, ci, name):
+        # Since 2026-10-21 the queue runs 3.13 only, so the push to dev is
+        # where 3.11 and 3.12 run: `test` and `collect` no longer skip on a
+        # passed queue; their matrix narrows instead
+        # (tests/test_ci_workflow_triggers.py, TestTheMatrixNarrowsWhereItShould).
+        assert "queue_passed" not in str(ci["jobs"][name]["if"]), name
 
     @pytest.mark.control(reason="pins that the skip stays off jobs that never had it")
     @pytest.mark.parametrize("name", ["smoke", "kb", "gate"])
@@ -1434,7 +1455,6 @@ class TestAVerifiedCommitIsNotTestedAgain:
     @pytest.mark.parametrize(
         "doc",
         [
-            "CLAUDE.md",
             "CONTRIBUTING.md",
             "kb/standards/testing-standards.md",
             "kb/maps/development-process-and-releases.md",
@@ -1446,7 +1466,7 @@ class TestAVerifiedCommitIsNotTestedAgain:
         assert "scripts/verified_commit.py" in text, doc
         assert "verified" in text and "`gate`" in text and "exact SHA" in text, doc
 
-    @pytest.mark.parametrize("doc", ["CLAUDE.md", "CONTRIBUTING.md"])
+    @pytest.mark.parametrize("doc", ["CONTRIBUTING.md"])
     def test_the_docs_say_it_fails_closed_and_quote_the_real_timeout(self, doc):
         import sys
 
@@ -1459,9 +1479,24 @@ class TestAVerifiedCommitIsNotTestedAgain:
         assert "PYRITE_PUSH_FORCE" in text and "PYRITE_PUSH_EXPERIMENTAL" in text
 
     def test_the_docs_say_what_the_dry_run_rehearses(self):
-        for doc in ("CLAUDE.md", "CONTRIBUTING.md"):
+        for doc in ("CONTRIBUTING.md",):
             text = " ".join((REPO / doc).read_text().split())
             assert "names each one that would stop `--execute`" in text, doc
+
+    def test_claude_md_and_agents_md_link_to_the_process_and_do_not_restate_it(self):
+        """One place per fact: the process lives in CONTRIBUTING.md. The agent
+        entry points link to it and hold none of the hook/verified-commit text
+        (CLAUDE.md once carried 832 words of it, pinned in two places)."""
+        for doc in ("CLAUDE.md", "AGENTS.md"):
+            text = " ".join((REPO / doc).read_text().split())
+            assert "CONTRIBUTING.md" in text, doc
+            for restated in ("exact SHA", "fails closed", "PYRITE_PUSH_WORKERS", "core.hooksPath"):
+                assert restated not in text, (
+                    f"{doc} restates {restated!r}; it belongs in CONTRIBUTING.md"
+                )
+        claude = (REPO / "CLAUDE.md").read_text()
+        assert "@AGENTS.md" in claude, "CLAUDE.md imports the neutral entry point"
+        assert len(claude.splitlines()) <= 60
 
 
 class TestWhatAVerifiedTipIsEvidenceOf:
@@ -1469,7 +1504,7 @@ class TestWhatAVerifiedTipIsEvidenceOf:
     suite. A pull-request `gate` is one interpreter and passes with `test`
     skipped, so it does not, and an explicit request for the full suite runs."""
 
-    @pytest.mark.parametrize("doc", ["CLAUDE.md", "CONTRIBUTING.md", ".pre-commit-config.yaml"])
+    @pytest.mark.parametrize("doc", ["CONTRIBUTING.md", ".pre-commit-config.yaml"])
     def test_the_docs_say_the_full_suite_still_runs_when_asked_for(self, doc):
         text = " ".join((REPO / doc).read_text().replace("#", " ").split())
         assert "PYRITE_PUSH_FULL=1" in text and "one interpreter" in text, doc
@@ -1486,25 +1521,18 @@ class TestWhatAVerifiedTipIsEvidenceOf:
         assert "(failure|cancelled)" in step and "skipped" in step
         assert "test" in ci["jobs"]["gate"]["needs"]
 
-    def test_the_runbook_describes_the_rehearsal_and_the_hook_step(self):
-        text = " ".join(
-            (REPO / ".claude/skills/pyrite-conductor/release-runbook.md").read_text().split()
-        )
-        assert "b2. push rehearsal" in text
-        assert "scripts/test-affected --preflight" in text
-        assert "does not stop at the first check that fails" in text and "exits 1" in text
-        assert "scripts/verified_commit.py" in text
-        assert "prints every step" not in text
-        # What to do when it refuses, and when the hook runs anyway.
-        assert "gh run rerun" in text and "red or cancelled" in text
-        assert "lookup fails" in text and "push URL is not a github.com URL" in text
-        assert "happens only with" not in text
+    def test_the_release_script_has_the_push_rehearsal_step_the_docs_describe(self):
+        """The release runbook left the repo with the maintainer's loop, so its
+        prose is no longer pinned here. What stays pinned is the code the
+        contributor-facing docs describe: the dry run has a push-rehearsal step
+        and the hook's preflight exists."""
         import sys
 
         sys.path.insert(0, str(REPO / "scripts"))
         import release
 
         assert "push_rehearsal" in [s.key for s in release.STEPS]
+        assert "--preflight" in (REPO / "scripts" / "test-affected").read_text()
 
 
 class TestTheRedLineIsFirstAndEveryGatingRunLeavesATimingRecord:
@@ -1546,6 +1574,16 @@ class TestTheRedLineIsFirstAndEveryGatingRunLeavesATimingRecord:
                 assert "||" in r or "mypy_ratchet" in r
         assert (REPO / ".mypy-baseline.json").exists()
 
+    def test_the_mypy_ratchet_compares_with_the_base_commit(self, ci):
+        """#1084: the committed baseline drifted above dev and every PR read red."""
+        job = ci["jobs"]["mypy"]
+        run = "\n".join(str(s.get("run", "")) for s in job["steps"])
+        assert "mypy_ratchet.py mypy.out --base mypy-base.out" in run
+        assert "bash scripts/mypy_base.sh" in run
+        assert "PUSH_BEFORE" in job["steps"][-1]["env"]
+        checkout = next(s for s in job["steps"] if "checkout" in str(s.get("uses", "")))
+        assert checkout["with"]["fetch-depth"] >= 2, "HEAD^1 of the merge ref must exist"
+
     def test_every_gating_pytest_line_records_durations_and_junit(self, ci):
         runs = self._gating_pytest_runs(ci)
         assert {j for j, _ in runs} == {"test", "smoke"}
@@ -1575,7 +1613,14 @@ class TestTheRedLineIsFirstAndEveryGatingRunLeavesATimingRecord:
     def test_gate_changes_kb_and_frontend_keep_their_names_and_gate_aggregates_the_shards(self, ci):
         # `shard-report` (tests Q2) is the shards' union proof; the shard legs are
         # `test (<py>, <k>)` and are aggregated by `gate`, never required by name.
-        assert ci["jobs"]["gate"]["needs"] == ["changes", "kb", "test", "shard-report", "frontend"]
+        # `verify-red` (#1074) is advisory: never in `gate`'s needs.
+        assert ci["jobs"]["gate"]["needs"] == [
+            "changes",
+            "kb",
+            "test",
+            "shard-report",
+            "frontend",
+        ]
         assert "name" not in ci["jobs"]["test"], "`test (<python>)` is the matrix leg's name"
         assert "name" not in ci["jobs"]["gate"], "`gate` is looked up by exact name"
 

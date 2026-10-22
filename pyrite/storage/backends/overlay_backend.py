@@ -267,9 +267,12 @@ class OverlaySearchBackend:
     ) -> list[dict[str, Any]]:
         main = self._main.get_backlinks(entry_id, kb_name, limit=10000, readable_kbs=readable_kbs)
         diff = self._diff.get_backlinks(entry_id, kb_name, limit=10000, readable_kbs=readable_kbs)
-        # The inverse relation may be shared by distinct custom relations.
+        # The inverse relation may be shared by distinct custom relations, and
+        # one source may write the same target twice through two prefixes:
+        # rows are per written link (#1009), so the prefix is part of the
+        # identity this merge may collapse on (#1062).
         merged = self._merge_entry_lists(
-            main, diff, key_fields=("id", "kb_name", "forward_relation")
+            main, diff, key_fields=("id", "kb_name", "forward_relation", "prefix")
         )
         if limit:
             return merged[offset : offset + limit]
@@ -280,7 +283,9 @@ class OverlaySearchBackend:
     ) -> list[dict[str, Any]]:
         main = self._main.get_outlinks(entry_id, kb_name, readable_kbs=readable_kbs)
         diff = self._diff.get_outlinks(entry_id, kb_name, readable_kbs=readable_kbs)
-        return self._merge_entry_lists(main, diff, key_fields=("id", "kb_name", "relation"))
+        return self._merge_entry_lists(
+            main, diff, key_fields=("id", "kb_name", "relation", "prefix")
+        )
 
     def get_graph_data(
         self,

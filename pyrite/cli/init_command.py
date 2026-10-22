@@ -4,12 +4,14 @@ Headless KB init command.
 Creates a new knowledge base from a template with zero prompts.
 """
 
+import copy
 import logging
 from pathlib import Path
 
 import typer
 from rich.console import Console
 
+from ..models.task import TASK_KB_PRESET
 from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
@@ -165,6 +167,9 @@ BUILTIN_TEMPLATES = {
                     }
                 },
             },
+            # #860: every template that ships task tooling must declare the
+            # `task` type so `pyrite task create` works out of the box.
+            "task": copy.deepcopy(TASK_KB_PRESET["types"]["task"]),
         },
         "policies": {"team_owned": True, "require_adr_number": True},
         # No rule enum on `status`: a rule applies to every type with the
@@ -176,7 +181,15 @@ BUILTIN_TEMPLATES = {
             "enforce": True,
             "rules": [],
         },
-        "directories": ["adrs", "designs", "standards", "components", "backlog", "runbooks"],
+        "directories": [
+            "adrs",
+            "designs",
+            "standards",
+            "components",
+            "backlog",
+            "runbooks",
+            "tasks",
+        ],
     },
     "zettelkasten": {
         "name": "my-zettelkasten",
@@ -194,6 +207,9 @@ BUILTIN_TEMPLATES = {
                 "optional": ["author", "page_refs"],
                 "subdirectory": "literature/",
             },
+            # #860: same rule as the software template — declare the `task`
+            # type so `pyrite task create` works in a fresh zettelkasten KB.
+            "task": copy.deepcopy(TASK_KB_PRESET["types"]["task"]),
         },
         "policies": {"private": True, "single_author": True},
         "validation": {
@@ -207,7 +223,7 @@ BUILTIN_TEMPLATES = {
                 },
             ],
         },
-        "directories": ["zettels", "literature"],
+        "directories": ["zettels", "literature", "tasks"],
     },
     "research": {
         "name": "my-research",
@@ -228,7 +244,7 @@ BUILTIN_TEMPLATES = {
             "person": {
                 "description": "Person profile",
                 "required": ["title"],
-                "optional": ["role", "affiliation"],
+                "optional": ["role", "affiliations"],
                 "subdirectory": "people/",
             },
             "organization": {
@@ -273,7 +289,7 @@ BUILTIN_TEMPLATES = {
             "person": {
                 "description": "People in the subject's network",
                 "required": ["title"],
-                "optional": ["role", "affiliation"],
+                "optional": ["role", "affiliations"],
                 "subdirectory": "people/",
             },
             "source": {
@@ -344,7 +360,7 @@ BUILTIN_TEMPLATES = {
             "person": {
                 "description": "People in the movement",
                 "required": ["title"],
-                "optional": ["role", "affiliation"],
+                "optional": ["role", "affiliations"],
                 "subdirectory": "people/",
             },
             "source": {
@@ -451,6 +467,11 @@ def init_kb(
 
         cli_error(str(exc), error_code="INVALID_KB_NAME")
 
+    if schema_file is not None:
+        from .context import input_file_or_exit
+
+        input_file_or_exit(schema_file, "Schema file", output_format)
+
     # Idempotency: if kb.yaml exists, warn and return
     kb_yaml_path = path / "kb.yaml"
     if kb_yaml_path.exists():
@@ -469,15 +490,7 @@ def init_kb(
 
     # Resolve preset: try plugin presets first, fall back to built-in
     preset = None
-    if schema_file:
-        if not schema_file.exists():
-            from ..utils.errors import cli_error
-
-            cli_error(
-                f"Schema file not found: {schema_file}",
-                error_code="NOT_FOUND",
-                suggestion="check the --schema path",
-            )
+    if schema_file is not None:
         preset = load_yaml_file(schema_file)
     else:
         try:

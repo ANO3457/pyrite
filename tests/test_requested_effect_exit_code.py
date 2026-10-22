@@ -27,11 +27,13 @@ Three kinds of test live here, each entering at the command line:
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import textwrap
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -261,6 +263,10 @@ class TestEmbed:
         (stub / "sentence_transformers" / "__init__.py").write_text(
             "raise ImportError('no semantic extra')\n"
         )
+        # `is_available()` answers through the import system's finder, so the
+        # broken install is named at the first real load (#1101): there has to
+        # be an entry for that load to happen.
+        _create(cli, "Needs a vector")
         cli.pyrite("index", "sync")
         out = cli.run(
             "pyrite.admin_cli",
@@ -322,10 +328,22 @@ def inproc(tmp_path):
     db = PyriteDB(tmp_path / "index.db")
     IndexManager(db, config).index_all()
     db.close()
-    with (
-        patch("pyrite.cli.load_config", return_value=config),
-        patch("pyrite.cli.context.load_config", return_value=config),
-    ):
+    # Every CLI module loads the config under its own name and resolves the
+    # KB it was given against it (#952); an extension's commands included.
+    modules = ["pyrite.cli", "pyrite.cli.context"] + [
+        f"{ext}.cli"
+        for ext in (
+            "pyrite_journalism_investigation",
+            "pyrite_software_kb",
+            "pyrite_zettelkasten",
+            "pyrite_encyclopedia",
+            "pyrite_social",
+        )
+        if importlib.util.find_spec(ext) is not None
+    ]
+    with ExitStack() as stack:
+        for module in modules:
+            stack.enter_context(patch(f"{module}.load_config", return_value=config))
         yield {"config": config, "tmp": tmp_path, "kb": kb_path}
 
 
@@ -461,6 +479,7 @@ class _Venv:
             "HOME": str(root / "home"),
             "PYRITE_CONFIG_DIR": str(root / "cfg"),
             "PYTHONPATH": str(REPO),
+            # pip's negative boolean option is inverted: 0 disables build isolation.
             "PIP_NO_BUILD_ISOLATION": "0",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "HF_HUB_OFFLINE": "1",
@@ -592,8 +611,10 @@ class TestBacklinksOfALinkedToMissingPage:
             out = cli.run(entry, "backlinks", "ghost-page", "-k", "demo", "--format", "json")
             assert out.returncode == 0, out.stdout + out.stderr
             payload = json.loads(out.stdout)
-            assert payload["total"] == 1, payload
-            assert payload["entries"][0]["id"] == "linker"
+            # Two links, two rows (#1009): the frontmatter item and the body
+            # wikilink, each its own backlink.
+            assert payload["total"] == 2, payload
+            assert [e["id"] for e in payload["entries"]] == ["linker", "linker"]
 
 
 class TestBatchRead:
@@ -937,7 +958,6 @@ SAFE = {
     "pyrite auth github-login": "one credential store; failure raises",
     "pyrite auth github-logout": "one credential store; failure raises",
     "pyrite auth github-setup": "one credential store; failure raises",
-    "pyrite cascade backfill-ji": "single backfill pass; scans clean",
     "pyrite ci": "exits non-zero on the checks' own result",
     "pyrite db backup": "one file copy; failure raises",
     "pyrite db restore": "one file copy; failure raises",
@@ -1024,10 +1044,6 @@ SAFE = {
 READ_ONLY = [
     "pyrite auth status",
     "pyrite auth whoami",
-    "pyrite cascade audit-compat",
-    "pyrite cascade export",
-    "pyrite cascade extract-actors",
-    "pyrite cascade suggest-aliases",
     "pyrite collections list",
     "pyrite collections query",
     "pyrite config",
@@ -1577,6 +1593,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
+    ("extensions/software-kb/src/pyrite_software_kb/cli.py", "sw_migrate_standards"): (
+        "fixed",
+        "TestJournalismAndSoftwareResults",
+    ),
     ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_query_entries"): (
         "safe",
         "bad metadata reads as empty",
@@ -1597,7 +1617,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
-    ("pyrite/cli/__init__.py", "<module>"): ("safe", "plugin CLI loading: not a command's effect"),
+    ("pyrite/cli/__init__.py", "_mount_plugin_cli"): (
+        "safe",
+        "optional plugin CLI loading: logs unavailable groups, not a command's requested effect",
+    ),
     ("pyrite/cli/collection_commands.py", "list_collections"): (
         "safe",
         "bad metadata reads as empty",
@@ -1639,7 +1662,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
     ),
     ("pyrite/cli/init_command.py", "init_kb"): ("fixed", "TestInitIndexing"),
     ("pyrite/cli/kb_commands.py", "kb_discover"): ("safe", "already registered is not a failure"),
-    ("pyrite/cli/mcp_setup_command.py", "_add_reproduces"): ("safe", "a probe"),
+    ("pyrite/cli/mcp_setup_command.py", "_restore_unavailable_reason"): (
+        "safe",
+        "a probe: malformed entries become a restoration reason, not a successful effect",
+    ),
     ("pyrite/cli/mcp_setup_command.py", "_check_replaceable"): (
         "safe",
         "absent file: nothing to replace",
@@ -1702,7 +1728,6 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "appends to the errors list the command exits on",
     ),
-    ("pyrite/cli/schema_commands.py", "schema_migrate"): ("fixed", "TestSchemaMigrate"),
     ("pyrite/cli/schema_commands.py", "schema_validate"): (
         "safe",
         "path outside the KB is skipped",
@@ -1745,17 +1770,30 @@ PRINTS: dict[tuple[str, str], tuple[str, str]] = {
     ("pyrite/admin_cli.py", "kb_validate"): ("safe", "exits 1 after listing the errors"),
     ("pyrite/admin_cli.py", "repo_sync"): ("fixed", "TestAdminRepo"),
     ("pyrite/cli/__init__.py", "import_entries"): ("fixed", "TestImportAndBulkLinks"),
-    ("pyrite/cli/extension_commands.py", "extension_install"): ("fixed", "TestExtensionVerify"),
     ("pyrite/cli/index_commands.py", "_report_health"): (
         "safe",
         "index health exits 1 when unhealthy, in its caller",
     ),
     ("pyrite/cli/kb_commands.py", "kb_gc"): ("safe", "'red' is colour: each removal is reported"),
+    ("pyrite/cli/kb_commands.py", "kb_health"): (
+        "safe",
+        "a report: a kb.yaml that fails to load is a finding, not a failed effect",
+    ),
     ("pyrite/cli/kb_commands.py", "kb_validate"): (
         "safe",
         "exits 1 on structural errors, 2 on drift",
     ),
     ("pyrite/cli/protocol_commands.py", "protocol_check"): ("safe", "exits 1 when a check fails"),
+    ("pyrite/cli/qa_commands.py", "qa_assess"): (
+        "left",
+        "#795: a KB run lists entries not assessed and tasks not created; the exit "
+        "for a partial result is ADR-0046 slice 6",
+    ),
+    ("pyrite/cli/qa_commands.py", "qa_fix"): (
+        "left",
+        "#795/#788: the report lists fixes whose write failed under Failed; the exit "
+        "for a partial result is ADR-0046 slice 6",
+    ),
     ("pyrite/cli/qa_commands.py", "qa_check_urls"): (
         "safe",
         "broken URLs are the report the command exists to give, as qa validate's findings are",

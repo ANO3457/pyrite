@@ -18,6 +18,12 @@ project is worth their time.
 
 ### Initial Setup
 
+The quickest path is `scripts/setup-checkout.sh` after cloning: it makes the
+venv, installs the extensions and writes the repo-local `.pyrite/config.yaml`
+that makes `pyrite -k pyrite` mean this checkout's `kb/` (the KB lookups in
+`AGENTS.md` need it). It installs no git hooks: after it, run
+`.venv/bin/pre-commit install`. The manual steps, if you prefer them:
+
 ```bash
 # Clone the repository
 git clone https://github.com/pyrite-wiki/pyrite.git
@@ -35,6 +41,15 @@ for ext in extensions/*/; do uv pip install -e "$ext"; done
 
 # Install the git hooks (commit, commit-msg and pre-push in one go)
 pre-commit install
+
+# Register this checkout's kb/ as the `pyrite` KB (idempotent; also writes the
+# repo-local .pyrite/config.yaml). Without it, `pyrite sw backlog -k pyrite`
+# returns KB_NOT_FOUND.
+scripts/setup-checkout.sh
+pyrite kb list   # the `pyrite` KB path must be this checkout's kb/
+
+# Verify imports resolve to this checkout, including every extension
+.venv/bin/python scripts/check_checkout_imports.py
 
 # Verify installation
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/*/tests/ -n 4 -q
@@ -90,6 +105,32 @@ checkout's `kb/`, syncs the index, installs the git hooks, puts `.venv/bin` on
 - **Branches:** the session's own branch is fine for a PR to `dev`; name it
   `fix/*` or `feature/*` if you create one yourself. One session is one
   checkout, so there is no worktree to make.
+
+## Moving work to a worktree
+
+Every worktree of a clone shares the same stash stack. A clean checkout's
+`git stash push` creates no entry: a subsequent bare `git stash pop` would
+apply and remove somebody else's stash (#1063). Use a unique handoff marker
+and the matching commit object, never the current top of the stack:
+
+```bash
+# Replace both placeholders; the token must be unique to THIS handoff.
+git stash push --include-untracked -m "handoff-<branch>-<unique-token>"
+git stash list --format='%H %gs'
+# Record the hash of the entry containing that exact marker.
+# If there is no matching entry (nothing was stashed), do not apply anything.
+scripts/new-worktree.sh <branch>
+git -C <new-worktree-path> stash apply --index <recorded-stash-hash>
+```
+
+`apply --index` restores staged changes too and keeps the stash for recovery.
+An interleaved push in another worktree cannot change which commit the
+recorded hash names. On a conflict, resolve it in the destination and keep the
+stash until the files and staging are verified. For later cleanup, inspect
+`git stash list` again and drop only the entry with that marker; its numeric
+`stash@{N}` position may have moved. Do not pop or clear the shared stack.
+`--include-untracked` includes untracked files, but not ignored files; copy
+any needed ignored file explicitly after checking its contents.
 
 ## Code Standards
 
@@ -149,6 +190,16 @@ pyrite/
 ```
 
 ### Entry Points
+
+Imports flow `cli`/`server` → `services` → `storage`; storage never imports
+services. The allowed surface-to-storage exceptions are a ratchet whose count
+can only fall, in [test_layer_boundaries.py](tests/test_layer_boundaries.py).
+The inner-layer rule is enforced by
+[test_storage_never_imports_services.py](tests/test_storage_never_imports_services.py);
+the migrated CLI surfaces are covered by
+[test_cli_surfaces_through_services.py](tests/test_cli_surfaces_through_services.py).
+For public error text, follow the [API standard](kb/standards/api-design.md#error-handling),
+enforced by [test_public_message_logged_once.py](tests/test_public_message_logged_once.py).
 
 | Command | Module | Purpose |
 |---------|--------|---------|
@@ -255,8 +306,9 @@ execute it on import. CI catches the rest.
 rendering environment before any CLI module is imported: ambient `FORCE_COLOR`,
 `PY_COLORS`, `NO_COLOR` and `TTY_COMPATIBLE` are removed, `COLUMNS` and
 `TERMINAL_WIDTH` are 80, `TERM` is `xterm-256color`, and `_TYPER_FORCE_DISABLE_TERMINAL`
-is set. The last matters most: Typer renders help and usage errors as ANSI in
-any process where `GITHUB_ACTIONS` is set, which is why a test could pass on a
+is set. The last matters most: Typer renders help as ANSI in any process where
+`GITHUB_ACTIONS` is set (usage errors no longer are Typer's to render: the root
+answers them as a JSON document, #303), which is why a test could pass on a
 laptop and fail in CI (#884). A test that checks styling on purpose takes the
 `terminal_colour` fixture (in-process Typer), `Console(force_terminal=True)`, or
 `FORCE_COLOR=1` in a subprocess's env. `tests/test_cli_output_is_deterministic.py`
@@ -264,7 +316,7 @@ runs the CLI under the CI variables to catch a regression.
 
 **Experimental tests** (#657). A red required check means the core broke.
 Tests of the surfaces `kb/designs/alpha-supported-surface.md` calls
-experimental (the extensions, tasks, REST and the web UI, `/site`, `/ws`, the
+experimental (the extensions, tasks, REST and the web UI, `/ws`, the
 AI endpoints, MCP prompts and resources and the non-core tools, Postgres, the
 overlay backend and worktrees, the `repo`/`auth`/`extension`/`export`/
 `collections` CLI groups) carry the `experimental` marker. Nobody writes it
@@ -340,8 +392,8 @@ come from GitHub Actions, and conclude `success` (`skipped` does not count)
 in every workflow run that tested the SHA.
 
 What that is evidence of: CI accepted the commit. Every job `gate` needs
-succeeded or was skipped by CI's change classifier: the full matrix in the
-merge queue, one interpreter (with `test` skipped on a docs-only change) on
+succeeded or was skipped by CI's change classifier: Python 3.13 in the
+merge queue and 3.11 and 3.12 on the push to `dev` that follows, one interpreter (with `test` skipped on a docs-only change) on
 a pull request. It does not say a particular selection of tests ran. So
 `PYRITE_PUSH_FULL=1` still runs the full suite, `PYRITE_PUSH_EXPERIMENTAL=1`
 still runs (`gate` does not need the experimental job), and `--force` or
@@ -366,7 +418,7 @@ and stamps it.
 | While editing | the test file you are changing; `scripts/test-affected --run` |
 | Before a commit | nothing extra: the commit hooks run ruff and the fast checks in seconds |
 | Before a push | the pre-push hook runs `scripts/test-affected --run` on `PYRITE_PUSH_WORKERS` (default 4) workers, unless your own `--run` already passed on the tree being pushed (see *Each tree is tested once* above) or the commit being pushed is already verified by CI (see *A verified commit is not tested again at the push*). It already runs everything for conftest, fixtures, pyproject and config changes; set `PYRITE_PUSH_FULL=1` yourself for storage or migration changes and cross-cutting refactors |
-| On the pull request | nothing: CI runs the backend suite on one interpreter (a failure is the first thing in its log; the 25 slowest tests go to the step summary and a junit artifact is kept 30 days; mypy is its own advisory job: it fails only when a file has more type errors than `.mypy-baseline.json` records, and after you fix errors you lower the baseline with `mypy pyrite/ --ignore-missing-imports > mypy.out; python scripts/mypy_ratchet.py mypy.out --update`); the backend suite runs as 3 parallel shards per interpreter balanced by `.test_durations.gz`, and `shard-report` proves they ran every test once) (all three Pythons when test infrastructure changes), KB validation, the frontend job when `web/` changes, the advisory `verify-red` job (your new tests, without and with your change) and diff coverage; the merge queue runs the full three-Python matrix on the exact commit about to land (#400); the push to `dev` after the merge runs the e2e smoke and the tutorial, and the matrix and frontend again only if the queue did not already pass that SHA |
+| On the pull request | nothing: CI runs the backend suite on one interpreter (a failure is the first thing in its log; the 25 slowest tests go to the step summary and a junit artifact is kept 30 days; mypy is its own advisory job: it fails only when a file has more type errors than the change's base commit (a PR's merge-ref parent, a push's previous tip; `.mypy-baseline.json` is the fallback when there is none), and after you fix errors you lower the baseline with `mypy pyrite/ --ignore-missing-imports > mypy.out; python scripts/mypy_ratchet.py mypy.out --update`); the backend suite runs as 3 parallel shards per interpreter balanced by `.test_durations.gz`, and `shard-report` proves they ran every test once) (all three Pythons when test infrastructure changes), KB validation, the frontend job when `web/` changes, the advisory `verify-red` job (your new tests, without and with your change, graded against the merge commit's first parent; it is not in `gate` and never blocks a merge, and CI does not pass it `--enforce-fix`; its claim rule handles module-level tables on the test function itself, grades the whole function for an inline `parametrize` list, and selects nothing for class-level, fixture-params, generate-hook and imported tables; a `control` counts only when written on the test or one of its parameters, and one added another way (class or module `pytestmark`, a hook, a fixture, the test body) turns the job red; it runs on pull requests, not in the merge queue, and CI's environment, which has no Postgres, is the one it reports in; gating waits for #1104's model; see `docs/testing.md`) and diff coverage; the merge queue runs the full three-Python matrix on the exact commit about to land (#400); the push to `dev` after the merge runs the e2e smoke and the tutorial, and the matrix and frontend again only if the queue did not already pass that SHA |
 | A frontend change | `cd web && npm run check && npm run test:unit && npm run build` |
 | A release | first the rehearsal: `scripts/release.py <version>` (a dry run) runs every check and names each one that would stop `--execute` on this machine -- untracked files, the changelog section's date, the branch, whether the commit is verified, and what the pre-push hook will do for the pushes. Then the large tests: `scripts/release.py` installs the release commit into a fresh venv and runs the tutorial against it; Playwright and the smoke layer per the release runbook |
 
@@ -398,6 +450,15 @@ uv pip install --python .venv/bin/python -e ".[all,dev]"
 
 ### Writing Tests
 
+- Follow the [deadline rule](kb/standards/testing-standards.md#deadlines-and-waits);
+  [test_test_rules.py](tests/test_test_rules.py) enforces it.
+- Drive real services behind entry points; the
+  [mocking standard](kb/standards/testing-standards.md) and
+  [test_tests_drive_the_surface_not_the_mock.py](tests/test_tests_drive_the_surface_not_the_mock.py)
+  define the permitted edges.
+- Use the [pinned CLI rendering environment](kb/standards/testing-standards.md#cli-rendering),
+  covered by [test_cli_color_environment.py](tests/test_cli_color_environment.py).
+
 - Tests live in `tests/`; extension tests in `extensions/<name>/tests/`
 - Name test files `test_*.py`
 - A `fix:` commit must include a test that fails without the fix (a hook checks
@@ -406,19 +467,49 @@ uv pip install --python .venv/bin/python -e ".[all,dev]"
   close any `PyriteDB` you open
 - Use `in` not `len` for registry assertions (see [testing standards](kb/standards/testing-standards.md))
 
+### Guards
+
+A guard is a test that reads the *test sources* and fails on a pattern. It is
+marked `@pytest.mark.guard` (on the function, not the module), and
+`scripts/test-affected` selects it whenever a changed path is under `tests/` or
+`extensions/*/tests/`, a deleted test file included, so the pre-push run tells
+you before CI does. A source-only change selects none of them. See why with
+`scripts/test-affected --explain`.
+
+| Guard | Fails when a test | What to change |
+|---|---|---|
+| `test_no_test_mocks_the_service_behind_the_entry_point_it_drives` and `test_the_allowlist_matches_the_tree_exactly` (`tests/test_tests_drive_the_surface_not_the_mock.py`) | patches a service behind the entry point it drives; or `ALLOWLIST` (path -> patch count, why) differs from the tree in any file or in size, in either direction | seed the world instead of patching; after removing patches, lower that file's count and `ALLOWLIST_SIZE`; never raise either |
+| `test_no_test_call_can_wait_forever` and `test_cheap_bcrypt_patch_lives_only_in_the_root_conftest` (`tests/test_test_rules.py`) | makes a blocking call with no deadline; or sets the test bcrypt cost outside the root conftest | give the call a `timeout=`; keep the cost switch in `conftest.py` |
+| `TestSecurityVocabularyNeedsAReason` (`tests/test_experimental_surface.py`) | is mapped experimental yet touches the security vocabulary, or a reviewed entry no longer matches | list it in `NEVER_EXPERIMENTAL`, or in `REVIEWED_EXPERIMENTAL` with the reason it is not a security test; delete a stale entry |
+| `test_cli_help_assertions_are_plain` (`tests/test_cli_help_assertions_are_plain.py`) | checks a CLI flag against raw help output | wrap it in `tests.cli_help.plain()` |
+| `TestNoTestReadsAFragmentByName` (`tests/test_changelog_fragments.py`) | reads a `changelog.d/` fragment by name | fragments are deleted at release; build the text in the test |
+| `test_no_file_adds_a_site`, `test_a_file_that_shrank_lowers_its_line` and `test_the_baseline_only_comes_down_from_the_merge_base` (`tests/test_production_wiring_guard.py`) | overrides `get_db` in `dependency_overrides` or patches `load_config` more than `tests/production_wiring_baseline.txt` allows for that file; or a file dropped below its line; or a baseline line is added or raised against the merge base with `origin/dev` | use the world (`make_client`, `rest_api_env`, `cli_world`, `tests/_world.py`); after removing sites, lower or remove that file's line; never raise one |
+
+Adding a guard: mark each scanning function `@pytest.mark.guard`, add its row
+here, and keep it cheap (these run on every push that touches a test).
+
+
 ## Branches, hooks and pull requests
 
 **Branches** (ADR-0025 and ADR-0032):
 
 - `dev` is the default branch and where work integrates. `main` is releases
   only and moves by fast-forward to a commit that already passed CI.
-- Branch from `dev`, open the PR against `dev`. Rebase is the default merge
+- Branch from `dev`, open the PR against `dev`. Name the branch for what it
+  holds: `fix/*`, `feature/*`, `docs/*`, `kb/*` (KB entries only) or
+  `process/*` (tooling and workflow). Never push to `dev`. Rebase is the default merge
   method (it keeps your commits and their messages); squash is fine for a
   branch whose history is noise.
 - A PR merges when its checks are green **on top of current `dev`** — one
   required check, `gate`, summarizes the Python suite, the frontend build and
   KB validation (whichever the change needs), and the branch must be up to
-  date. If `dev` is broken, nothing merges until it is fixed.
+  date. If `dev` is broken, nothing merges until it is fixed. A PR goes
+  `BEHIND` the moment another one merges; bring it up to date with
+  `gh pr update-branch <N> --rebase` (auto-merge does not do it for you).
+- **A PR is a unit a reviewer can hold in their head:** complete on one
+  theme, as many commits as the idea needs, never a fragment of a larger
+  thing. A follow-up to work already in review goes onto that PR's branch,
+  not into a new PR.
 
 **Git hooks** — `pre-commit install` installs all three:
 
@@ -428,6 +519,19 @@ uv pip install --python .venv/bin/python -e ".[all,dev]"
 | commit-msg | a `fix:` commit must touch `tests/` | — |
 | pre-push | `scripts/test-affected --run`: core + affected tests on `PYRITE_PUSH_WORKERS` (default 4) workers, only when the push touches code, tests, scripts or test config (a docs- or KB-only push skips it); skipped when the pushed tree already passed here or the pushed tip is verified by CI; `PYRITE_PUSH_FULL=1` runs the full suite | Seconds to minutes, depending on what changed |
 
+If `pre-commit install` refuses with "Cowardly refusing to install hooks with
+`core.hooksPath` set", run `git config --unset-all core.hooksPath` first; some
+environments point it at a directory of unused `.sample` files. If
+ruff-format reformats files, the commit stops: re-stage and commit again.
+
+The commit stage stays fast on purpose: pre-commit stashes every unstaged
+edit in the working tree to `~/.cache/pre-commit/patch*` while the commit
+hooks run, so a slow hook makes edits vanish for the minutes it takes, and
+there is deliberately **no pytest** at commit. `tests/test_dev_process_config.py`
+pins this layout; change the config and the tests together. If a commit is
+killed mid-hook, unstaged edits may exist only in the newest patch file:
+`git apply --check ~/.cache/pre-commit/patch<newest>`, then `git apply` it.
+
 The hook trigger uses a three-dot diff; `scripts/test-affected` selects from
 the two-dot pushed range. A history-only force-push can trigger a core-only
 run. pre-commit checks the first non-deletion ref of a multi-ref push only;
@@ -435,11 +539,12 @@ push one branch at a time when relying on the local hook. CI remains the gate.
 
 
 CI runs the same checks plus the full Python matrix, Postgres, the frontend
-build and Playwright, so the pre-push run does not have to be perfect. If it
+build (Playwright runs only by hand, via workflow_dispatch; run `scripts/e2e.sh` locally for a `web/` change), so the pre-push run does not have to be perfect. If it
 fails in a test your change does not touch, re-run that test alone
 (`scripts/test-affected --run -- --lf`); if it passes, push with `--no-verify`
 and say so in the PR, and CI will decide. Name the test in the PR; if CI fails it too, it is a real failure your change caused, even in a test you did not touch. A failure in a test your change
-touches is a real failure: fix it.
+touches is a real failure: fix it. File an issue for a flaky test only if it
+fails that way again.
 
 **Claiming an issue:** before you spend more than an hour on an issue, say so
 on the issue: two or three lines on how you'll fix it and what test proves
@@ -460,16 +565,77 @@ and "it's in a local commit" has cost a round trip more than once.
 
 **Pull requests:**
 
-1. `git checkout -b fix/what-it-fixes dev` (or `feature/...`)
-2. Write the failing test, then the fix
+1. `git checkout -b fix/what-it-fixes dev` (or `feature/...`), ideally in its
+   own worktree (`scripts/new-worktree.sh fix/what-it-fixes`): one branch,
+   one worktree, so parallel work never shares a tree. A worktree is required
+   when several sessions or agents work in one clone at once; a single
+   session on a plain clone is fine.
+2. Write the failing test, then the fix. Commit each passing step.
 3. Push; the pre-push hook runs the affected tests (CI runs the full suite)
-4. Open the PR against `dev` and fill in the template (`Fixes #N` for bugs)
+4. Open the PR against `dev` and fill in the template (`Fixes #N` for bugs).
+   Open it as a **draft** right after your first push so CI starts; mark it
+   ready when you think it is done. From a fork, name the upstream:
+   `gh pr create --repo pyrite-wiki/pyrite --base dev --draft`. Review and
+   merge are the maintainer's; you do not arm auto-merge. See "From a fork"
+   below.
 5. Expect a first response **within 72 hours**. If you have heard nothing
    after that, comment on the PR — it is a lapse, not a verdict, and saying
    so is doing us a favour.
 
+**From a fork:** `scripts/new-worktree.sh`, `scripts/test-affected` and
+`scripts/verify-red.sh` all read `origin/dev`, so `origin` must be the upstream
+repo, not your fork (after `gh repo fork --remote`, `origin/dev` is your fork's
+stale `dev`). Clone upstream and add the fork as a second remote:
+
+```bash
+git clone https://github.com/pyrite-wiki/pyrite.git && cd pyrite
+git remote add fork https://github.com/<you>/pyrite.git
+# ... work on a branch ...
+git push -u fork <branch>
+gh pr create --repo pyrite-wiki/pyrite --base dev --draft
+```
+
+Stage explicit paths (`git add <file>`), never `git add -A`, `git add -u` or
+`git add .`: they sweep in edits you did not mean to commit, including a
+sub-agent's.
+
 Commit messages use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
 `refactor:`, `ci:`, `kb:`).
+
+### Maintainer-only landing with a merge commit
+
+Ordinary contributor PRs use the configured merge method. A maintainer who
+needs a merge commit for a landing branch must coordinate **three independent
+settings** (#1036); green checks and `MERGEABLE` alone do not prove the queue
+can use that method:
+
+1. Repository **Settings → General → Pull Requests → Allow merge commits**.
+2. The `dev` ruleset's **Require merge queue → Merge method**.
+3. The same ruleset's **Require a pull request → Allowed merge methods**.
+
+Before changing anything, record all three original values and the queue's
+full parameters, particularly `max_entries_to_merge`, `min_entries_to_merge`
+and its wait timeout. Use the repository's ruleset settings or a read-only
+snapshot (replace the ID with the `dev` ruleset's ID):
+
+```bash
+gh api repos/pyrite-wiki/pyrite/rulesets
+gh api repos/pyrite-wiki/pyrite/rulesets/<dev-ruleset-id> > dev-ruleset-before.json
+```
+
+The repository-level permission is separate from that ruleset snapshot;
+record it too. If the maintainer approves a temporary merge-commit landing,
+enable it at all three gates, then use the normal PR and CI queue. This is
+not permission to bypass checks or push directly to `dev`.
+
+After the landing, restore the **recorded pre-change values**, including
+every queue parameter, and read the settings back. Do not take a new snapshot
+of the temporary state as the restoration source. In the #1036 incident,
+restoring `max_entries_to_merge: 0` and `min_entries_to_merge: 2` held a green
+PR for 30 minutes; the cited normal values were max **5**, min **1**. Prefer
+the actual pre-change snapshot over assuming those values forever. If a
+green PR stalls, inspect all three merge-method gates and these group-size
+parameters before rerunning CI or changing the PR.
 
 ## Where work is tracked
 
@@ -566,7 +732,9 @@ names, for anything that is not yours to publish; no absolute home paths.
 ## Project Configuration
 
 - KB config: `kb.yaml` in each KB directory
-- Claude Code skill: `.claude/skills/pyrite-dev/SKILL.md`
+- AI agents: start at [AGENTS.md](AGENTS.md); Claude Code users also get the
+  `pyrite-dev` skill (`.claude/skills/pyrite-dev/SKILL.md`), which adds a method
+  (tests first, evidence, a report) and links back here for every command
 - Plugin developer guide: `kb/notes/plugin-developer-guide.md`
 - Architecture docs: `kb/components/` and `kb/adrs/`
 
@@ -587,3 +755,18 @@ change, and in the README.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same license as the project.
+
+### Refresh the fallback type baseline before a release
+
+Before preparing the release commit, run the same pinned mypy environment as
+CI, then lower its no-base fallback (issue#1103):
+
+```bash
+mypy pyrite/ --ignore-missing-imports > mypy-release.out || true
+python scripts/mypy_ratchet.py mypy-release.out --update
+```
+
+Review and include the resulting `.mypy-baseline.json` in the release PR.
+A crash or any per-file rise refuses the update: fix those errors instead of
+using `--allow-increase`. Normal PR/push runs still compare with their actual
+base commit, so refreshing this fallback never hides a regression in a PR.
