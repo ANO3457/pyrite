@@ -1235,7 +1235,11 @@ def _explicit_config_env() -> dict[str, str]:
 
 def _print_report(out: Console, report: dict) -> None:
     def line(text: str) -> None:
-        out.print(Text(text))
+        # A JSON config may contain lone surrogates, and a real terminal may
+        # not represent otherwise valid Unicode. Reporting a completed change
+        # must not turn it into an encoding traceback (#841).
+        safe = text.encode(out.encoding, errors="backslashreplace").decode(out.encoding)
+        out.print(Text(safe))
 
     new = report["new_entry"]
     served = f"{new['tools']} tools at the " if new["tools"] is not None else ""
