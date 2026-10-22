@@ -82,7 +82,8 @@ class TestPyriteDB:
 
         t = threading.Thread(target=worker)
         t.start()
-        t.join()
+        t.join(timeout=5)
+        assert not t.is_alive()
 
         assert db.engine.pool.checkedout() == initial_checked_out
         assert len(db._fallback_sessions) == 0
