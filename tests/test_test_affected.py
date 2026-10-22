@@ -570,7 +570,15 @@ class TestBaseFallback:
         _git(repo, "add", ".")
         _git(repo, "commit", "-qm", "base")
         out = subprocess.run(
-            [sys.executable, str(SCRIPT), "--root", str(repo), "--list", "--base", "nonexistent/ref"],
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--root",
+                str(repo),
+                "--list",
+                "--base",
+                "nonexistent/ref",
+            ],
             capture_output=True,
             text=True,
             timeout=120,
