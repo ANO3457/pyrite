@@ -731,6 +731,8 @@ class SQLiteBackend(BaseBackend):
                 kb_name,
                 kb_names is not None,
                 entry_type,
+                entry_types,
+                exclude_types,
                 date_from,
                 date_to,
                 tags,
