@@ -29,14 +29,18 @@ class TestDocumentationCommandHome:
         assert f"```bash\n{command}\n```" in lint
 
     def test_general_test_commands_have_one_home(self):
-        paths = [REPO / name for name in ("CLAUDE.md", "README.md")]
+        paths = [
+            REPO / name for name in ("CLAUDE.md", "README.md", ".github/PULL_REQUEST_TEMPLATE.md")
+        ]
         for directory in ("docs", "kb/standards", "kb/runbooks", ".claude/skills"):
             paths.extend((REPO / directory).rglob("*.md"))
         offenders = []
         for path in paths:
             lines = path.read_text(encoding="utf-8").splitlines()
             for i, line in enumerate(lines):
-                if re.match(r"^(?:\.venv/bin/|python -m )?(?:ruff check|pytest tests/)", line):
+                command = re.sub(r"^- \[ \] `", "", line)
+                command = re.sub(r"^scripts/heavy_lock\.py -- ", "", command)
+                if re.match(r"^(?:\.venv/bin/|python -m )?(?:ruff check|pytest tests/)", command):
                     # Specific diagnostic examples are allowed; general suite policies are not.
                     if i and lines[i - 1].startswith("# Diagnostic example:"):
                         continue

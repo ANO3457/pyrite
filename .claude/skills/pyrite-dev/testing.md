@@ -279,7 +279,7 @@ class TestValidators:
 .venv/bin/pytest extensions/my-extension/tests/ -v
 
 # All backend tests (the whole suite is a heavy run: take the lock)
-scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/*/tests/ -n 4 -q
+# Full-suite command and shared lock: CONTRIBUTING.md, Running the tests
 
 # With print output visible
 # Diagnostic example: one named test, not the general suite policy
