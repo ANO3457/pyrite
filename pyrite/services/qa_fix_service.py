@@ -170,6 +170,8 @@ class QAFixService:
                         )
                     else:
                         manual.append({**issue, "reason": "no_close_match"})
+                elif rule == "schema_violation" and issue.get("schema_rule") == "required":
+                    manual.append({**issue, "reason": "no_safe_default"})
                 else:
                     manual.append({**issue, "reason": "not_auto_fixable"})
 

@@ -7,8 +7,6 @@ default, so no issue could name a field that fix handled. The kind is gone: a
 required field is the author's to fill, not a value `qa fix` may invent.
 """
 
-import pytest
-
 from pyrite.services.access_policy import UNSCOPED
 from pyrite.services.qa_fix_service import QAFixService
 from pyrite.services.qa_service import QAService
@@ -41,10 +39,6 @@ def test_the_shape_the_removed_branch_matched_is_not_fixed(cli_world):
     assert [manual["reason"] for manual in report["manual"]] == ["not_auto_fixable"], report
 
 
-@pytest.mark.control(
-    reason="a required field was already manual before #958: the branch never "
-    "matched the schema's 'required' wording, so this pins that it still is"
-)
 def test_a_required_field_issue_is_manual_and_writes_nothing(cli_world):
     world = cli_world()
     kb_path = world.kb_path("test-kb")
@@ -74,6 +68,6 @@ def test_a_required_field_issue_is_manual_and_writes_nothing(cli_world):
 
     assert report["fixed"] == [], report
     assert [(issue["entry_id"], issue["field"], issue["reason"]) for issue in report["manual"]] == [
-        ("loose", "reviewer", "not_auto_fixable")
+        ("loose", "reviewer", "no_safe_default")
     ], report["manual"]
     assert note.read_text(encoding="utf-8") == before

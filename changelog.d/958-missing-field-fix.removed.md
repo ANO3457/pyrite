@@ -4,5 +4,5 @@
   produce an issue it handled; its one default (`importance: 5`) could not be
   the field of a real error either, since the index always carries the model's
   own default. A required field is the author's to fill: the issue is reported
-  as `manual` with `not_auto_fixable`, and `qa fix` still fixes invalid dates,
+  as `manual` with `no_safe_default`, and `qa fix` still fixes invalid dates,
   broken links and tag casing.

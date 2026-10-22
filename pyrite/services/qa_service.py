@@ -1069,6 +1069,7 @@ class QAService:
                     "rule": "schema_violation",
                     "severity": "error",
                     "field": err.get("field", ""),
+                    "schema_rule": err.get("rule", ""),
                     "message": (
                         f"Schema error on '{entry['id']}': "
                         f"field '{err.get('field', '')}' — {err.get('rule', '')} "
@@ -1490,6 +1491,7 @@ class QAService:
                         "rule": "schema_violation",
                         "severity": "error",
                         "field": err.get("field", ""),
+                        "schema_rule": err.get("rule", ""),
                         "message": (
                             f"Schema error on '{entry['id']}': "
                             f"field '{err.get('field', '')}' — {err.get('rule', '')} "
