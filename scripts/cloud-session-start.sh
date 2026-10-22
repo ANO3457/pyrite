@@ -30,7 +30,8 @@ set -euo pipefail
 
 dir="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 # Every cloud session receives the same known-failure brief before setup.
-python3 "$dir/scripts/known_cloud_failures.py"
+python3 "$dir/scripts/known_cloud_failures.py" \
+  || echo "warning: known-failure brief unavailable; continuing setup" >&2
 
 export PYRITE_SETUP_EXTRAS="${PYRITE_SETUP_EXTRAS:-server,cli,ai,dev,postgres}"
 

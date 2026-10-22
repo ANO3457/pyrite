@@ -37,3 +37,9 @@ def test_default_brief_names_live_tests_and_does_not_waive_ci():
     )
     for path in ("AGENTS.md", ".claude/skills/pyrite-dev/SKILL.md"):
         assert "scripts/known-cloud-failures.json" in (ROOT / path).read_text()
+
+
+def test_memory_canary_points_at_its_open_tracking_issue():
+    registry = json.loads((ROOT / "scripts/known-cloud-failures.json").read_text())
+    canary = next(r for r in registry if "test_apps_a_test_builds" in r["test"])
+    assert canary["issue"] == "https://github.com/pyrite-wiki/pyrite/issues/1110"
