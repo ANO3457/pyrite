@@ -48,7 +48,12 @@ from ..schemas import (
     WantedPage,
     WantedPagesResponse,
 )
-from .write_refusal import refusal_http, refuses_truncated_body, refuses_unknown_create_keys
+from .write_refusal import (
+    refusal_http,
+    refuses_truncated_body,
+    refuses_unknown_create_keys,
+    refuses_unknown_patch_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -931,24 +936,6 @@ def update_entry(
         locked=written.locked,
         not_moved=written.not_moved,
     )
-
-
-async def refuses_unknown_patch_keys(request: Request) -> None:
-    """Refuse a PATCH typo before a missing value can become a null write (#1221)."""
-    try:
-        payload = await request.json()
-    except ValueError:
-        return  # FastAPI reports malformed JSON through its normal validation path.
-    if not isinstance(payload, dict):
-        return
-    unknown = sorted(set(payload) - set(PatchEntryRequest.model_fields))
-    if unknown:
-        accepted = ", ".join(sorted(PatchEntryRequest.model_fields))
-        raise refusal_http(
-            ValidationError(
-                f"Unknown field(s) on a patch: {', '.join(unknown)}. A patch accepts: {accepted}."
-            )
-        )
 
 
 @router.patch(

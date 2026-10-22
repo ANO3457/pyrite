@@ -1,5 +1,7 @@
 """PATCH refuses misspelt body keys before it can silently clear a field (#1221)."""
 
+import json
+
 import pytest
 
 from pyrite.config import KBConfig
@@ -20,11 +22,14 @@ def patch_world(tmp_path):
 
 
 @pytest.mark.parametrize("extra", [{"vaule": "done"}, {"vaule": None, "unknown": False}])
-def test_patch_rejects_undeclared_keys_without_writing(patch_world, extra):
+@pytest.mark.parametrize("content_type", ["application/json", "application/problem+json"])
+def test_patch_rejects_undeclared_keys_without_writing(patch_world, extra, content_type):
     world, path = patch_world
     before = path.read_bytes(), path.stat().st_mtime_ns, world.db.get_entry("note", "demo")
     response = world.client.patch(
-        "/api/entries/note", json={"kb": "demo", "field": "custom", **extra}
+        "/api/entries/note",
+        content=json.dumps({"kb": "demo", "field": "custom", **extra}),
+        headers={"content-type": content_type},
     )
     assert response.status_code == 400, response.text
     error = response.json()["detail"]
