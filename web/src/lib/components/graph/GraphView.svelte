@@ -280,7 +280,7 @@
 	$effect(() => {
 		const color = labelColor();
 		// Change the stylesheet default so later replacement nodes inherit it.
-		cy?.style().selector('node').style({ color }).update();
+		cy?.style?.()?.selector('node').style({ color }).update();
 	});
 
 	export function resetLayout() {
