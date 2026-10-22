@@ -79,7 +79,7 @@ def request_claim(config, route):
             if route == "operation_update":
                 from pyrite.storage.file_operations import Set
 
-                written = svc.kb_svc.update("parent", "work", {}, ops=[Set("status", "claimed")])
+                written = svc.kb_svc.apply_operations("parent", "work", [Set("status", "claimed")])
                 return {"updated": True, "status": written.entry.status}
             if route == "generic_update":
                 written = svc.kb_svc.update("parent", "work", {"status": "claimed"})
