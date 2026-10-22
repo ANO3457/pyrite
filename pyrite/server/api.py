@@ -1013,10 +1013,6 @@ def negotiate_response(request: Request, data: Any, **kwargs) -> Response | None
     """
     accept = request.headers.get("accept", "application/json")
 
-    # Skip negotiation for standard JSON requests
-    if not accept or accept == "*/*" or "application/json" in accept.split(",")[0]:
-        return None
-
     from ..formats import format_response, negotiate_format
 
     fmt = negotiate_format(accept)
