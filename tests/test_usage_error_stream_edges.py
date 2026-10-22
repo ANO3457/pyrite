@@ -127,3 +127,32 @@ app(['emit'])
     assert result.returncode == 2
     assert result.stdout == "before\n"
     assert "bad body" in result.stderr
+
+
+@pytest.mark.parametrize("fmt", ["yaml", "rich"])
+def test_legacy_format_beats_default_for_late_parse_error(fmt):
+    from pyrite.cli.output import LEGACY_FORMAT_SHORT, OUTPUT_FORMAT
+
+    app = _app()
+
+    def refuse(ctx: typer.Context, value: str):
+        raise typer.BadParameter("late refusal", ctx=ctx)
+
+    @app.command()
+    def emit(
+        output_format: str = OUTPUT_FORMAT,
+        legacy_format: str | None = LEGACY_FORMAT_SHORT,
+        invalid: str = typer.Option("bad", callback=refuse),
+    ):
+        raise AssertionError("parse refusal must prevent the body")
+
+    result = CliRunner().invoke(app, ["emit", "-f", fmt])
+    assert result.exit_code == 2
+    if fmt == "yaml":
+        import yaml
+
+        assert not result.stdout.lstrip().startswith("{")
+        assert yaml.safe_load(result.stdout)["error_code"] == "USAGE_ERROR"
+    else:
+        assert result.stdout.startswith("ERROR [USAGE_ERROR]:")
+        assert "late refusal" in result.stdout

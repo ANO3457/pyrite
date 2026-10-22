@@ -230,9 +230,9 @@ def _format_in(argv: Sequence[str], ctx: Any = None) -> str:
 
     short_is_format = ctx is None
     if ctx is not None:
-        from ..cli.output import FORMAT_META_KEY, _record_short_format
+        from ..cli.output import _record_short_format, requested_format
 
-        if value := ctx.meta.get(FORMAT_META_KEY):
+        if value := requested_format(ctx):
             if isinstance(value, str) and value in SHARED_FORMATS:
                 return value
         for parameter in ctx.command.params:
