@@ -649,6 +649,8 @@ class PyriteCLIGroup(TyperGroup):
     - **A rich renderer chooses its words.** The kind, the exit code and every
       machine format are still decided here. Text a renderer printed before it
       raised stays above the ``NO_OUTCOME`` line.
+    - **Root-context close callbacks**: drained inside this method's guard,
+      before the answer is published; their prints or exits are NO_OUTCOME.
     - **After this method returns**: ``os._exit`` (exit 0, empty stdout, which
       no outcome ever is), an ``atexit`` handler, a thread that outlives the
       command, a buffer of the command's own over descriptor 1 that is

@@ -1,5 +1,6 @@
 """The five reproduced slice-1 boundaries in #838, through actual roots."""
 
+import copy
 import json
 
 import pytest
@@ -14,6 +15,7 @@ from tests.cli_help import plain
 from tests.outcome_walk import (
     ROOTS,
     _current_context,
+    _registration,
     args_for,
     click_command,
     contract_commands,
@@ -67,26 +69,46 @@ def _app(cls=PyriteCLIGroup):
     return app
 
 
-def test_a_stdout_violation_keeps_the_original_refusal_reason():
-    result = runner.invoke(_app(), ["probe"])
+@pytest.mark.parametrize(("root", "path"), CONTRACT)
+def test_a_stdout_violation_keeps_the_original_refusal_reason(root, path):
+    def refuses_after_print():
+        print("BODY-MARK")
+        raise KBNotFoundError("the original refusal")
+
+    app = root_app(root)
+    with planted(app, path, refuses_after_print):
+        result = runner.invoke(
+            app, [*path, *args_for(click_command(app, path)), "--format", "json"]
+        )
     assert result.exit_code == 1
     assert json.loads(result.stdout)["error_code"] == "NO_OUTCOME"
+    assert "BODY-MARK" in result.stderr
     assert "the original refusal" in result.stderr
 
 
-def test_shared_option_without_a_pyrite_root_refuses_before_the_body():
-    app = typer.Typer()
+@pytest.mark.parametrize(("root", "path"), CONTRACT)
+def test_shared_option_without_a_pyrite_root_refuses_before_the_body(root, path):
+    called = []
 
-    @app.callback()
-    def root():
-        pass
-
-    @app.command()
-    def probe(output_format: str = OUTPUT_FORMAT):
+    def body():
+        called.append(True)
         return Outcome.done({"effect": "must not run"})
 
-    result = runner.invoke(app, ["probe"])
+    app = root_app(root)
+    with planted(app, path, body):
+        registration = copy.copy(_registration(app, path))
+        registration.name = "probe"
+        detached = typer.Typer()
+
+        @detached.callback()
+        def root_callback():
+            pass
+
+        detached.registered_commands.append(registration)
+        args = args_for(click_command(app, path))
+        result = runner.invoke(detached, ["probe", *args, "--format", "json"])
     assert result.exit_code == 2, result.output
+    assert called == []
     assert "PyriteCLIGroup" in plain(result.stderr)
 
 
