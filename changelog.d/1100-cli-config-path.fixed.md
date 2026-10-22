@@ -1,1 +1,1 @@
-Resolve config file at call time in `pyrite config` and `pyrite-read config`. Fixes #1100.
+- Resolve the config file path at call time in `pyrite config`, `pyrite-read config`, and `pyrite-admin config show` (#1100).

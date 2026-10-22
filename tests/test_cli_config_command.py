@@ -1,14 +1,14 @@
-"""Tests for pyrite config and pyrite-read config commands (#1100)."""
+"""Tests for pyrite, pyrite-read, and pyrite-admin config commands (#1100)."""
 
 from typer.testing import CliRunner
 
+from pyrite.admin_cli import app as admin_app
 from pyrite.cli import app as write_app
-from pyrite.config import current_config_file
 from pyrite.read_cli import app as read_app
 
 
 def test_cli_config_resolves_path_at_call_time(tmp_path, monkeypatch):
-    """Under cli_world or redirected config, config command prints the active path."""
+    """Under cli_world or redirected config, config commands print the active path."""
     custom_dir = tmp_path / "custom_config"
     custom_dir.mkdir()
     custom_file = custom_dir / "config.yaml"
@@ -28,3 +28,8 @@ def test_cli_config_resolves_path_at_call_time(tmp_path, monkeypatch):
     assert read_result.exit_code == 0, read_result.output
     normalized_read = read_result.output.replace("\n", "")
     assert str(custom_file) in normalized_read
+
+    admin_result = runner.invoke(admin_app, ["config", "show"])
+    assert admin_result.exit_code == 0, admin_result.output
+    normalized_admin = admin_result.output.replace("\n", "")
+    assert str(custom_file) in normalized_admin
