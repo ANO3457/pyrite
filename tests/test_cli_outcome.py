@@ -52,6 +52,7 @@ from tests.outcome_walk import (
     contract_commands,
     planted,
     root_app,
+    takes_short_format,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -579,6 +580,68 @@ def _run(root, path, body, fmt, args=None):
         return runner.invoke(app, [*path, *args, "--format", fmt])
 
 
+class OddError(Exception):
+    code = "4xp6"
+
+
+class NonExitError(Exception):
+    exit_code = "not a process exit"
+
+
+class UnreadableExit(SystemExit):
+    @property
+    def code(self):
+        raise RuntimeError("cannot read the exit code")
+
+
+@pytest.mark.parametrize(
+    ("exc", "description"),
+    [
+        (OddError(), "OddError"),
+        (NonExitError(), "NonExitError"),
+        pytest.param(
+            SystemExit(5),
+            "SystemExit (exit code 5)",
+            marks=pytest.mark.control(reason="real process exits keep their exit code"),
+        ),
+        pytest.param(
+            SystemExit(None),
+            "SystemExit",
+            marks=pytest.mark.control(reason="an absent exit code stays absent"),
+        ),
+        pytest.param(
+            SystemExit("stop"),
+            "SystemExit (exit code 'stop')",
+            marks=pytest.mark.control(reason="a SystemExit message is still an exit request"),
+        ),
+        pytest.param(
+            typer.Exit(7),
+            "Exit (exit code 7)",
+            marks=pytest.mark.control(reason="Click exits retain their exit_code"),
+        ),
+        pytest.param(
+            UnreadableExit(),
+            "UnreadableExit",
+            marks=pytest.mark.control(
+                reason="unreadable exception attributes must not break the answer"
+            ),
+        ),
+    ],
+)
+def test_no_outcome_names_exit_codes_only_for_process_exits(exc, description):
+    def body():
+        raise exc
+
+    out = _run("pyrite", ("task", "claim"), body, "json")
+    assert out.exit_code == 1, out.output
+    doc = json.loads(out.stdout)
+    assert doc["error_code"] == "NO_OUTCOME"
+    assert doc["error"] == (
+        f"internal error: the command raised {description}, "
+        "so what the command did is unknown; please report it"
+    )
+
+
 def test_the_walk_is_not_empty_and_is_the_registry_s_own_list():
     """An empty parametrisation is silently green. `task` is on the contract,
     so the walk has commands; and it finds them the way the root does."""
@@ -667,10 +730,48 @@ def test_before_the_body_is_entered_nothing_changes(root, path):
         assert late.exit_code == 2, late.output
         for unknown in ("xml", "csv"):
             assert runner.invoke(app, [*path, *args, "--format", unknown]).exit_code == 2
-        assert runner.invoke(app, [*path, *args, "-f", "rich", "--format", "json"]).exit_code == 2
+        if takes_short_format(click_command(app, path)):
+            # -f and --format together are two answers. A command whose -f
+            # means something else (--field, --file, --force) has no such rule.
+            both = runner.invoke(app, [*path, *args, "-f", "rich", "--format", "json"])
+            assert both.exit_code == 2
         if args:
             missing = runner.invoke(app, [*path, "--format", "json"])
             assert missing.exit_code == 2, missing.output
+
+
+@pytest.mark.control(
+    reason="tests the walk's helper in tests/outcome_walk.py, not pyrite code; it failed against the hidden-proxy version"
+)
+def test_a_visible_short_f_that_means_format_is_found_by_its_callback():
+    """`-f` as the deprecated format spelling is recognised by what the option
+    is, not by being hidden: a command whose own visible `-f` is the format
+    alias must still get the `-f`/`--format` conflict checked by the walk, and a
+    hidden `-f` that is something else must not."""
+    visible_alias = typer.Option(None, "-f", callback=LEGACY_FORMAT_SHORT.callback)
+    app = typer.Typer(cls=PyriteCLIGroup)
+
+    @app.command()
+    def leaf(output_format: str = OUTPUT_FORMAT, legacy: str | None = visible_alias) -> Outcome:
+        return Outcome.done({})
+
+    @app.command()
+    def other(
+        output_format: str = OUTPUT_FORMAT,
+        hidden_field: str | None = typer.Option(None, "-f", hidden=True),
+    ) -> Outcome:
+        return Outcome.done({})
+
+    @app.command()
+    def real(
+        output_format: str = OUTPUT_FORMAT, legacy: str | None = LEGACY_FORMAT_SHORT
+    ) -> Outcome:
+        return Outcome.done({})
+
+    click_app = typer.main.get_command(app)
+    assert takes_short_format(click_app.commands["leaf"])
+    assert not takes_short_format(click_app.commands["other"])
+    assert takes_short_format(click_app.commands["real"])
 
 
 @pytest.mark.control(reason="before any command: the root's own options are click's")

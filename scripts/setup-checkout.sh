@@ -35,12 +35,13 @@ cd "$wt_dir"
 # torch. So do not collapse this into a shared venv on the strength of a `du`
 # number: the saving is not there, and the isolation is the whole point (#189).
 #
-# The cost that IS real is worktree *count*. The conductor's health step reaps
-# a worktree once its PR merges.
+# The cost that IS real is worktree *count*. Remove a worktree
+# once its PR merges (`git worktree remove`).
 # What an install is made from. cksum is POSIX, so it exists on a laptop and a VM.
 stamp="$( { cat pyproject.toml extensions/*/pyproject.toml uv.lock 2>/dev/null; echo "$extras"; } | cksum)"
 if [ "$if_changed" = 1 ] && [ -x .venv/bin/python ] \
-   && [ "$(cat .venv/.pyrite-install-stamp 2>/dev/null)" = "$stamp" ]; then
+   && [ "$(cat .venv/.pyrite-install-stamp 2>/dev/null)" = "$stamp" ] \
+   && .venv/bin/python scripts/check_checkout_imports.py --root "$wt_dir"; then
   echo "setup-checkout: .venv matches pyproject/lock/extras; skipping installs"
   stamp=""
 elif command -v uv >/dev/null 2>&1; then
@@ -56,6 +57,8 @@ else
     [ -f "$ext/pyproject.toml" ] && .venv/bin/pip install -q -e "$ext"
   done
 fi
+.venv/bin/python scripts/check_checkout_imports.py --root "$wt_dir"
+
 # Written only after every install above succeeded (set -e): a half-finished
 # install leaves no stamp, so the next --if-changed run repeats it.
 [ -z "$stamp" ] || echo "$stamp" > .venv/.pyrite-install-stamp

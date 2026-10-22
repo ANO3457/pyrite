@@ -3,10 +3,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from ...exceptions import ValidationError
 from ...services.access_policy import KB, Action, ReadScope
 from ...services.kb_service import KBService
 from ...services.read_shaping import parse_fields_param, project_fields
-from ...services.search_service import SearchService
+from ...services.search_service import SearchService, _validate_search_mode
 from ..api import (
     get_kb_service,
     get_search_service,
@@ -14,6 +15,7 @@ from ..api import (
     negotiate_response,
 )
 from ..authz import authorize
+from ..errors import error_response
 from ..schemas import SearchResponse, SearchResult
 
 router = APIRouter(tags=["Search"])
@@ -61,6 +63,16 @@ def search(
     scope: ReadScope = Depends(authorize(Action.KB_READ, KB)),
 ):
     """Full-text search across the knowledge bases the caller may read."""
+    # An unknown mode answers 400, not the central handler's 422 for
+    # ValidationError (maintainer decision 2026-10-17): REST validation
+    # errors answer 400 per docs/json-contracts.md. error_response builds
+    # the canonical VALIDATION_FAILED body; only the status is overridden.
+    try:
+        _validate_search_mode(mode)
+    except ValidationError as exc:
+        _, content = error_response(exc)
+        return JSONResponse(status_code=400, content=content)
+
     if svc.count_entries() == 0:
         raise HTTPException(
             status_code=503,
@@ -81,7 +93,10 @@ def search(
         # When grouping by KB, fetch more results to ensure coverage across KBs
         fetch_limit = limit * 5 if group_by_kb else limit
 
-        results = search_svc.search(
+        # The one assembler (#668): rows, verdict and warnings. Every key but
+        # `results` goes into the response as it is. The verdict is the
+        # query's, so `group_by_kb` and the projection below do not touch it.
+        response = search_svc.search_response(
             kb_names=None if kb else scope.as_set(),
             query=q,
             kb_name=kb,
@@ -94,6 +109,7 @@ def search(
             expand=expand,
             warnings=warnings,
         )
+        results = response.pop("results")
 
         # Group by KB: take top N per KB, interleave by best score
         if group_by_kb:
@@ -109,6 +125,10 @@ def search(
             remaining = dict(by_kb)
             while remaining:
                 exhausted = []
+                # No leg sets `score`, so every key is 0 and the stable sort
+                # keeps first-appearance order: the KBs in rank order of their
+                # best hit, which is the order wanted. `similarity` would not
+                # do better: only vector rows have it (#668).
                 for k in sorted(
                     remaining,
                     key=lambda k: remaining[k][0].get("score", 0) if remaining[k] else 0,
@@ -131,10 +151,8 @@ def search(
             for r in results:
                 r.pop("body", None)
 
-        resp_data = {"query": q, "count": len(results), "results": results}
-        if warnings:
-            resp_data["warnings"] = warnings
-        neg = negotiate_response(request, resp_data)
+        resp_data = {"query": q, "count": len(results), "results": results, **response}
+        neg = negotiate_response(request, resp_data, fields=fields_list)
         if neg is not None:
             return neg
         if fields_list:
@@ -143,7 +161,7 @@ def search(
             query=q,
             count=len(results),
             results=[SearchResult(**r) for r in results],
-            warnings=warnings or None,
+            **response,
         )
     except ValueError as e:
         # A caller-input problem (e.g. a bad `limit`) -- the caller's fault,

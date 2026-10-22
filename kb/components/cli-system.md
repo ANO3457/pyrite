@@ -15,6 +15,7 @@ Typer-based CLI with a root app and eleven domain-specific sub-apps. Commands sh
 
 - Root `typer.Typer` app with `add_typer()` for each sub-app
 - `context.py` provides `cli_context()`, `cli_registry_context()`, `cli_db_context()`
+- `context.py` is also where a command's KB is resolved (#952, #924): `require_kb(config, name, db=, output_format=)` is the one resolver (`services/kb_resolver.py`) for the local principal; `cli_context(kbs=(kb_name, ...))` and its siblings resolve every KB a command named once the registry is open, before the body runs; a command that loads the config itself calls `require_kb(load_config(), name, ...)`, which consults the registry only for a name config.yaml does not know. An unknown name or a shortname is `KB_NOT_FOUND`, exit 1, with the resolver's suggestion and `did_you_mean`. A command on the outcome contract passes no `output_format` and the root renders the refusal; a legacy command passes its format and the refusal is printed by `cli_error_from`. `tests/test_kb_walk_cli.py` walks every leaf of `pyrite`, `pyrite-read` and `pyrite-admin` with a KB parameter to prove it.
 - Rich tables and console for human-readable output
 - Plugin commands discovered via `PluginRegistry.get_all_cli_commands()`
 
@@ -92,6 +93,22 @@ command that reaches into the guard itself, and prompts (a prompt writes to
 stdout, so a command that asks a question stays legacy until ADR-0046's open
 question is decided).
 
+**Found building slice 2 (`entry_commands`, `links`).** (1) Bad input found
+in a body is a `ValidationError` (exit 1), not `typer.BadParameter`: after the
+body starts, a click usage error is `NO_OUTCOME`; so `links asymmetric`'s
+hand-raised `Exit(2)` became a refusal. (2) `-f` means `--field`, `--file` or
+`--force` on some commands: those do not declare `LEGACY_FORMAT_SHORT`, and
+the walk and the hint scan find the format alias by its callback
+(`tests/outcome_walk.py`'s `takes_short_format`), never by `hidden`. (3)
+`delete` stays legacy, exactly as before: it asks, a prompt writes stdout, and
+the rule for prompts is the maintainer's open question (a local stderr prompt
+was tried and withdrawn: it decided that rule in one module). (4) `get` stays
+legacy: it is taught with `--format markdown`, which the shared option does not
+offer. (5) A hint a command gave (`bulk-create`'s "Run `pyrite kb list`") is
+the exception's `suggestion`; set it on the exception, the root prints it.
+(6) A test that states what the CLI prints for a refusal must run the root:
+`tests/characterization/error_bodies.py` does, through the real `create`.
+
 **Tests.** `tests/test_cli_outcome.py` is the acceptance test: "the walk"
 takes every command of the three CLIs that declares the shared option, plants
 each way out from `tests/outcome_walk.py` as its body (on the Typer
@@ -102,11 +119,19 @@ they declare the option. A new *class* of way out is one function in
 `outcome_walk.py`. Shapes that need the process's own stdout run through
 `python -m tests.outcome_walk`.
 
-Still legacy: `LEGACY_COMMANDS` (`tests/test_requested_effect_exit_code.py`)
-counts, per module, the registered commands that do not declare the shared
-option, and must match the registry exactly; a slice lowers its numbers, and
-a new command is on the contract unless a number is raised in the diff. The
-same file keeps a source scan named as a **hint** (`os._exit`,
+Still legacy: `tests/legacy_commands/` holds one text file per CLI module
+(`pyrite.cli.browse_commands.txt`), naming, one per line, the module's
+registered commands that do not declare the shared option. Each file must
+match the registry exactly, in both directions, and the failure names the
+command. A slice deletes the lines of the commands it migrates, in its own
+modules' files only (an empty file is deleted: a module with no legacy
+command has no file); a new command is on the contract unless its name is
+added to its module's file. `LEGACY_COMMANDS_CEILING` is an upper bound
+that may only go down. A command on the contract shows `PYRITE_FORMAT`
+on its `--format` in `--help`, but not the converse: `pyrite mcp-setup`
+declares its own `--format` honouring it and is still legacy. The files are
+the list. The
+same test file keeps a source scan named as a **hint** (`os._exit`,
 `atexit.register`, a started thread, a command that reads its own format):
 it is not the guard and a spelling it misses is not a finding.
 
