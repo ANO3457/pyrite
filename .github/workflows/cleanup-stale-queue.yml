@@ -1,6 +1,5 @@
 name: Cancel obsolete merge groups
 on:
-  merge_group:
   push:
     branches: [dev]
   schedule:
