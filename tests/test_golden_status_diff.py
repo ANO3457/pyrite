@@ -31,6 +31,11 @@ def test_report_real_revisions_and_job_summary(tmp_path):
         {"old | reader | kb": {"status": 200}, "deny | reader | kb": {"status": 200}},
     )
     _write(tmp_path, "mcp.reader.json", {"tool | reader | kb": {"error_code": "KB_NOT_FOUND"}})
+    _write(
+        tmp_path,
+        "unscoped.json",
+        {"web | unknown | kb": {"status": 404}, "tool | unknown | kb": {"error_code": "FORBIDDEN"}},
+    )
     _write(tmp_path, "rest.removed.json", {"gone | old | kb": {"status": 403}})
     _write(tmp_path, "error_bodies.json", {"Exception": {"status": 403}})
     _git(tmp_path, "add", "tests/characterization/goldens")
@@ -43,6 +48,11 @@ def test_report_real_revisions_and_job_summary(tmp_path):
         {"new | reader | kb": {"status": 200}, "deny | reader | kb": {"status": 404}},
     )
     _write(tmp_path, "mcp.reader.json", {"tool | reader | kb": {"entries": []}})
+    _write(
+        tmp_path,
+        "unscoped.json",
+        {"web | unknown | kb": {"status": 200}, "tool | unknown | kb": {"entries": []}},
+    )
     _write(tmp_path, "rest.new.json", {"added | newcomer | kb": {"status": 200}})
     (tmp_path / "tests/characterization/goldens/rest.removed.json").unlink()
     _write(tmp_path, "error_bodies.json", {"Exception": {"status": 200}})
@@ -59,7 +69,7 @@ def test_report_real_revisions_and_job_summary(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     text = summary.read_text(encoding="utf-8")
-    assert result.stdout.count("::warning::") == 2
+    assert result.stdout.count("::warning::") == 4
     assert "404 → 200 **DENY → ALLOW**" in text
     assert "KB_NOT_FOUND → ok **DENY → ALLOW**" in text
     assert "200 → 404" in text
@@ -111,3 +121,16 @@ def test_workflow_filters_and_limits_warning_job():
         step["with"]["filters"] for step in jobs["changes"]["steps"] if step.get("id") == "filter"
     )
     assert yaml.safe_load(filters)["goldens"] == ["tests/characterization/goldens/**"]
+
+
+def test_code_less_mcp_error_is_not_reported_as_success():
+    spec = importlib.util.spec_from_file_location("golden_status_diff", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    key = ("mcp", "tool | reader | kb")
+    text, warnings = module.report(
+        {key: {"error": "Tool unavailable"}}, {key: {"entries": []}}, module.refusal_codes()
+    )
+    assert "error → ok" in text
+    # A legacy error string alone does not establish an access refusal.
+    assert not warnings

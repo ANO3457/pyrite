@@ -58,9 +58,9 @@ def refusal_codes():
 def outcome(surface, value):
     if value is None:
         return "absent"
-    if surface in {"rest", "access_deciding"}:
+    if surface in {"rest", "access_deciding"} or (surface == "unscoped" and "status" in value):
         return str(value["status"])
-    return str(value.get("error_code") or "ok")
+    return str(value.get("error_code") or ("error" if value.get("error") else "ok"))
 
 
 def escape(text):
@@ -87,6 +87,7 @@ def report(before, after, codes):
         widening = (
             (a in {"401", "403", "404", "422"} and b.startswith("2"))
             if surface in {"rest", "access_deciding"}
+            or (surface == "unscoped" and a.isdigit() and b.isdigit())
             else a in codes and b == "ok"
         )
         flag = " **DENY → ALLOW**" if widening else ""
