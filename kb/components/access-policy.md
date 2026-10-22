@@ -44,3 +44,7 @@ Services do not take a principal ([[adr-0037]], decision 3). The API helpers in 
 - `get_principal(request)`: the one place REST turns what `verify_api_key` recorded into a `Principal`; the `api.py` helpers that need the caller (`readable_kbs`, `get_llm_service`, `get_user_llm_context`, `get_repo_service`) read it through this.
 - `authorize(action, resource)`: the one dependency a route declares ([[adr-0037]] §2). Cached per `(action, resource)`, so a declaration repeated on a router and as a parameter is one callable, run once. Theme 3a decides reads: `authorize(Action.KB_READ, KB)` resolves every KB the request names through the one resolver (404 `KB_NOT_FOUND` from the central handler for an unknown, unreadable or shortname KB, for every caller) and returns the caller's `ReadScope`; `authorize(Action.KB_READ, AnyKB)` returns the `ReadScope` alone for routes that span KBs. No principal is a 401, never "unscoped". Writes (3b) and instance/user routes (3c) raise `NotImplementedError` at declaration until their theme lands.
 - The guard: `tests/test_every_entry_point_passes_the_policy.py` ([[adr-0037]] §5) fails for a REST operation without exactly one `authorize(...)` and an MCP tool without an `Action`, unless it is in `PUBLIC_ENTRY_POINTS` or on the not-yet-migrated lists, which only shrink.
+
+## Decided, not yet built
+
+- [[adr-0043]] decisions 1, 3 and 5: the action vocabulary and role resolver still include KB-admin and administrative grants, rather than only the decided entry grants plus operator/self actions.

@@ -61,3 +61,7 @@ same row. `index health` warns on it and names `pyrite index build`, which
 re-reads every file and so clears the count. `tests/test_cross_kb_links.py`
 pins all of it, the renamed-shortname probe through a real `config.yaml` and
 the CLI included.
+
+## Decided, not yet built
+
+- [[adr-0042]] decision 5: `index health` does not yet list id-less files as its own category; use `ids missing`/`ids pin` today. `read_entry_id` still derives an unpinned identity from the title, while the amended decision selects the KB-relative path.
