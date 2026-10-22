@@ -59,7 +59,7 @@ def test_rename_keeps_filename_and_new_id_is_addressable(env, subdir, after):
         assert service.update("omega", "test", {"title": "Changed"}).entry.file_path == path
         assert list(kb.path.rglob("*.md")) == [path]
     else:
-        assert service.delete("omega", "test")
+        assert service.delete_entry("omega", "test")
         assert not path.exists()
 
 
