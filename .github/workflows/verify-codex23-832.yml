@@ -43,7 +43,7 @@ jobs:
           ruff format --check pyrite/services/kb_service.py tests/test_complete_parent_claim_routes.py
           git fetch https://github.com/pyrite-wiki/pyrite.git dev:refs/remotes/upstream/dev
           git update-ref refs/remotes/origin/dev "$(git merge-base HEAD upstream/dev)"
-          python scripts/check_fix_commit_has_tests.py --range
+          python scripts/check_fix_commit_has_tests.py --range "$(git merge-base HEAD upstream/dev)" HEAD
           pytest tests/test_complete_parent_claim_routes.py tests/test_derived_task_completion.py tests/test_kb_writes_stay_inside_the_root.py tests/test_production_wiring_guard.py -q --no-cov --junitxml=green.xml
         env:
           HF_HUB_OFFLINE: '1'
