@@ -1277,6 +1277,10 @@ class GitService:
         if not GitService.is_git_repo(local_path):
             return result
 
+        kb_prefix = GitService.get_kb_prefix(local_path)
+        if kb_prefix is None:
+            return result
+
         try:
             status = subprocess.run(
                 ["git", "status", "--porcelain"],
@@ -1293,17 +1297,21 @@ class GitService:
                     continue
                 if len(line) < 4:
                     continue
-                result["clean"] = False
                 index_status = line[0]
                 work_status = line[1]
                 filename = line[3:]
 
+                rel_name = GitService._kb_relative_path(filename, kb_prefix)
+                if not rel_name:
+                    continue
+
+                result["clean"] = False
                 if index_status == "?":
-                    result["untracked"].append(filename)
+                    result["untracked"].append(rel_name)
                 elif index_status != " ":
-                    result["staged"].append(filename)
+                    result["staged"].append(rel_name)
                 if work_status not in (" ", "?"):
-                    result["unstaged"].append(filename)
+                    result["unstaged"].append(rel_name)
 
             return result
         except (subprocess.SubprocessError, OSError):
