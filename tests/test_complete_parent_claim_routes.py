@@ -3,17 +3,15 @@
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from pyrite.config import save_config
 from pyrite.cli import app
 from pyrite.exceptions import ValidationError
-from pyrite.server import api
-from pyrite.server.api import create_app
 from pyrite.services.kb_service import KBService
 from pyrite.services.task_service import TaskService
 from pyrite.storage.database import PyriteDB
+from tests._world import build_world
 from tests.test_derived_task_completion import _build, _mcp
 
 ROUTES = [
@@ -51,25 +49,26 @@ def request_claim(config, route):
             )
         )
         return _mcp(config, tool, args, tier="write")
+    if route.startswith("rest_"):
+        world = build_world(config.settings.index_path.parent / "rest-world", config=config)
+        try:
+        response = (
+            world.client.post(
+                "/api/tasks/parent/claim", params={"kb": "work"}, json={"assignee": "worker"}
+            )
+            if route == "rest_claim"
+            else world.client.patch(
+                "/api/entries/parent",
+                json={"kb": "work", "field": "status", "value": "claimed"},
+            )
+        )
+        assert response.status_code in (200, 400), response.text
+        result = response.json()
+        return result.get("detail", result)
+        finally:
+            world.close()
     db = PyriteDB(config.settings.index_path)
     try:
-        if route.startswith("rest_"):
-            application = create_app(config=config)
-            application.dependency_overrides[api.get_db] = lambda: db
-            client = TestClient(application)
-            response = (
-                client.post(
-                    "/api/tasks/parent/claim", params={"kb": "work"}, json={"assignee": "worker"}
-                )
-                if route == "rest_claim"
-                else client.patch(
-                    "/api/entries/parent",
-                    json={"kb": "work", "field": "status", "value": "claimed"},
-                )
-            )
-            assert response.status_code in (200, 400), response.text
-            result = response.json()
-            return result.get("detail", result)
         svc = TaskService(config, db)
         try:
             if route == "claim":
