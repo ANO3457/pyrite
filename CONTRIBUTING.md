@@ -48,6 +48,9 @@ pre-commit install
 scripts/setup-checkout.sh
 pyrite kb list   # the `pyrite` KB path must be this checkout's kb/
 
+# Verify imports resolve to this checkout, including every extension
+.venv/bin/python scripts/check_checkout_imports.py
+
 # Verify installation
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/*/tests/ -n 4 -q
 ```
@@ -102,6 +105,32 @@ checkout's `kb/`, syncs the index, installs the git hooks, puts `.venv/bin` on
 - **Branches:** the session's own branch is fine for a PR to `dev`; name it
   `fix/*` or `feature/*` if you create one yourself. One session is one
   checkout, so there is no worktree to make.
+
+## Moving work to a worktree
+
+Every worktree of a clone shares the same stash stack. A clean checkout's
+`git stash push` creates no entry: a subsequent bare `git stash pop` would
+apply and remove somebody else's stash (#1063). Use a unique handoff marker
+and the matching commit object, never the current top of the stack:
+
+```bash
+# Replace both placeholders; the token must be unique to THIS handoff.
+git stash push --include-untracked -m "handoff-<branch>-<unique-token>"
+git stash list --format='%H %gs'
+# Record the hash of the entry containing that exact marker.
+# If there is no matching entry (nothing was stashed), do not apply anything.
+scripts/new-worktree.sh <branch>
+git -C <new-worktree-path> stash apply --index <recorded-stash-hash>
+```
+
+`apply --index` restores staged changes too and keeps the stash for recovery.
+An interleaved push in another worktree cannot change which commit the
+recorded hash names. On a conflict, resolve it in the destination and keep the
+stash until the files and staging are verified. For later cleanup, inspect
+`git stash list` again and drop only the entry with that marker; its numeric
+`stash@{N}` position may have moved. Do not pop or clear the shared stack.
+`--include-untracked` includes untracked files, but not ignored files; copy
+any needed ignored file explicitly after checking its contents.
 
 ## Code Standards
 
@@ -161,6 +190,16 @@ pyrite/
 ```
 
 ### Entry Points
+
+Imports flow `cli`/`server` → `services` → `storage`; storage never imports
+services. The allowed surface-to-storage exceptions are a ratchet whose count
+can only fall, in [test_layer_boundaries.py](tests/test_layer_boundaries.py).
+The inner-layer rule is enforced by
+[test_storage_never_imports_services.py](tests/test_storage_never_imports_services.py);
+the migrated CLI surfaces are covered by
+[test_cli_surfaces_through_services.py](tests/test_cli_surfaces_through_services.py).
+For public error text, follow the [API standard](kb/standards/api-design.md#error-handling),
+enforced by [test_public_message_logged_once.py](tests/test_public_message_logged_once.py).
 
 | Command | Module | Purpose |
 |---------|--------|---------|
@@ -353,8 +392,8 @@ come from GitHub Actions, and conclude `success` (`skipped` does not count)
 in every workflow run that tested the SHA.
 
 What that is evidence of: CI accepted the commit. Every job `gate` needs
-succeeded or was skipped by CI's change classifier: the full matrix in the
-merge queue, one interpreter (with `test` skipped on a docs-only change) on
+succeeded or was skipped by CI's change classifier: Python 3.13 in the
+merge queue and 3.11 and 3.12 on the push to `dev` that follows, one interpreter (with `test` skipped on a docs-only change) on
 a pull request. It does not say a particular selection of tests ran. So
 `PYRITE_PUSH_FULL=1` still runs the full suite, `PYRITE_PUSH_EXPERIMENTAL=1`
 still runs (`gate` does not need the experimental job), and `--force` or
@@ -410,6 +449,15 @@ uv pip install --python .venv/bin/python -e ".[all,dev]"
 ```
 
 ### Writing Tests
+
+- Follow the [deadline rule](kb/standards/testing-standards.md#deadlines-and-waits);
+  [test_test_rules.py](tests/test_test_rules.py) enforces it.
+- Drive real services behind entry points; the
+  [mocking standard](kb/standards/testing-standards.md) and
+  [test_tests_drive_the_surface_not_the_mock.py](tests/test_tests_drive_the_surface_not_the_mock.py)
+  define the permitted edges.
+- Use the [pinned CLI rendering environment](kb/standards/testing-standards.md#cli-rendering),
+  covered by [test_cli_color_environment.py](tests/test_cli_color_environment.py).
 
 - Tests live in `tests/`; extension tests in `extensions/<name>/tests/`
 - Name test files `test_*.py`
@@ -554,6 +602,41 @@ sub-agent's.
 Commit messages use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
 `refactor:`, `ci:`, `kb:`).
 
+### Maintainer-only landing with a merge commit
+
+Ordinary contributor PRs use the configured merge method. A maintainer who
+needs a merge commit for a landing branch must coordinate **three independent
+settings** (#1036); green checks and `MERGEABLE` alone do not prove the queue
+can use that method:
+
+1. Repository **Settings → General → Pull Requests → Allow merge commits**.
+2. The `dev` ruleset's **Require merge queue → Merge method**.
+3. The same ruleset's **Require a pull request → Allowed merge methods**.
+
+Before changing anything, record all three original values and the queue's
+full parameters, particularly `max_entries_to_merge`, `min_entries_to_merge`
+and its wait timeout. Use the repository's ruleset settings or a read-only
+snapshot (replace the ID with the `dev` ruleset's ID):
+
+```bash
+gh api repos/pyrite-wiki/pyrite/rulesets
+gh api repos/pyrite-wiki/pyrite/rulesets/<dev-ruleset-id> > dev-ruleset-before.json
+```
+
+The repository-level permission is separate from that ruleset snapshot;
+record it too. If the maintainer approves a temporary merge-commit landing,
+enable it at all three gates, then use the normal PR and CI queue. This is
+not permission to bypass checks or push directly to `dev`.
+
+After the landing, restore the **recorded pre-change values**, including
+every queue parameter, and read the settings back. Do not take a new snapshot
+of the temporary state as the restoration source. In the #1036 incident,
+restoring `max_entries_to_merge: 0` and `min_entries_to_merge: 2` held a green
+PR for 30 minutes; the cited normal values were max **5**, min **1**. Prefer
+the actual pre-change snapshot over assuming those values forever. If a
+green PR stalls, inspect all three merge-method gates and these group-size
+parameters before rerunning CI or changing the PR.
+
 ## Where work is tracked
 
 Two places, one rule — an item lives in exactly one of them (ADR-0033):
@@ -672,3 +755,18 @@ change, and in the README.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same license as the project.
+
+### Refresh the fallback type baseline before a release
+
+Before preparing the release commit, run the same pinned mypy environment as
+CI, then lower its no-base fallback (issue#1103):
+
+```bash
+mypy pyrite/ --ignore-missing-imports > mypy-release.out || true
+python scripts/mypy_ratchet.py mypy-release.out --update
+```
+
+Review and include the resulting `.mypy-baseline.json` in the release PR.
+A crash or any per-file rise refuses the update: fix those errors instead of
+using `--allow-increase`. Normal PR/push runs still compare with their actual
+base commit, so refreshing this fallback never hides a regression in a PR.

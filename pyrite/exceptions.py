@@ -357,6 +357,7 @@ class StorageError(PyriteError):
         "log for the underlying error."
     )
     retryable: bool = False
+    suggestion: str | None = None
 
 
 class IndexSyncRecoveryHintError(StorageError):
@@ -475,17 +476,18 @@ class KBAlreadyExistsError(ConfigError):
 
 
 class KBDefinedInConfigError(ConfigError):
-    """`KBRegistryService.update_kb` refused to change the ``default_role`` of
-    a KB an operator defined by hand in config.yaml.
+    """`KBRegistryService.update_kb` refused to change a KB an operator defined
+    by hand in config.yaml.
 
-    That entry is the KB's policy: the access policy and every anonymous
-    surface read it before the registry row. The server rewrites config.yaml
+    That entry is the KB's source of truth: the access policy reads its
+    ``default_role`` before the registry row, and every entry save and sync
+    rewrites the row's metadata from the file. The server rewrites config.yaml
     entries only for KBs it wrote there itself (ephemeral and
     repo-subscribed ones, on evidence only the server writes); an operator's
     own entry is theirs to edit, followed by a restart.
 
-    The message names the KB (caller-supplied) and the config file by its
-    basename, never its path, so it is safe to show.
+    The message names the KB (caller-supplied), the fields asked for, and the
+    config file by its basename, never its path, so it is safe to show.
     """
 
     error_code = "KB_DEFINED_IN_CONFIG"

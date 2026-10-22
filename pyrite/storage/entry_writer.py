@@ -255,6 +255,35 @@ def move_entry_text(
     return locked
 
 
+def _names_the_same_file(tmp: str, path: Path) -> bool:
+    """Whether ``path`` now names the inode ``tmp`` holds: ``os.link`` created
+    the target but reported an error anyway (EIO, or EEXIST on an NFS
+    retransmit of a link that succeeded, #914)."""
+    try:
+        return os.path.samestat(os.stat(tmp), os.stat(path))
+    except OSError:
+        return False
+
+
+def _unlink_published(tmp: str, path: Path) -> None:
+    """Remove the temp name after a successful publish; one retry for a
+    transient sharing error, then a warning (a second hard link blocks
+    ``ids pin`` and keeps today's bytes past the next update, #752)."""
+    try:
+        os.unlink(tmp)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            logger.warning(
+                "published %s, but could not remove its temp name %s, a second "
+                "hard link to the same file; delete it by hand",
+                path,
+                tmp,
+                exc_info=True,
+            )
+
+
 def publish_exclusive(tmp: str, path: Path) -> None:
     """Publish ``tmp`` to ``path``, refusing if ``path`` already exists.
 
@@ -266,7 +295,10 @@ def publish_exclusive(tmp: str, path: Path) -> None:
        ``FileExistsError`` stops here. Any other error (no hard links on
        FAT/exFAT, EACCES on some network shares, FUSE-specific errnos) goes
        on to step 2, which is still exclusive (#391 round 3; #643 review: an
-       errno allow-list here failed every create on those).
+       errno allow-list here failed every create on those). A link can
+       succeed and still raise -- EIO after the link was made, or EEXIST on
+       an NFS retransmit -- so either error first checks whether the target
+       now names ``tmp`` and treats that as the publish it is (#914).
     2. ``os.open(path, O_CREAT | O_EXCL)`` claims the name, then
        ``os.replace(tmp, path)`` fills it: the replace only targets a path
        this call just created. If anything after the claim fails, the
@@ -289,27 +321,24 @@ def publish_exclusive(tmp: str, path: Path) -> None:
     try:
         os.link(tmp, path)
     except FileExistsError:
+        # A link can be made and still raise: an NFS retransmit of a link
+        # that succeeded reports EEXIST on the retry. If the target now names
+        # our temp file, the publish happened (#914).
+        if _names_the_same_file(tmp, path):
+            _unlink_published(tmp, path)
+            return
         raise
     except OSError:
-        pass  # step 2 is still exclusive, and re-raises real I/O errors
+        # Same on a generic error: EIO can be reported after the link was
+        # created (#914). Only when the target is not ours does the O_EXCL
+        # fallback run, which is still exclusive and re-raises real errors.
+        if _names_the_same_file(tmp, path):
+            _unlink_published(tmp, path)
+            return
     else:
         # Published. The cleanup sits outside the try above so an unlink
-        # error is never mistaken for a link failure; one retry for a
-        # transient sharing error, then a warning (a second hard link blocks
-        # `ids pin` and keeps today's bytes past the next update, #752).
-        try:
-            os.unlink(tmp)
-        except OSError:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                logger.warning(
-                    "published %s, but could not remove its temp name %s, a second "
-                    "hard link to the same file; delete it by hand",
-                    path,
-                    tmp,
-                    exc_info=True,
-                )
+        # error is never mistaken for a link failure.
+        _unlink_published(tmp, path)
         return
 
     try:

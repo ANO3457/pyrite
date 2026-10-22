@@ -472,17 +472,14 @@ def test_the_backlinks_table_lists_a_source_once_with_each_link(two_kbs):
         ),
         pytest.param(
             False,
-            marks=pytest.mark.control(
-                reason="dev stored one row here, so one edge; guards the pair check in the "
-                "whole-index branch now that there are two"
-            ),
         ),
     ],
     ids=["centered", "whole-index"],
 )
 def test_the_graph_draws_one_edge_per_pair_of_entries(two_kbs, centered):
     """Two links from one source to one target are one edge, and the node's
-    `link_count` counts it once, centred on an entry or not."""
+    `link_count` counts it once, centred on an entry or not. Whole-index, a
+    node is still chosen by id and KB, not by id alone (#1058)."""
     _, db = _two_links_from_one_source(two_kbs)
     if centered:
         graph = db.get_graph_data(center="s", center_kb="ka", readable_kbs=None)
@@ -493,10 +490,10 @@ def test_the_graph_draws_one_edge_per_pair_of_entries(two_kbs, centered):
     ]
     assert pairs == [("s", "ka", "x", "ka")]
     counts = {(n["id"], n["kb_name"]): n["link_count"] for n in graph["nodes"]}
-    assert {k: counts.get(k) for k in (("s", "ka"), ("x", "ka"))} == {
-        ("s", "ka"): 1,
-        ("x", "ka"): 1,
-    }
+    # A node is an entry some link row names by id *and* KB. `kb:x` shares its
+    # id with the linked `ka:x` and no link names it, so it is not a node even
+    # whole-index (#1058).
+    assert counts == {("s", "ka"): 1, ("x", "ka"): 1}
 
 
 @pytest.fixture

@@ -8,6 +8,7 @@ private; this is the gap. Operator API keys (no logged-in user) are not scoped:
 they are the operator's credential.
 """
 
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -20,14 +21,35 @@ from pyrite.services.auth_service import AuthService
 from pyrite.services.kb_service import KBService
 from pyrite.services.link_discovery_service import LinkDiscoveryService
 from pyrite.storage.database import PyriteDB
-from tests.auth_seed import seed_and_sign_in
+from tests.auth_seed import SESSION_COOKIE
 from pyrite.services.access_policy import UNSCOPED
 
 PUBLIC, PRIVATE = "public-kb", "private-kb"
 
 
+@pytest.fixture(scope="module")
+def auth_seed(tmp_path_factory):
+    """Pay password hashing/login once, then copy the real users and sessions.
+
+    This file tests authorization, not password verification. Each test still
+    gets a separate database, permission table, app and KB files. No auth
+    dependency or permission check is mocked or bypassed.
+    """
+    path = tmp_path_factory.mktemp("private-read-auth") / "seed.db"
+    db = PyriteDB(path)
+    try:
+        auth = AuthService(db, AuthConfig(enabled=True, allow_registration=True))
+        tokens = {}
+        for username, role in (("admin-user", "admin"), ("peer", "read")):
+            auth.create_user(username, "password123", role=role)
+            _, tokens[username] = auth.login(username, "password123")
+    finally:
+        db.close()
+    return path, tokens
+
+
 @pytest.fixture
-def env():
+def env(auth_seed):
     # This file sends far more than a hundred requests a minute to routes
     # limited at "100/minute". The limiter's counters are process-global
     # (see `_reset_rate_limiter` in tests/conftest.py, which resets them
@@ -47,6 +69,12 @@ def env():
                 auth=AuthConfig(enabled=True, allow_registration=True, anonymous_tier="read"),
             ),
         )
+        seed_path, tokens = auth_seed
+        with (
+            sqlite3.connect(seed_path) as source,
+            sqlite3.connect(config.settings.index_path) as target,
+        ):
+            source.backup(target)
         app = create_app(config=config)
         db = PyriteDB(config.settings.index_path)
         app.dependency_overrides[get_config] = lambda: config
@@ -84,17 +112,20 @@ def env():
             # denied the default_role: none KB.
             c = TestClient(app)
             if username:
-                seed_and_sign_in(c, username, "password123", role="read")
+                c.cookies.set(SESSION_COOKIE, tokens[username])
             return c
 
         # admin and peer are seeded via the operator path.
         admin = TestClient(app)
-        seed_and_sign_in(admin, "admin-user", "password123", role="admin")
+        admin.cookies.set(SESSION_COOKIE, tokens["admin-user"])
         peer = client_for("peer")
         anon = client_for(None)
         try:
             yield {"admin": admin, "peer": peer, "anon": anon, "db": db, "config": config}
         finally:
+            admin.close()
+            peer.close()
+            anon.close()
             db.close()
 
 

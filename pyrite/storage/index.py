@@ -946,8 +946,16 @@ class IndexManager:
             try:
                 # Follow symlinks to preserve existing reads from regular-file targets.
                 file_stat = file_path.stat()
-            except OSError:
-                continue  # removed while walking: as if never seen
+            except OSError as e:
+                # Not "removed while walking": a dangling symlink, a symlink
+                # loop or a folder this process cannot search is listed by the
+                # walk and cannot be read. Health must say so (#1119); sync
+                # already reports it as malformed.
+                error = f"{type(e).__name__}: {e}"
+                plan.malformed.append({"path": str(file_path), "error": error})
+                plan.unreadable[str(file_path)] = error
+                logger.warning("Could not stat %s: %s", file_path, e)
+                continue
             if not stat_module.S_ISREG(file_stat.st_mode):
                 plan.skipped.append({"path": str(file_path), "reason": "not a regular file"})
                 logger.warning("Skipping %s: not a regular file", file_path)
@@ -1501,6 +1509,17 @@ class IndexManager:
             # rule as `pyrite index sync` (ADR-0038 step 2).
             plan = self.plan_reconcile(kb, force=True, indexed=indexed)
             health["duplicates"].extend(plan.duplicates)
+            # A path sync lists and skips because it is not a regular file
+            # (a directory named `x.md`, a FIFO) used to vanish from health
+            # while sync reported it in `skipped` (#1119).
+            for skipped_file in plan.skipped:
+                health["unreadable_files"].append(
+                    {
+                        "kb": kb.name,
+                        "path": skipped_file["path"],
+                        "error": skipped_file["reason"],
+                    }
+                )
             for bad in plan.malformed:
                 if bad["path"] in plan.unreadable:
                     # A present file that cannot be decoded/read is neither
@@ -2145,7 +2164,15 @@ class IndexManager:
         force: bool | set[Path] = True
         if since_commit and is_git:
             force = set()
-            for rel_path in git_service.get_changed_files(kb_path, since_commit=since_commit):
+            # `git diff --name-only` prints repo-root-relative paths, so a KB
+            # in a repo subdirectory must strip its own prefix first, as
+            # `get_file_log` does: joined raw, `repo/kb/` + `kb/b.md` names
+            # nothing and every changed file is skipped (#898).
+            kb_prefix = git_service.get_kb_prefix(kb_path)
+            for repo_path in git_service.get_changed_files(kb_path, since_commit=since_commit):
+                rel_path = git_service._kb_relative_path(repo_path, kb_prefix)
+                if rel_path is None:  # another KB's file in the same repo
+                    continue
                 full_path = kb_path / rel_path
                 if full_path.exists() and full_path.suffix == ".md":
                     force.add(full_path)

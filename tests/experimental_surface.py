@@ -404,6 +404,7 @@ _IN_READ_TIER = "asserts a tool IS offered at the read tier (feature), not that 
 _JSONLD = "parses the page's JSON-LD block for SEO fields; escaping is TestXSSPrevention"
 REVIEWED_EXPERIMENTAL: dict[str, str] = {
     "tests/test_overlay_backend.py::TestOverlayLinks::test_relation_identity": "identity of a link relation, not of a principal; no security property",
+    "tests/test_overlay_backend.py::TestOverlayLinks::test_two_prefixes_of_one_link_survive_the_merge": "identity of a written link prefix in the overlay merge; no security property",
     "extensions/journalism-investigation/tests/test_claim_entry.py::TestClaimEntry::test_round_trip": _FIXTURE_LEAK,
     "extensions/journalism-investigation/tests/test_entity_types.py::TestDocumentSourceEntry::test_round_trip": _FIXTURE_LEAK,
     "extensions/journalism-investigation/tests/test_entity_types.py::TestDocumentSourceEntry::test_classification_values": _FIXTURE_LEAK,

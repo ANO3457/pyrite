@@ -1,0 +1,1 @@
+Core-written transclusion and references relations now declare their inverse names; legacy related is a related_to alias. Backlink queries report declared inverses immediately, without rewriting stored rows.

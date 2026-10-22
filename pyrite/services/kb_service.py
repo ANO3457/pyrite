@@ -1275,7 +1275,7 @@ class KBService:
 
     def _with_declared_fields(
         self, entry_type: str, kb_config: KBConfig, fields: dict[str, Any]
-    ) -> tuple[dict[str, Any], dict[str, str]]:
+    ) -> tuple[dict[str, Any], dict[str, str | None]]:
         """A create's request with every field the type's schema declares
         (#86), and the declared fields the model holds as attributes.
 
@@ -1295,7 +1295,8 @@ class KBService:
         Left out: base Entry fields (``RESERVED_FIELD_NAMES``) and the fields
         a create refuses (``_field_sets``' managed set, #1010). An alias is
         added at its target's name. The second value maps each declared
-        attribute field to its attribute, for ``Entry._create_fields``.
+        declared field to its attribute (None for a metadata-held field), for
+        ``Entry._create_fields``.
         """
         from ..models.core_types import get_entry_class
         from ..schema.field_aliases import class_field_aliases, field_at, spellings_of
@@ -1307,7 +1308,7 @@ class KBService:
         envelope = fields.get("metadata")
         envelope = envelope if isinstance(envelope, Mapping) else {}
         added: dict[str, Any] = {}
-        attributes: dict[str, str] = {}
+        attributes: dict[str, str | None] = {}
         for name, schema in kb_config.kb_schema.type_fields(entry_type).items():
             if name in skip:
                 continue
@@ -1327,6 +1328,8 @@ class KBService:
                     added[field] = schema.empty_value()
             elif not sent:
                 added[field] = schema.empty_value()
+            if attribute is None:
+                attributes[field] = None
         return {**fields, **added}, attributes
 
     def _prepare_and_save(
@@ -2127,7 +2130,14 @@ class KBService:
             managed = self._managed_spellings(entry_type, kb_config, spec)
         except Exception:  # an unknown type or bad envelope key: the create says why
             return spec, []
-        index_only = (_INDEX_ONLY_KEYS - {"entry_type", "type"}) | {"file_path", "kb_name"}
+        index_only = (_INDEX_ONLY_KEYS - {"entry_type", "type"}) | {
+            "file_path",
+            "kb_name",
+            # An export carries the read's timestamps; a create stamps new
+            # ones, so an import reports them instead of dropping them (#1091).
+            "created_at",
+            "updated_at",
+        }
         out = dict(spec)
         ignored: list[str] = []
         for key in list(out):
@@ -2552,11 +2562,9 @@ class KBService:
             the write; a link another writer appends between that read and
             the publish is not re-checked, and both items land (Q2: the
             publish re-applies on ``FileChanged`` and the last writer wins; a
-            duplicate pair is what the check tolerates on a replay). The
-            file must spell ``links`` at the top level: an item appended at
-            ``metadata.links`` would be read by nothing (not indexed, not
-            seen by this check: the reader's gap, #1025), so that spelling is
-            refused with the reason (``_resolve_operation``).
+            duplicate pair is what the check tolerates on a replay). A file
+            that spells ``links`` only under ``metadata:`` gets the item
+            appended there, where the reader now reads it (#1025).
         """
         # A malformed request is refused before anything is loaded or written
         # (#846); every link writer passes through this one check.
@@ -3767,7 +3775,7 @@ class KBService:
 
     def _parse_change_entry(self, kb_path: Path, file_path: str, change_type: str) -> dict:
         """Parse an entry file to extract metadata for a change record."""
-        import subprocess
+        from ..services.git_service import GitService
 
         result = {
             "change_type": change_type,
@@ -3793,24 +3801,15 @@ class KBService:
 
         # Get previous content (for modified/deleted)
         if change_type in ("modified", "deleted"):
-            try:
-                proc = subprocess.run(
-                    ["git", "show", f"HEAD:{file_path}"],
-                    cwd=str(kb_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if proc.returncode == 0:
-                    result["previous_body"] = proc.stdout
-                    if change_type == "deleted":
-                        meta = self._extract_frontmatter(proc.stdout)
-                        if meta:
-                            result["title"] = meta.get("title", file_path)
-                            result["entry_type"] = meta.get("type", "unknown")
-                            result["entry_id"] = meta.get("id")
-            except Exception:
-                pass
+            previous = GitService.show(kb_path, file_path)
+            if previous is not None:
+                result["previous_body"] = previous
+                if change_type == "deleted":
+                    meta = self._extract_frontmatter(previous)
+                    if meta:
+                        result["title"] = meta.get("title", file_path)
+                        result["entry_type"] = meta.get("type", "unknown")
+                        result["entry_id"] = meta.get("id")
 
         return result
 

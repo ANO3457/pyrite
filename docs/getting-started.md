@@ -356,6 +356,8 @@ An install from a release tag has no web UI yet: the built frontend is not packa
 
 ## Next Steps
 
+- [Coordinate tasks](tasks.md) and [connect entries](links.md).
+
 - [Next: Pyrite in 20 minutes](tutorials/pyrite-in-20-minutes.md) — a hands-on first tutorial
 - [Writing a Plugin](tutorials/plugin-writing.md) — extend Pyrite with custom entry types, MCP tools, and CLI commands
 - [Awesome Plugins](plugins.md) — community extensions

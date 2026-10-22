@@ -563,27 +563,6 @@ def _spellings_present(
     return found
 
 
-def attribute_for(entry: Any, key: str) -> str | None:
-    """The model attribute an update to file key ``key`` should set, or None.
-
-    ``None`` means ``key`` is not one of the entry type's alias or target keys,
-    or the model has no attribute for either spelling. ``actors`` on an event
-    sets ``participants`` (the attribute), ``source`` on a relationship sets
-    ``source_entity``.
-    """
-    aliases = class_field_aliases(type(entry), entry.entry_type)
-    if key not in aliases and key not in aliases.values():
-        return None
-    if hasattr(entry, key):
-        return key
-    for alias, target in aliases.items():
-        if key == target and hasattr(entry, alias):
-            return alias
-        if key == alias and hasattr(entry, target):
-            return target
-    return None
-
-
 def entry_alias_names(entry: Any) -> frozenset[str]:
     """Alias names for a loaded entry: the schema's, plus the deprecated class attribute.
 

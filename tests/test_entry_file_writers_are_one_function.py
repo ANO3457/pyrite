@@ -142,9 +142,7 @@ def _writers() -> dict[tuple[str, str], int]:
 
 def _is_out_of_scope(module: str) -> bool:
     """Renderers and exports write what they generate, never an entry file."""
-    return module.startswith(("pyrite/renderers/", "pyrite/services/export_service.py")) or (
-        module.startswith("pyrite/services/site_cache.py")
-    )
+    return module.startswith(("pyrite/renderers/", "pyrite/services/export_service.py"))
 
 
 @pytest.mark.control(

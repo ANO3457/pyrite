@@ -153,29 +153,6 @@ class SearchResponse(BaseModel):
 # =============================================================================
 
 
-class EntryBase(BaseModel):
-    """Base fields for entries."""
-
-    title: str
-    body: str | None = None
-    tags: list[str] = []
-    importance: int | None = Field(None, ge=1, le=10)
-
-
-class EventCreate(EntryBase):
-    """Fields for creating an event."""
-
-    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
-    participants: list[str] = []
-    status: str = "confirmed"
-
-
-class PersonCreate(EntryBase):
-    """Fields for creating a person entry."""
-
-    role: str | None = None
-
-
 class EntryResponse(BaseModel):
     """Full entry response.
 
@@ -460,7 +437,17 @@ class ErrorResponse(BaseModel):
 
 
 class CreateEntryRequest(BaseModel):
-    """JSON body for creating an entry."""
+    """JSON body for creating an entry.
+
+    ``extra="forbid"``: the model has no free top-level fields, so a key it
+    does not declare is never silently dropped. The create route also reads
+    the raw body (`refuses_unknown_create_keys`) to answer such a key with
+    the service's own refusal -- 400 ``VALIDATION_FAILED`` naming it -- while
+    the ``metadata`` envelope spelling reaches the service and is refused
+    there (#1010, #1090).
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     kb: str
     entry_type: str = "note"

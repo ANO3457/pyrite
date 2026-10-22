@@ -174,15 +174,6 @@ class KBSchema:
                     fields.setdefault(name, FieldSchema(name=name))
         return {name: f for name, f in fields.items() if name not in RESERVED_FIELD_NAMES}
 
-    def get_subdirectory(self, entry_type: str) -> str:
-        """Get the subdirectory for an entry type."""
-        type_schema = self.get_type_schema(entry_type)
-        if type_schema and type_schema.subdirectory:
-            return type_schema.subdirectory
-        if entry_type in CORE_TYPES:
-            return CORE_TYPES[entry_type]["subdirectory"]
-        return f"{entry_type}s"  # Default: plural of type name
-
     def declared_types(self) -> list[str]:
         """The types this KB's kb.yaml declares, sorted; empty when it declares none.
 

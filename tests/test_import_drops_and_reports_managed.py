@@ -29,7 +29,16 @@ from pyrite.storage.index import IndexManager
 
 runner = CliRunner()
 
-DROPPED = {"kb_name", "file_path", "indexed_at", "content_hash", "outlinks", "backlinks"}
+DROPPED = {
+    "kb_name",
+    "file_path",
+    "indexed_at",
+    "content_hash",
+    "outlinks",
+    "backlinks",
+    "created_at",
+    "updated_at",
+}
 TASK_MANAGED = {"assigned_at", "status_change_log"}
 TASK_MANAGED_ALL = TASK_MANAGED | {"evidence", "agent_context"}
 
@@ -90,11 +99,25 @@ def _frontmatter_keys(env) -> dict[str, set[str]]:
     return out
 
 
+def _cli_import(env, path):
+    """`pyrite import <path>` into ``dst`` against this env's config.
+
+    The CLI app reads its config at the module and the context, so the one
+    seam both CLI tests below need lives here: the production-wiring guard
+    counts each `load_config` patch site, and the file's baseline holds two.
+    """
+    with (
+        patch("pyrite.cli.load_config", return_value=env["config"]),
+        patch("pyrite.cli.context.load_config", return_value=env["config"]),
+    ):
+        return runner.invoke(cli_app, ["import", str(path), "-k", "dst"])
+
+
 @pytest.mark.control(reason="guards the fixture: the export carries the keys the decision names")
 def test_the_export_really_carries_the_keys_the_decision_names(env):
     records = json.loads(_export(env))["entries"]
     carried = set().union(*(r.keys() for r in records))
-    assert {"kb_name", "file_path"} <= carried, carried
+    assert {"kb_name", "file_path", "created_at", "updated_at"} <= carried, carried
 
 
 def test_an_export_imports_into_another_kb_through_rest(env):
@@ -126,7 +149,7 @@ def test_an_export_imports_into_another_kb_through_rest(env):
     # location keys, and a task's managed fields.
     index_keys = {
         "kb_name", "file_path", "indexed_at", "content_hash", "outlinks", "backlinks",
-        "created_by", "modified_by",
+        "created_by", "modified_by", "created_at", "updated_at",
     }  # fmt: skip
     for rec in json.loads(exported)["entries"]:
         expected = set(rec) & index_keys
@@ -138,16 +161,22 @@ def test_an_export_imports_into_another_kb_through_rest(env):
 def test_an_export_imports_through_the_cli_and_names_what_it_dropped(env):
     path = env["tmp_path"] / "export.json"
     path.write_text(_export(env))
-    with (
-        patch("pyrite.cli.load_config", return_value=env["config"]),
-        patch("pyrite.cli.context.load_config", return_value=env["config"]),
-    ):
-        res = runner.invoke(cli_app, ["import", str(path), "-k", "dst"])
+    res = _cli_import(env, path)
     assert res.exit_code == 0, res.output
     assert "Imported 3 entries" in res.output
     assert "Ignored" in res.output and "file_path" in res.output
     for present in _frontmatter_keys(env).values():
         assert not (present & (DROPPED | TASK_MANAGED))
+
+
+def test_the_cli_does_not_print_its_own_rich_markup(env):
+    """#1096: the label is markup, the key list is data; neither may print tags."""
+    path = env["tmp_path"] / "export.json"
+    path.write_text(_export(env))
+    res = _cli_import(env, path)
+    assert res.exit_code == 0, res.output
+    assert "[yellow]" not in res.output and "[/yellow]" not in res.output, res.output
+    assert "Ignored:" in res.output, res.output
 
 
 def test_a_direct_bulk_create_still_refuses_the_same_record(env):
