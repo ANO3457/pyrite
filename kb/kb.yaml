@@ -60,6 +60,23 @@ types:
     description: "A work item tracking planned or in-progress development work"
     guidelines: "Include clear acceptance criteria. Set priority and effort estimates. Link to relevant ADRs."
     goals: "Enable agents to pick up work items and understand what 'done' looks like."
+    fields:
+      kind:
+        type: select
+        options:
+          - feature
+          - bug
+          - tech_debt
+          - improvement
+          - spike
+          - enhancement
+          - documentation
+          - docs
+          - task
+          - epic
+          - refactor
+          - chore
+          - process
     evaluation_rubric:
       - checker: status_present
         text: "Backlog item has a status (proposed, planned, in-progress, done)"

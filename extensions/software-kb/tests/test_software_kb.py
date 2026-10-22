@@ -4808,3 +4808,103 @@ class TestSwListCommandsAreBounded:
                 assert {item["id"] for item in result[key]} <= {f"match-{i}" for i in range(5)}
             finally:
                 db.close()
+
+
+# =========================================================================
+# #669 - the maintainer's three backlog kinds work through the CLI
+# =========================================================================
+
+
+NEW_BACKLOG_KINDS = ("refactor", "chore", "process")
+
+
+class TestNewBacklogKindsThroughTheCli:
+    """Create and update accept each kind the maintainer added (2026-10-14)."""
+
+    @pytest.fixture
+    def cli_env(self, tmp_path):
+        import yaml
+
+        from pyrite.config import KBConfig, PyriteConfig, Settings
+        from pyrite.plugins import get_registry
+        from pyrite.storage.database import PyriteDB
+        from pyrite.storage.index import IndexManager
+
+        get_registry().register(SoftwareKBPlugin())
+        kb_path = tmp_path / "sw-kb"
+        kb_path.mkdir()
+        (kb_path / "kb.yaml").write_text(yaml.safe_dump(SOFTWARE_KB_PRESET, sort_keys=False))
+        config = PyriteConfig(
+            knowledge_bases=[KBConfig(name="sw-kb", path=kb_path, kb_type="software")],
+            settings=Settings(index_path=tmp_path / "index.db", auto_embed=False),
+        )
+        db = PyriteDB(config.settings.index_path)
+        IndexManager(db, config).index_all()
+        db.close()
+        return config
+
+    def _run(self, config, args):
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from pyrite.cli import app
+
+        with (
+            patch("pyrite.cli.load_config", return_value=config),
+            patch("pyrite.cli.context.load_config", return_value=config),
+        ):
+            return CliRunner().invoke(app, args, env={"COLUMNS": "300"})
+
+    def _kind_on_disk(self, config, entry_id):
+        import yaml
+
+        kb_path = config.get_kb("sw-kb").path
+        for candidate in kb_path.rglob(f"{entry_id}.md"):
+            return yaml.safe_load(candidate.read_text().split("---", 2)[1])["kind"]
+        raise AssertionError(f"{entry_id}.md not written under {kb_path}")
+
+    @pytest.mark.parametrize("kind", NEW_BACKLOG_KINDS)
+    def test_create_writes_the_kind(self, cli_env, kind):
+        result = self._run(
+            cli_env,
+            [
+                "create",
+                "-k",
+                "sw-kb",
+                "-t",
+                "backlog_item",
+                "--title",
+                f"A {kind} item",
+                "-f",
+                f"kind={kind}",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert self._kind_on_disk(cli_env, payload["entry_id"]) == kind
+
+    @pytest.mark.parametrize("kind", NEW_BACKLOG_KINDS)
+    def test_update_writes_the_kind(self, cli_env, kind):
+        created = self._run(
+            cli_env,
+            [
+                "create",
+                "-k",
+                "sw-kb",
+                "-t",
+                "backlog_item",
+                "--title",
+                f"Update to {kind}",
+                "-f",
+                "kind=feature",
+            ],
+        )
+        assert created.exit_code == 0, created.output
+        entry_id = json.loads(created.stdout)["entry_id"]
+
+        result = self._run(cli_env, ["update", entry_id, "-k", "sw-kb", "-f", f"kind={kind}"])
+
+        assert result.exit_code == 0, result.output
+        assert self._kind_on_disk(cli_env, entry_id) == kind
