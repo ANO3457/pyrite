@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..exceptions import StorageError
 from .backends.sqlite_backend import SQLiteBackend
+from .errors import storage_error_from
 from .models import Base
 from .virtual_tables import create_fts_tables, create_vec_table
 
@@ -171,7 +172,7 @@ class ConnectionMixin:
             def handle_db_error(exception_context: ExceptionContext) -> None:
                 orig = exception_context.original_exception
                 if is_index_corruption(orig):
-                    err = StorageError(f"Database error at {index_path_for_errors}: {orig}")
+                    err = storage_error_from(orig, f"Database error at {index_path_for_errors}")
                     err.suggestion = CORRUPT_INDEX_SUGGESTION
                     raise err from orig
 
@@ -379,7 +380,7 @@ class ConnectionMixin:
             except sqlite3.DatabaseError as exc:
                 if not is_index_corruption(exc):
                     raise
-                err = StorageError(f"Database error at {self.db_path}: {exc}")
+                err = storage_error_from(exc, f"Database error at {self.db_path}")
                 err.suggestion = CORRUPT_INDEX_SUGGESTION
                 raise err from exc
             finally:
