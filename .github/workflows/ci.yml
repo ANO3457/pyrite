@@ -186,6 +186,7 @@ jobs:
               - 'tests/experimental_surface.py'
 
   golden-status:
+    timeout-minutes: 5
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.goldens == 'true'
     runs-on: ubuntu-latest
