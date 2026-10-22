@@ -62,7 +62,8 @@ def test_cleanup_cancels_only_deleted_queue_refs():
     finally:
         server.shutdown()
         server.server_close()
-        thread.join()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_api_permission_failure_is_not_a_missing_ref():
