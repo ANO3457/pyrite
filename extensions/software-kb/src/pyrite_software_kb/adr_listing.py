@@ -1,6 +1,9 @@
 """Shared ordering and relationship projection for ADR listing surfaces."""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 ADR_RELATIONS = ("supersedes", "superseded_by", "amends", "amended_by")
 
@@ -65,19 +68,25 @@ def format_adr_relations(relations: dict[str, list[dict]]) -> str:
     return "; ".join(parts) or "—"
 
 
-def resolve_adr_kb(config: Any, kb_name: str | None = None) -> Any:
+def resolve_adr_kb(
+    config: Any, kb_name: str | None = None, readable_kbs: set[str] | None = None
+) -> Any:
     """Pick the KB holding ADRs: explicitly named, the single configured KB,
     otherwise the (single) KB whose schema declares the ``adr`` type.
 
     Returns ``None`` when ambiguous or when no KB exists (#1082, #1175).
     """
+    kbs = [
+        kb
+        for kb in (getattr(config, "knowledge_bases", []) or [])
+        if readable_kbs is None or kb.name in readable_kbs
+    ]
     if kb_name:
-        for kb in getattr(config, "knowledge_bases", []):
+        for kb in kbs:
             if kb.name == kb_name:
                 return kb
         return None
 
-    kbs = list(getattr(config, "knowledge_bases", []) or [])
     if len(kbs) == 1:
         return kbs[0]
     if not kbs:
@@ -109,7 +118,8 @@ def adr_numbers_in_files(kb_conf: Any) -> set[int]:
     for path in KBRepository(kb_conf).list_files():
         try:
             loaded = load_frontmatter(path.read_text(encoding="utf-8"))
-        except (OSError, FrontmatterError):
+        except (OSError, UnicodeDecodeError, FrontmatterError) as exc:
+            logger.warning("Skipping unreadable ADR numbering file %s: %s", path, exc)
             continue
         if loaded is None:
             continue

@@ -14,40 +14,17 @@ from pyrite.config import load_config
 from pyrite.services.access_policy import UNSCOPED
 from pyrite.storage.database import PyriteDB
 
-from .adr_listing import adr_relations, adr_sort_key, format_adr_relations, next_adr_number
+from .adr_listing import (
+    adr_relations,
+    adr_sort_key,
+    format_adr_relations,
+    next_adr_number,
+    resolve_adr_kb,
+)
 
 sw_app = typer.Typer(help="Software KB commands (ADRs, backlog, standards, components)")
 console = Console()
 logger = logging.getLogger(__name__)
-
-
-def _resolve_adr_kb(config: Any, kb_name: str | None):
-    """Resolve which KB an ADR should be written to.
-
-    With an explicit ``kb_name`` this is just ``config.get_kb``. Without one,
-    fall back to the configured KBs rather than the cwd: prefer the single
-    configured KB, otherwise the (single) KB whose schema declares the ``adr``
-    type. Returns ``None`` only when the choice is genuinely ambiguous or there
-    are no KBs — the caller then warns instead of writing silently to cwd.
-    """
-    if kb_name:
-        return config.get_kb(kb_name)
-
-    kbs = list(getattr(config, "knowledge_bases", []) or [])
-    if len(kbs) == 1:
-        return kbs[0]
-    if not kbs:
-        return None
-
-    # Multiple KBs: disambiguate to the one that actually declares ADRs.
-    adr_kbs = []
-    for kb in kbs:
-        try:
-            if kb.kb_schema and kb.kb_schema.get_type_schema("adr"):
-                adr_kbs.append(kb)
-        except Exception:
-            continue
-    return adr_kbs[0] if len(adr_kbs) == 1 else None
 
 
 def _query_entries(db: PyriteDB, entry_type: str, kb_name: str | None = None) -> list[dict]:
@@ -72,11 +49,6 @@ def _query_entries(db: PyriteDB, entry_type: str, kb_name: str | None = None) ->
         item["_meta"] = meta
         results.append(item)
     return results
-
-
-def _next_adr_number(_db: Any, kb_conf: Any) -> int:
-    """One past the highest ADR number the files hold (#1082, #1175)."""
-    return next_adr_number(kb_conf)
 
 
 def _json_output(items: list[dict]) -> None:
@@ -208,7 +180,7 @@ def sw_new_adr(
     # Resolve the KB up front: with none resolved, refuse -- do NOT fall back
     # to writing into the cwd, where the ADR is never indexed and the
     # numbering query (scoped to KBs) would never see it again.
-    kb_conf = _resolve_adr_kb(config, kb_name)
+    kb_conf = resolve_adr_kb(config, kb_name)
     if kb_conf is None:
         cli_error(
             "No KB resolved for the ADR (pass --kb).",

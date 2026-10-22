@@ -1745,18 +1745,12 @@ class SoftwareKBPlugin:
 
         config = self._get_config()
         kb_name = args.get("kb_name")
-        kb_conf = resolve_adr_kb(config, kb_name)
+        kb_conf = resolve_adr_kb(config, kb_name, readable_kbs)
         if kb_conf is None:
             return {
                 "created": False,
                 "error": "No KB resolved for the ADR (pass kb_name).",
                 "error_code": "KB_NOT_FOUND" if kb_name else "VALIDATION_FAILED",
-            }
-        if readable_kbs is not None and kb_conf.name not in readable_kbs:
-            return {
-                "created": False,
-                "error": f"Knowledge base '{kb_conf.name}' is not in the readable set.",
-                "error_code": "KB_READ_ONLY",
             }
 
         next_num = next_adr_number(kb_conf)

@@ -2183,6 +2183,22 @@ class TestNewAdrGoesThroughPipeline:
         assert "id: adr-0002" in second_file.read_text(encoding="utf-8")
         assert expected_file.read_bytes() == original
 
+    def test_a_real_numbering_collision_is_still_refused(self, env):
+        """An existing ADR id without a numbering field still owns that id."""
+        first = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
+        assert first.exit_code == 0, first.output
+        path = env["kb_path"] / "adrs" / "0001-original-title.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            "\n".join(line for line in text.split("\n") if not line.startswith("adr_number:")),
+            encoding="utf-8",
+        )
+        original = path.read_bytes()
+        result = self._run(env, ["new-adr", "Collides", "--kb", "sw-kb"])
+        assert result.exit_code != 0, result.output
+        assert "ENTRY_EXISTS" in result.output, result.output
+        assert path.read_bytes() == original
+
     def test_create_failure_prints_str_e_not_the_masked_public_message(self, env):
         """#506 item 3: this is the operator's own terminal, so there is no
         transport boundary to protect -- masking a StorageError/PluginError/
