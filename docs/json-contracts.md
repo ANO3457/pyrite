@@ -1572,7 +1572,9 @@ score is at or above `--threshold` (default `0.62`); `score` is the
 higher one and `signal` names every signal that matched (`id`, `title`,
 or `id+title`). Without `--status`, an entry is live while its lifecycle
 is `active` and its status is not `done`, `cancelled`, `failed`,
-`archived` or `closed`.
+`archived` or `closed`. Task status is effective: a task completed by its children
+counts as `done` even while its file still says `open`. This applies both to
+`--status` and the default live-entry scan; the scan does not rewrite files.
 
 ```json
 {
@@ -1590,4 +1592,4 @@ is `active` and its status is not `done`, `cancelled`, `failed`,
 }
 ```
 
-`--format text` prints one line per pair (`score kb/id ~ kb/id [signal]`).
+`--format rich` prints one line per pair (`score kb/id ~ kb/id [signal]`).

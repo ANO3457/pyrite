@@ -29,6 +29,7 @@ from ..exceptions import (
 from ..plugins.registry import get_registry
 from ..schema import validate_date, validate_importance
 from ..schema.core_types import SYSTEM_INTENT, resolve_type_metadata
+from ..storage import effective_status
 from ..storage.backends.base_backend import kb_names_clause
 from ..storage.database import PyriteDB
 from ..utils.metadata import parse_metadata
@@ -273,8 +274,10 @@ class QAService:
         higher of the two and ``signal`` names every signal that matched.
 
         With ``statuses`` the scan keeps only those statuses. Without it, an
-        entry is live while its lifecycle is ``active`` and its status is not
+        entry is live while its lifecycle is ``active`` and its effective status is not
         one of ``done``/``cancelled``/``failed``/``archived``/``closed``.
+        Tasks completed by their children use the shared derived-status rule;
+        reading duplicate candidates never rewrites their files.
 
         Candidate pairs come from an inverted token index, and a token shared
         by more than ``max(64, entries // 25)`` entries is not expanded: a
@@ -285,8 +288,15 @@ class QAService:
         """
         params: dict[str, Any] = {"entry_type": entry_type}
         scope = kb_names_clause("kb_name", readable_kbs, params)
+        keys = (
+            effective_status.derived_done_keys(self.db.session, kb_names=readable_kbs)
+            if entry_type == "task"
+            else []
+        )
+        status_expr = effective_status.status_sql("", keys, params)
         sql = (
-            "SELECT id, kb_name, title, status, lifecycle FROM entry WHERE entry_type = :entry_type"
+            f"SELECT id, kb_name, title, {status_expr} AS status, lifecycle "
+            "FROM entry WHERE entry_type = :entry_type"
         )
         if scope:
             sql += f" AND {scope}"
