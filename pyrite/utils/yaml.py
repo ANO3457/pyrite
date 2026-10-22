@@ -246,6 +246,18 @@ def _dumper_for(data: Any) -> YAML:
     return y
 
 
+def load_yaml_document(text: str) -> Any:
+    """Parse a YAML document, including bulk-import sequences and empty input.
+
+    Entry frontmatter callers must use ``load_yaml`` for its mapping contract.
+    Both paths use the same parser, scalar rules and public parse error.
+    """
+    try:
+        return _get_yaml().load(text)
+    except YAMLError as e:
+        raise FrontmatterError(f"Invalid YAML frontmatter: {e}") from e
+
+
 def load_yaml(text: str) -> dict[str, Any]:
     """Load YAML from a string.
 
@@ -257,11 +269,7 @@ def load_yaml(text: str) -> dict[str, Any]:
     parse to a mapping, so a single malformed entry surfaces a clear error
     instead of leaking a raw ruamel traceback to callers.
     """
-    y = _get_yaml()
-    try:
-        result = y.load(text)
-    except YAMLError as e:
-        raise FrontmatterError(f"Invalid YAML frontmatter: {e}") from e
+    result = load_yaml_document(text)
     if result is None:
         return {}
     if not isinstance(result, Mapping):
