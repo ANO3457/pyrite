@@ -75,3 +75,18 @@ def test_api_permission_failure_is_not_a_missing_ref():
 
     with pytest.raises(HTTPError):
         module.is_missing_ref_error(HTTPError("http://example.invalid", 403, "forbidden", {}, None))
+
+
+def test_queue_cleanup_is_automatic_and_runs_only_trusted_dev_code():
+    import yaml
+
+    path = Path(__file__).parents[1] / ".github/workflows/cleanup-stale-queue.yml"
+    assert path.is_file(), "obsolete groups have no automatic cleanup workflow"
+    workflow = yaml.safe_load(path.read_text())
+    triggers = workflow.get(True, workflow.get("on"))
+    assert "merge_group" in triggers and triggers["push"]["branches"] == ["dev"]
+    assert triggers["schedule"]
+    assert workflow["permissions"] == {"contents": "read", "actions": "write"}
+    job = workflow["jobs"]["cleanup"]
+    assert job["timeout-minutes"] <= 10
+    assert job["steps"][0]["with"]["ref"] == "dev"
