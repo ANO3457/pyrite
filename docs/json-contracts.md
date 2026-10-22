@@ -1087,11 +1087,15 @@ from the entry's side, with three relation fields:
 | `inverse_relation` | the declared inverse of `forward_relation`, looked up when the query runs | `null` | the declared inverse (`informed_by`) |
 
 `inverse_relation: null` means no inverse is declared for that relation. That
-is true of a custom relation, and also of some relations Pyrite writes itself:
-`transclusion` and `references` (written by the indexer for `![[...]]` and
-object-reference fields) and the legacy default `related` are not declared
-relationship types today, so their rows read `relation: related_to`,
-`inverse_relation: null`.
+is true of an undeclared custom relation. Core-written `transclusion` (for
+`![[...]]`) and `references` (object-reference fields) have the declared
+inverses `transcluded_by` and `referenced_by`; those reverse names are declared
+too. The legacy spelling `related` is an alias of `related_to`, with
+`inverse_relation: related_to`. `forward_relation` still preserves the spelling
+in the source. Existing stored rows are not rewritten: their `relation` can
+remain `related_to` until reindexing, while `inverse_relation` already reports
+the current declared inverse. A plugin declaration of the same name takes
+precedence over a core declaration, as for other relationship types.
 
 A stale row is the last column: a plugin declares `informs` after the link was
 indexed. `relation` is a stored column and keeps `related_to`;

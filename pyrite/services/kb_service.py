@@ -3775,7 +3775,7 @@ class KBService:
 
     def _parse_change_entry(self, kb_path: Path, file_path: str, change_type: str) -> dict:
         """Parse an entry file to extract metadata for a change record."""
-        import subprocess
+        from ..services.git_service import GitService
 
         result = {
             "change_type": change_type,
@@ -3801,24 +3801,15 @@ class KBService:
 
         # Get previous content (for modified/deleted)
         if change_type in ("modified", "deleted"):
-            try:
-                proc = subprocess.run(
-                    ["git", "show", f"HEAD:{file_path}"],
-                    cwd=str(kb_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                if proc.returncode == 0:
-                    result["previous_body"] = proc.stdout
-                    if change_type == "deleted":
-                        meta = self._extract_frontmatter(proc.stdout)
-                        if meta:
-                            result["title"] = meta.get("title", file_path)
-                            result["entry_type"] = meta.get("type", "unknown")
-                            result["entry_id"] = meta.get("id")
-            except Exception:
-                pass
+            previous = GitService.show(kb_path, file_path)
+            if previous is not None:
+                result["previous_body"] = previous
+                if change_type == "deleted":
+                    meta = self._extract_frontmatter(previous)
+                    if meta:
+                        result["title"] = meta.get("title", file_path)
+                        result["entry_type"] = meta.get("type", "unknown")
+                        result["entry_id"] = meta.get("id")
 
         return result
 
