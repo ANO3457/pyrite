@@ -3585,7 +3585,9 @@ class KBService:
     # Hooks
     # =========================================================================
 
-    def _run_hooks(self, hook_name: str, entry: Entry, context: dict) -> Entry:
+    def _run_hooks(
+        self, hook_name: str, entry: Entry, context: PluginContext | dict[str, Any]
+    ) -> Entry:
         """Run core hooks then plugin hooks, both via HookRunner.
 
         Hook ordering:

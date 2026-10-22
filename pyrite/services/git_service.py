@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import TypedDict
 from urllib.parse import urlparse
 
 from ..exceptions import InvalidGitRefError
@@ -156,6 +157,15 @@ UNKNOWN = "unknown"
 # exit code is the fact; stderr is never classified, because git words
 # "path absent from a readable commit" and "commit unreadable" alike (#453).
 READ_BLOB_ARGV = ("git", "cat-file", "blob", "--end-of-options")
+
+
+class GitWorkingTreeStatus(TypedDict):
+    """Git working tree status shape returned by GitService.get_status (#1047)."""
+
+    clean: bool
+    staged: list[str]
+    unstaged: list[str]
+    untracked: list[str]
 
 
 class GitService:
@@ -1266,13 +1276,18 @@ class GitService:
             return False, f"Push failed: {GitService.sanitize_error(str(e), token)}"
 
     @staticmethod
-    def get_status(local_path: Path) -> dict:
+    def get_status(local_path: Path) -> GitWorkingTreeStatus:
         """
         Get git working tree status.
 
         Returns dict with: clean (bool), staged (list), unstaged (list), untracked (list)
         """
-        result = {"clean": True, "staged": [], "unstaged": [], "untracked": []}
+        result: GitWorkingTreeStatus = {
+            "clean": True,
+            "staged": [],
+            "unstaged": [],
+            "untracked": [],
+        }
 
         if not GitService.is_git_repo(local_path):
             return result
