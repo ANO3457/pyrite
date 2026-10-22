@@ -9,6 +9,7 @@ Orchestrates QA operations by delegating to focused services:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -190,6 +191,7 @@ class QAService:
         self._check_invalid_dates(issues, kb_name)
         self._check_importance_range(issues, kb_name)
         self._check_broken_links(issues, kb_name, readable_kbs=readable_kbs)
+        self._check_task_references(issues, kb_name, readable_kbs=readable_kbs)
         self._check_orphans(issues, kb_name, readable_kbs=readable_kbs)
 
         # Rubric evaluation pass (index only)
@@ -933,6 +935,124 @@ class QAService:
                     ),
                 }
             )
+
+    def _check_task_references(
+        self,
+        issues: list[dict[str, Any]],
+        kb_name: str,
+        *,
+        readable_kbs: set[str] | None,
+    ) -> None:
+        """Check a task's ``dependencies`` and deliverable references (#935).
+
+        The deliverable is ``produces`` or ``deliverable`` in the task's
+        fields, a string or a list. A reference is a bare id in the task's KB
+        or ``kb:id``, resolved like a wikilink: the readable KB with that full
+        name, then the readable KB with that shortname (P-R5). A reference
+        that does not resolve is an ``error``. A deliverable that resolves to
+        an entry which is not itself a task, while the task is still open, is
+        a ``warning``: the work may be done. A task that names itself as its
+        deliverable is ignored.
+        """
+        rows = self.db.execute_sql(
+            "SELECT id, status, metadata FROM entry "
+            "WHERE kb_name = :kb_name AND entry_type = 'task'",
+            {"kb_name": kb_name},
+        )
+
+        # (task id, field, raw reference, target KB, target id, resolvable)
+        refs: list[tuple[str, str, str, str, str, bool]] = []
+        for row in rows:
+            metadata = row["metadata"] or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError):
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            status = row["status"] or metadata.get("status") or "open"
+            if status != "open":
+                continue
+            for field in ("dependencies", "produces", "deliverable"):
+                value = metadata.get(field)
+                values = value if isinstance(value, list) else [value]
+                for raw in values:
+                    if not isinstance(raw, str) or not raw.strip():
+                        continue
+                    raw = raw.strip()
+                    prefix, sep, rest = raw.partition(":")
+                    if sep:
+                        target = self.config.readable_kb_named(
+                            prefix, readable_kbs=readable_kbs
+                        )
+                        if target is None:
+                            target_kb, target_id, resolvable = prefix, rest, False
+                        else:
+                            target_kb, target_id, resolvable = target.name, rest, True
+                    else:
+                        target_kb, target_id, resolvable = kb_name, raw, True
+                    if (
+                        field in ("produces", "deliverable")
+                        and target_kb == kb_name
+                        and target_id == row["id"]
+                    ):
+                        continue
+                    refs.append((row["id"], field, raw, target_kb, target_id, resolvable))
+
+        if not refs:
+            return
+
+        # One lookup per target KB, not one per reference.
+        wanted: dict[str, set[str]] = {}
+        for _, _, _, target_kb, target_id, resolvable in refs:
+            if resolvable:
+                wanted.setdefault(target_kb, set()).add(target_id)
+        existing: dict[tuple[str, str], str] = {}
+        for target_kb, ids in wanted.items():
+            params: dict[str, Any] = {"kb": target_kb}
+            placeholders = []
+            for index, target_id in enumerate(sorted(ids)):
+                key = f"id_{index}"
+                params[key] = target_id
+                placeholders.append(f":{key}")
+            for row in self.db.execute_sql(
+                "SELECT id, entry_type FROM entry "
+                f"WHERE kb_name = :kb AND id IN ({', '.join(placeholders)})",
+                params,
+            ):
+                existing[(target_kb, row["id"])] = row["entry_type"]
+
+        for task_id, field, raw, target_kb, target_id, resolvable in refs:
+            entry_type = existing.get((target_kb, target_id)) if resolvable else None
+            if entry_type is None:
+                issues.append(
+                    {
+                        "entry_id": task_id,
+                        "kb_name": kb_name,
+                        "rule": "task_references",
+                        "severity": "error",
+                        "field": field,
+                        "message": (
+                            f"Task '{task_id}' is open, but its {field} '{raw}' "
+                            "resolves to no entry"
+                        ),
+                    }
+                )
+            elif field in ("produces", "deliverable") and entry_type != "task":
+                issues.append(
+                    {
+                        "entry_id": task_id,
+                        "kb_name": kb_name,
+                        "rule": "task_references",
+                        "severity": "warning",
+                        "field": field,
+                        "message": (
+                            f"Task '{task_id}' is open, but its {field} '{raw}' "
+                            f"already exists ({entry_type}); the work may be done"
+                        ),
+                    }
+                )
 
     def _check_orphans(
         self,
