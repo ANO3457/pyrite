@@ -48,6 +48,9 @@ pre-commit install
 scripts/setup-checkout.sh
 pyrite kb list   # the `pyrite` KB path must be this checkout's kb/
 
+# Verify imports resolve to this checkout, including every extension
+.venv/bin/python scripts/check_checkout_imports.py
+
 # Verify installation
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/*/tests/ -n 4 -q
 ```
