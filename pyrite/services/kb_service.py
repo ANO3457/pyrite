@@ -1954,7 +1954,13 @@ class KBService:
                 raise ValidationError(
                     f"Cannot update '{entry_id}': the result would not load ({e})"
                 ) from e
-            if new_entry.entry_type == "task" and getattr(new_entry, "status", None) == "claimed":
+            # Refuse a transition into claimed, not edits which preserve an
+            # existing claim after its children have since finished.
+            if (
+                new_entry.entry_type == "task"
+                and getattr(new_entry, "status", None) == "claimed"
+                and old_status != "claimed"
+            ):
                 refusal = self._refuse_claim_of_complete_task(entry_id, kb_name)
                 if refusal:
                     raise ValidationError(refusal["error"])

@@ -141,3 +141,29 @@ def test_open_parent_with_unresolved_child_cannot_skip_to_done(tmp_path):
         assert (path / "tasks/parent.md").read_bytes() == before
     finally:
         db.close()
+
+
+@pytest.mark.parametrize(
+    "field,value", [("title", "Updated parent title"), ("body", "Updated notes.")]
+)
+@pytest.mark.parametrize("operations", [False, True])
+def test_unrelated_edit_of_claimed_complete_parent_is_allowed(tmp_path, field, value, operations):
+    config, path = _build(tmp_path, {"parent": ("claimed", ""), "child": ("done", "parent")})
+    db = PyriteDB(config.settings.index_path)
+    try:
+        svc = KBService(config, db)
+        if operations:
+            from pyrite.storage.file_operations import ReplaceBody, Set
+
+            op = ReplaceBody(value) if field == "body" else Set(field, value)
+            written = svc.apply_operations("parent", "work", [op])
+        else:
+            written = svc.update("parent", "work", {field: value})
+        assert written.changed
+        assert written.entry.status == "claimed"
+        assert getattr(written.entry, field).strip() == value
+        stored = (path / "tasks/parent.md").read_text(encoding="utf-8")
+        assert value in stored
+        assert db.get_entry("parent", "work")["status"] == "claimed"
+    finally:
+        db.close()
