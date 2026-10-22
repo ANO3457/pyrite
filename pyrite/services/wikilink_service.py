@@ -212,13 +212,20 @@ class WikilinkService:
             return {}
         result: dict[str, bool] = {}
 
+        # Resolve target KB if shortname or prefix is supplied
+        actual_kb = kb_name
+        if kb_name:
+            actual_kb = self._prefixed_kb(kb_name, readable_kbs)
+            if not actual_kb:
+                return dict.fromkeys(targets, False)
+
         # Separate cross-KB targets from same-KB targets
         simple_targets = []
         for t in targets:
             if ":" in t and not t.startswith("http"):
                 # Resolve cross-KB targets individually
                 try:
-                    resolved = self.resolve_entry(t, kb_name, readable_kbs=readable_kbs)
+                    resolved = self.resolve_entry(t, actual_kb, readable_kbs=readable_kbs)
                 except AmbiguousEntryError:
                     resolved = {}  # held by several KBs: it exists
                 result[t] = resolved is not None
@@ -229,9 +236,9 @@ class WikilinkService:
             placeholders = ",".join([f":t{i}" for i in range(len(simple_targets))])
             sql = f"SELECT id FROM entry WHERE id IN ({placeholders})"
             params: dict[str, Any] = {f"t{i}": t for i, t in enumerate(simple_targets)}
-            if kb_name:
+            if actual_kb:
                 sql += " AND kb_name = :kb_name"
-                params["kb_name"] = kb_name
+                params["kb_name"] = actual_kb
             scope_sql, scope_params = _scope_clause("kb_name", readable_kbs)
             sql += scope_sql
             params.update(scope_params)
