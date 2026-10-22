@@ -16,17 +16,26 @@ from ..exceptions import (
     KBDefinedInConfigError,
     KBNotFoundError,
     KBProtectedError,
+    ValidationError,
 )
 from ..storage.database import PyriteDB
 from ..storage.index import IndexManager
 from .credential_events import announce_kb_policy_change
-from .site_cache import drop_kb_site_pages
 
 logger = logging.getLogger(__name__)
 
 
+KB_TYPE_REQUIRED = (
+    "kb_type cannot be cleared: a KB always has a type. "
+    "Omit kb_type to keep it, or send the type to change it to."
+)
+
+
 class KBRegistryService:
     """Unified KB registry backed by the DB kb table."""
+
+    #: The row fields `update_kb` changes.
+    UPDATABLE_FIELDS = frozenset({"description", "kb_type", "default_role"})
 
     def __init__(self, config: PyriteConfig, db: PyriteDB, index_mgr: IndexManager | None = None):
         # `index_mgr` is needed only by the operations that index (add, reindex,
@@ -86,12 +95,62 @@ class KBRegistryService:
         self.db.merge_registered_kbs(self.config)
         return count
 
-    def list_kbs(self, type_filter: str | None = None) -> list[dict[str, Any]]:
-        """List all KBs from DB, enriched with config metadata."""
-        from sqlalchemy import text
+    def list_kbs(
+        self,
+        type_filter: str | None = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        kb_names: set[str] | None = None,
+        include_yaml_origin: bool = True,
+    ) -> list[dict[str, Any]]:
+        """List KBs from the registry, optionally filtering and paging in SQL."""
+        from sqlalchemy import bindparam, text
 
-        query = "SELECT * FROM kb ORDER BY name"
-        rows = self.db.session.execute(text(query)).fetchall()
+        if limit is not None and (
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 1
+        ):
+            raise ValueError("limit must be a positive integer")
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 0
+            or (offset and limit is None)
+        ):
+            raise ValueError("offset requires a non-negative offset and a limit")
+        if kb_names is not None and not kb_names:
+            return []
+
+        clauses = []
+        params: dict[str, Any] = {}
+        if type_filter:
+            clauses.append("kb.kb_type = :type_filter")
+            params["type_filter"] = type_filter
+        if kb_names is not None:
+            clauses.append("kb.name IN :kb_names")
+            params["kb_names"] = sorted(kb_names)
+
+        query = (
+            "SELECT kb.*, COALESCE(entry_counts.entry_count, 0) AS live_entry_count "
+            "FROM kb LEFT JOIN ("
+            "SELECT kb_name, COUNT(DISTINCT id) AS entry_count "
+            "FROM entry GROUP BY kb_name"
+            ") AS entry_counts ON entry_counts.kb_name = kb.name"
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY name"
+        if limit is not None:
+            query += " LIMIT :limit"
+            params["limit"] = limit
+            if offset:
+                query += " OFFSET :offset"
+                params["offset"] = offset
+
+        statement = text(query)
+        if kb_names is not None:
+            statement = statement.bindparams(bindparam("kb_names", expanding=True))
+        rows = self.db.session.execute(statement, params).fetchall()
 
         result = []
         for row in rows:
@@ -106,14 +165,15 @@ class KBRegistryService:
                 "source": r.get("source", "user"),
                 "read_only": cfg.read_only if cfg else False,
                 "shortname": cfg.shortname if cfg else None,
-                "entries": r.get("entry_count", 0) or 0,
+                "entries": r.get("live_entry_count", 0) or 0,
                 "indexed": bool(r.get("last_indexed")),
                 "last_indexed": r.get("last_indexed"),
                 "default_role": r.get("default_role"),
-                "default_role_editable": self._yaml_origin(r["name"], r.get("repo_id")) != "hand",
             }
-            if type_filter and kb_info["type"] != type_filter:
-                continue
+            if include_yaml_origin:
+                kb_info["default_role_editable"] = (
+                    self._yaml_origin(r["name"], r.get("repo_id")) != "hand"
+                )
             result.append(kb_info)
         return result
 
@@ -151,12 +211,16 @@ class KBRegistryService:
 
         If ``kb_type`` matches a registered plugin preset, the preset is
         materialized into the KB directory (kb.yaml, subdirectories, templates).
+        A directory that already has a kb.yaml is registered as it stands and
+        nothing is written inside it (#945).
 
         Raises KBAlreadyExistsError (a ConfigError) if a KB with the same
         name already exists.
         """
         from ..storage.models import KB
+        from .kb_names import refuse_reserved_kb_name
 
+        refuse_reserved_kb_name(name)
         existing = self.db.session.get(KB, name)
         if existing:
             raise KBAlreadyExistsError(f"KB '{name}' already exists")
@@ -219,6 +283,14 @@ class KBRegistryService:
         if not preset:
             return
 
+        # A kb.yaml means this directory is already a KB (#945), so it is being
+        # registered, not created. Registering must not write inside it: Pyrite
+        # is additive to hand maintenance, and a scaffold belongs to `init` or
+        # to an explicit request, not to registering what is already there.
+        if (kb_path / "kb.yaml").exists():
+            logger.info("KB '%s' already has a kb.yaml, leaving its files alone", name)
+            return
+
         logger.info("Applying preset '%s' to KB '%s'", kb_type, name)
 
         # Build kb.yaml content
@@ -252,11 +324,10 @@ class KBRegistryService:
         if types_section:
             kb_yaml["types"] = types_section
 
-        # Write kb.yaml
+        # Write kb.yaml. Absent by the early return above, so no guard here.
         kb_yaml_path = kb_path / "kb.yaml"
-        if not kb_yaml_path.exists():
-            dump_yaml_file(kb_yaml, kb_yaml_path)
-            logger.info("Wrote kb.yaml for KB '%s'", name)
+        dump_yaml_file(kb_yaml, kb_yaml_path)
+        logger.info("Wrote kb.yaml for KB '%s'", name)
 
         # Create subdirectories
         for dirname in preset.get("directories", []):
@@ -319,7 +390,6 @@ class KBRegistryService:
         self.db.unregister_kb(name)
         self.config.forget_db_kb(name)
         announce_kb_policy_change(name)
-        drop_kb_site_pages(self.config, self.db, name)
         return True
 
     def update_kb(self, name: str, **updates: Any) -> dict[str, Any]:
@@ -332,23 +402,39 @@ class KBRegistryService:
         its row. A KB the server itself wrote into config.yaml (ephemeral,
         repo-subscribed) has its entry there, which the server rewrites with
         the row. A KB an operator wrote into config.yaml by hand is theirs:
-        the change is refused (`KBDefinedInConfigError`, naming the file)
-        rather than reported as done and overridden by the file.
+        any metadata edit is refused (`KBDefinedInConfigError`, naming the
+        file) rather than reported as done and overridden by the file. Every
+        entry save and sync rewrites such a row from that file, so accepting
+        the edit would only make the value vanish on the next reindex (#1116).
         """
         from ..config import CONFIG_WRITE_LOCK, current_config_file, save_config
         from ..storage.models import KB
+
+        # Refuse before anything is written, so none of the request is applied.
+        # A key outside `UPDATABLE_FIELDS` is a caller's typo, never dropped
+        # silently; a KB always has a type, so `kb_type` is never null or blank.
+        unknown = sorted(set(updates) - self.UPDATABLE_FIELDS)
+        if unknown:
+            raise ValidationError(
+                f"Unknown KB field(s) {', '.join(repr(k) for k in unknown)}: "
+                f"accepted fields are {', '.join(sorted(self.UPDATABLE_FIELDS))}"
+            )
+        if "kb_type" in updates and not (
+            isinstance(updates["kb_type"], str) and updates["kb_type"].strip()
+        ):
+            raise ValidationError(KB_TYPE_REQUIRED)
 
         kb = self.db.session.get(KB, name)
         if not kb:
             raise KBNotFoundError(f"KB '{name}' not found")
 
         origin = self._yaml_origin(name, kb.repo_id)
-        if "default_role" in updates and origin == "hand":
+        if origin == "hand" and updates:
             raise KBDefinedInConfigError(
-                f"KB '{name}' is defined by hand in {current_config_file().name}, which sets "
-                "its default_role. Change default_role there and restart the server."
+                f"KB '{name}' is defined by hand in {current_config_file().name}, which is "
+                f"the source of truth for its metadata. Change {', '.join(sorted(updates))} "
+                "there and restart the server."
             )
-        allowed = {"description", "kb_type", "default_role"}
         if "default_role" in updates and (
             self.config.confined_default_role(updates["default_role"]) != updates["default_role"]
         ):
@@ -364,8 +450,7 @@ class KBRegistryService:
         # change to the file while it may still be rolled back.
         with CONFIG_WRITE_LOCK:
             for key, value in updates.items():
-                if key in allowed:
-                    setattr(kb, key, value)
+                setattr(kb, key, value)
             if "default_role" in updates and written is not None:
                 # The server's own config.yaml entry is this KB's policy:
                 # rewrite it first, so a refused save leaves neither changed.
@@ -381,7 +466,6 @@ class KBRegistryService:
         self._refresh_config_view()
         if "default_role" in updates and updates["default_role"] != role_before:
             announce_kb_policy_change(name)
-            drop_kb_site_pages(self.config, self.db, name)
         return self.get_kb(name)  # type: ignore[return-value]
 
     def _yaml_origin(self, name: str, repo_id: int | None) -> str:
@@ -426,7 +510,8 @@ class KBRegistryService:
         """Reindex a specific KB. Works for both config and user KBs.
 
         The one reconcile (``IndexManager.sync_kb``): ``added``, ``updated``,
-        ``removed``, ``malformed`` and ``duplicates``.
+        ``removed``, ``malformed``, non-regular ``skipped`` files and
+        ``duplicates``.
         """
         # Try config first
         kb_config = self.config.get_kb(name)
@@ -458,6 +543,10 @@ class KBRegistryService:
 
         entry_count = kb.entry_count or 0
         healthy = path_exists and abs(file_count - entry_count) <= max(1, entry_count * 0.1)
+        from ..storage.index import IndexManager
+
+        cfg = self.get_kb_config(name)
+        drift = IndexManager(self.db, self.config)._type_name_drift([cfg] if cfg else [])
 
         return {
             "name": name,
@@ -468,6 +557,7 @@ class KBRegistryService:
             "entry_count": entry_count,
             "last_indexed": kb.last_indexed,
             "source": kb.source or "user",
+            **drift,
         }
 
     def get_kb_config(self, name: str) -> KBConfig | None:
@@ -476,12 +566,24 @@ class KBRegistryService:
         cfg = self.config.get_kb(name)
         if cfg:
             return cfg
+        return self.user_kb_config(name)
 
-        # Build from DB row
+    def user_kb_config(self, name: str) -> KBConfig | None:
+        """The KB `name` as ``pyrite kb add`` registered it: built from its
+        ``kb`` row, or None.
+
+        Only a row whose ``source`` is not ``config``. The server seeds a
+        ``config`` row for every config.yaml KB (`seed_from_config`), and
+        that row carries none of the entry's attributes -- no ``read_only``,
+        no ``shortname`` -- so it never stands in for the entry: a config
+        that does not define the KB does not find it here either (#952
+        review, blocking 1). The resolver (`services/kb_resolver.py`) asks
+        this after the config it was given.
+        """
         from ..storage.models import KB
 
         kb = self.db.session.get(KB, name)
-        if not kb:
+        if not kb or (kb.source or "user") == "config":
             return None
 
         # The same confinement as loading the registry: a row refused there

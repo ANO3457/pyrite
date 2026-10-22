@@ -1,6 +1,5 @@
 """The documented first lookups work with a fresh or out-of-date index."""
 
-import json
 import re
 import shlex
 import shutil
@@ -21,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def lookup_commands():
     section = (
-        (ROOT / "CLAUDE.md")
+        (ROOT / "AGENTS.md")
         .read_text(encoding="utf-8")
         .split("### Quick Context Lookups", 1)[1]
         .split("### When to Use", 1)[0]
@@ -36,7 +35,7 @@ def lookup_commands():
 
 def test_first_lookup_is_incremental_sync_and_entrypoints_read_by_path():
     assert lookup_commands()[0] == ["index", "sync", "-k", "pyrite", "--no-embed"]
-    assert "by path" in (ROOT / "CLAUDE.md").read_text(encoding="utf-8").split("## Using", 1)[0]
+    assert "by path" in (ROOT / "AGENTS.md").read_text(encoding="utf-8").split("## Using", 1)[0]
     start = (ROOT / "AGENTS.md").read_text(encoding="utf-8").split("## Start here", 1)[1]
     assert start.index("kb/design.md") < start.index("pyrite orient")
 
@@ -94,8 +93,16 @@ def test_documented_commands_find_current_pages(tmp_path, stale, monkeypatch):
         result = CliRunner().invoke(app, args)
         assert result.exit_code == 0, (args, result.output)
         if args[:2] != ["index", "sync"]:
-            results.append((args, json.loads(result.stdout)))
-    assert any(args[:2] == ["get", "design"] and body["id"] == "design" for args, body in results)
-    assert any(
-        args[:2] == ["get", "adr-0042"] and body["id"] == "adr-0042" for args, body in results
-    )
+            results.append((args, result.stdout))
+    pages = {
+        "design": "design.md",
+        "adr-0042": "adrs/0042-a-write-changes-what-was-asked-and-nothing-else.md",
+    }
+    for entry_id, relative in pages.items():
+        page = (kb_path / relative).read_text(encoding="utf-8")
+        title = yaml.safe_load(page.split("---", 2)[1])["title"]
+        assert any(
+            args[:2] == ["get", entry_id]
+            and " ".join(str(title).split()) in " ".join(output.split())
+            for args, output in results
+        ), (entry_id, results)

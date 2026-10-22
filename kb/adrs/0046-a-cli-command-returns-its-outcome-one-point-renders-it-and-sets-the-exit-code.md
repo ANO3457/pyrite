@@ -64,14 +64,30 @@ the same root (`pyrite/cli/__init__.py`, `get_all_cli_commands`).
 3. **One point renders both.** `PyriteCLIGroup.invoke` takes the leaf's
    return value or exception and is the only place that prints a result in
    the requested format, renders a refusal in the canonical error shape
-   (`cli_error_from`), and sets the exit code: `done` 0, `partial` 3,
-   `nothing` 1, refusal 1, usage 2 (click). `pyrite-read` adopts the same
-   group. A command that returns `None` has rendered itself; that is the
-   legacy path, allowed only for commands on a list that may only shrink.
+   (plus `"outcome": "error"`), and sets the exit code: `done` 0, `partial`
+   3, `nothing` 1, refusal 1, usage 2 (click). `pyrite-read` adopts the same
+   group. A command that declares the shared `--format` option is on the
+   contract: if it returns anything but an `Outcome` (`None` included), the
+   root answers `NO_OUTCOME`, exit 1, never a silent 0 (decision 6 gives the
+   whole rule). A command that declares no shared option and returns `None`
+   has rendered itself; that is the legacy path, allowed only for commands
+   counted in a table that may only shrink, and for plugins (decision 5).
+
+   *Transitional:* a `ValueError` out of a command on the contract is
+   rendered as code `ERROR`, exit 1, as every CLI command rendered it before,
+   with the original traceback logged at DEBUG. This ends when the services
+   those commands call raise `ValidationError` (or another `PyriteError`)
+   for bad input; then the root stops catching `ValueError`.
 4. **The registry is the enumeration.** A test walks every registered command
-   of the three CLIs and requires its callback to be annotated `-> Outcome`,
-   or to be on the legacy list. A module with no legacy command may not call
-   `typer.Exit`, `sys.exit`, `cli_error` or `exit_unless_whole`.
+   of the three CLIs. One that declares the shared `--format` is annotated
+   `-> Outcome` and has no parameter callback of its own (a callback runs
+   while click parses, before the root watches). One that does not is
+   counted, per module, in a table that must match the registry exactly: the
+   number of legacy commands moves only in a diff a reviewer sees, a slice
+   lowers it, and a new command is on the contract unless someone raises it.
+   What a command on the contract may do is not a list of calls a scan looks
+   for. That was this decision's first form; the amendment below replaces it
+   with decision 6, enforced when the command runs.
 5. **The plugin CLI contract gains `Outcome`.** ADR-0040's "CLI helpers" row
    becomes `cli_error` and `Outcome`. A plugin command may keep returning
    `None` (it then owns its output and exit code, as today); one that returns
@@ -79,15 +95,22 @@ the same root (`pyrite/cli/__init__.py`, `get_all_cli_commands`).
 
 ## Questions this ADR leaves open
 
-- Does a machine-format payload of a `partial` or `nothing` outcome carry an
-  `outcome` key (`"partial"`), so a caller that cannot see the exit code can
-  tell? Recommended: yes, additive, for dict payloads; decided before the
-  first slice that changes a payload, not in the first slice.
 - Is a lost `task claim` a `nothing` (today: payload `{"claimed": false}`,
   exit 1) or a refusal with a code? Kept as `nothing` until decided.
-- Where the format comes from: the leaf's own `--format` parameter until #303
-  lands its shared option (`PYRITE_FORMAT`, JSON default, no `-f`); then that
-  option, declared once.
+
+## Questions decided (maintainer, 2026-10-08, PR #790)
+
+- **The `outcome` key:** yes, additive. A machine-format payload carries
+  `"outcome"`: `done`, `partial`, `nothing`, or `error` on a refusal's error
+  shape.
+- **Where the format comes from:** #303 folds in. One shared `--format`
+  option (`pyrite/cli/output.py`): JSON by default, `PYRITE_FORMAT` sets a
+  person's default, no `-f` (accepted with a warning for one release where
+  it meant `--format`; `-f` with `--format` is a usage error). Each slice
+  applies it to the module it migrates; the option writes the format to
+  `ctx.meta`, where the root reads it.
+- **Check commands:** exit 0 when clean and 1 when they fail; warnings never
+  change the exit code. A module adopts this when its slice migrates it.
 
 ## Consequences
 
@@ -208,3 +231,74 @@ is never a valid answer.
   auth commands). Options: they stay legacy; they require `--yes` and refuse
   without it; or the root offers the one way to ask, on stderr.
 - **Usage errors from the body**: strict (above, recommended) or allowed.
+
+## Formats beyond json, yaml and rich (amendment 2026-10-13; accepted by the maintainer, 2026-10-13)
+
+Slice 3 (reads) was dispatched and stopped before code: the shared format
+option accepts `json`, `yaml` and `rich`, and the read commands also offer
+`markdown` and `csv`. The groom of 2026-10-13 in the backlog item
+(`one-cli-outcome-contract-commands-return-an-outcome-one-emitter-decides-output`,
+"Groom 2026-10-13: formats a migrated read command offers") gives the
+options. The maintainer decided two things.
+
+1. **A format beyond json, yaml and rich is offered only by a command that
+   declares a shape the root can print.** A command that declares a table
+   offers `csv` and `markdown`; a command that declares an entry offers
+   `markdown`. The root writes those formats from the declared rows and
+   columns; a command never serialises them itself. `Table` and the option
+   constants join the plugin CLI contract (ADR-0040). A format a command
+   does not offer is a usage error (exit 2).
+2. **`pyrite-read` defaults to `json`**, as #303 decided for every command
+   and slice 1 applied to `task`. `--format rich` or `PYRITE_FORMAT=rich`
+   gives text. There is no default per entry point.
+
+### Consequences of this amendment
+
+- List output in markdown becomes a pipe table; `backlinks` in csv gains the
+  relation columns; `get --format csv`, and csv or markdown on `orient` and
+  `collections list`, become exit 2. Each is a public change and is stated
+  in the changelog fragment of the slice that makes it.
+- `pyrite-read`'s default output changes from rich text to JSON for the
+  five commands that printed rich text.
+- Outside PR #721 (ordered fields across csv and markdown) supplies the
+  table writer and lands before slice 3b, or is carried with credit.
+
+### Open questions this amendment leaves (decided in-slice unless the evidence disagrees)
+
+- A refusal under `csv` stays the JSON error shape, as today.
+- A `PYRITE_FORMAT` value the command does not offer falls back to `json`
+  instead of exit 2.
+
+## Amendment 2026-10-15 (maintainer decision): usage errors are JSON refusals on stdout, exit 2
+
+Decided by the maintainer on 2026-10-15, on #303. This replaces decision 7's
+"click's handling until the body starts" for usage errors, and the spike's
+earlier recommendation (plain text on stderr, stdout empty).
+
+A usage error on any command (unknown option, missing argument, bad choice,
+unknown command, an unknown `--format`, `-f` together with `--format`) prints
+one refusal document on stdout and exits 2. It is the envelope a refusal from
+a command body uses (`"outcome": "error"`, `error`, `error_code`, `retryable`,
+`suggestion`) with `error_code` `USAGE_ERROR`, in the format asked for
+(`--format` as typed, else `PYRITE_FORMAT`, else json). The output never
+depends on a terminal. stderr may carry one plain line for a person, never a
+Rich box or an ANSI escape. `--help` is not an error: exit 0, human text.
+
+`PyriteCLIGroup` enforces it in one place (`make_context` and `invoke`), for
+the three roots and every plugin group under them, on the contract or legacy.
+It answers the error itself, as a `typer.Exit(2)`, before Typer's own handler
+sees it, so the document does not depend on how Typer would have drawn the
+error (a Rich box, click's plain lines under `TYPER_USE_RICH=0`, or rich not
+installed). A run with `standalone_mode=False` still gets the exception.
+`tests/test_cli_usage_error_plain.py` walks the registry in process and enters
+the real entry point per root.
+
+A `ClickException` that is not a usage error (one a command raises) is the same
+document with `error_code` `ERROR` and the exception's own exit code (1).
+`NoArgsIsHelpError` (a bare root, `no_args_is_help`) is help, not an error, and
+prints help as before. `Abort` (Ctrl-C or EOF at a prompt) is not a usage error: exit 1, `Aborted!` on
+stderr, nothing on stdout.
+
+Consequence: a caller that reads stdout gets a JSON document for every exit
+code the CLI has, except `Abort` at a prompt (exit 1, `Aborted!` on stderr, no
+document), and exit 2 means "usage" without parsing stderr.

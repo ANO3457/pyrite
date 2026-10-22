@@ -4,11 +4,15 @@ Headless KB init command.
 Creates a new knowledge base from a template with zero prompts.
 """
 
+import copy
 import logging
 from pathlib import Path
 
 import typer
 from rich.console import Console
+
+from ..models.task import TASK_KB_PRESET
+from .output import validate_output_format
 
 logger = logging.getLogger(__name__)
 
@@ -32,49 +36,160 @@ BUILTIN_TEMPLATES = {
                 "required": ["title"],
                 "optional": ["adr_number", "status", "deciders", "date", "superseded_by"],
                 "subdirectory": "adrs/",
+                "fields": {
+                    "status": {
+                        "type": "select",
+                        "options": ["proposed", "accepted", "rejected", "deprecated", "superseded"],
+                    }
+                },
             },
             "design_doc": {
                 "description": "Design document or specification",
                 "required": ["title"],
                 "optional": ["status", "reviewers", "date", "author", "url"],
                 "subdirectory": "designs/",
+                "fields": {
+                    "status": {
+                        "type": "select",
+                        "options": [
+                            "draft",
+                            "review",
+                            "approved",
+                            "implemented",
+                            "obsolete",
+                            "active",
+                        ],
+                    }
+                },
             },
             "standard": {
                 "description": "Coding standard or convention",
                 "required": ["title"],
                 "optional": ["category", "enforced"],
                 "subdirectory": "standards/",
+                "fields": {
+                    "category": {
+                        "type": "select",
+                        "options": [
+                            "coding",
+                            "testing",
+                            "api",
+                            "git",
+                            "documentation",
+                            "security",
+                            "deployment",
+                        ],
+                    }
+                },
             },
             "component": {
                 "description": "Module or service documentation",
                 "required": ["title"],
                 "optional": ["kind", "path", "owner", "dependencies"],
                 "subdirectory": "components/",
+                "fields": {
+                    "kind": {
+                        "type": "select",
+                        "options": [
+                            "module",
+                            "service",
+                            "package",
+                            "library",
+                            "cli",
+                            "api",
+                            "database",
+                            "application",
+                            "utility",
+                            "endpoint",
+                            "docs",
+                        ],
+                    }
+                },
             },
             "backlog_item": {
                 "description": "Feature, bug, or tech debt item",
                 "required": ["title"],
                 "optional": ["kind", "status", "priority", "assignee", "effort"],
                 "subdirectory": "backlog/",
+                "fields": {
+                    "status": {
+                        "type": "select",
+                        "options": [
+                            "proposed",
+                            "planned",
+                            "accepted",
+                            "in_progress",
+                            "review",
+                            "done",
+                            "retired",
+                            "deferred",
+                            "superseded",
+                            "wont_do",
+                        ],
+                    },
+                    "kind": {
+                        "type": "select",
+                        "options": [
+                            "feature",
+                            "bug",
+                            "tech_debt",
+                            "improvement",
+                            "spike",
+                            "enhancement",
+                            "documentation",
+                            "docs",
+                            "task",
+                            "epic",
+                        ],
+                    },
+                    "priority": {
+                        "type": "select",
+                        "options": ["critical", "high", "medium", "low"],
+                    },
+                    "effort": {"type": "select", "options": ["XS", "S", "M", "L", "XL"]},
+                },
             },
             "runbook": {
                 "description": "How-to guide or operational procedure",
                 "required": ["title"],
                 "optional": ["runbook_kind", "audience"],
                 "subdirectory": "runbooks/",
+                "fields": {
+                    "runbook_kind": {
+                        "type": "select",
+                        "options": [
+                            "howto",
+                            "troubleshooting",
+                            "setup",
+                            "operations",
+                            "onboarding",
+                        ],
+                    }
+                },
             },
+            # #860: every template that ships task tooling must declare the
+            # `task` type so `pyrite task create` works out of the box.
+            "task": copy.deepcopy(TASK_KB_PRESET["types"]["task"]),
         },
         "policies": {"team_owned": True, "require_adr_number": True},
         # No rule enum on `status`: a rule applies to every type with the
         # field, and each type here has its own statuses. The software-kb
         # validator checks them per type only for a KB with
         # `kb_type: software`; `pyrite init` registers this one as generic,
-        # so no status vocabulary is enforced yet (#572).
+        # so its per-type fields above enforce the vocabulary.
         "validation": {
             "enforce": True,
             "rules": [],
         },
-        "directories": ["adrs", "designs", "standards", "components", "backlog", "runbooks"],
+        "directories": [
+            "adrs",
+            "designs",
+            "standards",
+            "components",
+            "backlog",
+            "runbooks",
+            "tasks",
+        ],
     },
     "zettelkasten": {
         "name": "my-zettelkasten",
@@ -92,6 +207,9 @@ BUILTIN_TEMPLATES = {
                 "optional": ["author", "page_refs"],
                 "subdirectory": "literature/",
             },
+            # #860: same rule as the software template — declare the `task`
+            # type so `pyrite task create` works in a fresh zettelkasten KB.
+            "task": copy.deepcopy(TASK_KB_PRESET["types"]["task"]),
         },
         "policies": {"private": True, "single_author": True},
         "validation": {
@@ -105,7 +223,7 @@ BUILTIN_TEMPLATES = {
                 },
             ],
         },
-        "directories": ["zettels", "literature"],
+        "directories": ["zettels", "literature", "tasks"],
     },
     "research": {
         "name": "my-research",
@@ -126,7 +244,7 @@ BUILTIN_TEMPLATES = {
             "person": {
                 "description": "Person profile",
                 "required": ["title"],
-                "optional": ["role", "affiliation"],
+                "optional": ["role", "affiliations"],
                 "subdirectory": "people/",
             },
             "organization": {
@@ -171,7 +289,7 @@ BUILTIN_TEMPLATES = {
             "person": {
                 "description": "People in the subject's network",
                 "required": ["title"],
-                "optional": ["role", "affiliation"],
+                "optional": ["role", "affiliations"],
                 "subdirectory": "people/",
             },
             "source": {
@@ -242,7 +360,7 @@ BUILTIN_TEMPLATES = {
             "person": {
                 "description": "People in the movement",
                 "required": ["title"],
-                "optional": ["role", "affiliation"],
+                "optional": ["role", "affiliations"],
                 "subdirectory": "people/",
             },
             "source": {
@@ -321,7 +439,10 @@ def init_kb(
         None, "--schema-file", help="Custom schema YAML file to use as preset override"
     ),
     output_format: str = typer.Option(
-        "json", "--format", help="Output format: json, rich, markdown, csv, yaml"
+        "json",
+        "--format",
+        callback=validate_output_format,
+        help="Output format: json, rich, markdown, csv, yaml",
     ),
 ):
     """Initialize a new knowledge base from a template.
@@ -330,12 +451,26 @@ def init_kb(
     and runs initial indexing. Zero interactive prompts.
     """
     from ..config import KBConfig, load_config, save_config
-    from ..storage.index import IndexManager
+    from ..services.kb_service import KBService
     from ..utils.yaml import dump_yaml_file, load_yaml_file
     from .context import open_index_db
 
     path = path.expanduser().resolve()
     kb_name = name or path.name
+    from ..exceptions import ConfigError
+    from ..services.kb_names import refuse_reserved_kb_name
+
+    try:
+        refuse_reserved_kb_name(kb_name)
+    except ConfigError as exc:
+        from ..utils.errors import cli_error
+
+        cli_error(str(exc), error_code="INVALID_KB_NAME")
+
+    if schema_file is not None:
+        from .context import input_file_or_exit
+
+        input_file_or_exit(schema_file, "Schema file", output_format)
 
     # Idempotency: if kb.yaml exists, warn and return
     kb_yaml_path = path / "kb.yaml"
@@ -355,15 +490,7 @@ def init_kb(
 
     # Resolve preset: try plugin presets first, fall back to built-in
     preset = None
-    if schema_file:
-        if not schema_file.exists():
-            from ..utils.errors import cli_error
-
-            cli_error(
-                f"Schema file not found: {schema_file}",
-                error_code="NOT_FOUND",
-                suggestion="check the --schema path",
-            )
+    if schema_file is not None:
         preset = load_yaml_file(schema_file)
     else:
         try:
@@ -415,15 +542,17 @@ def init_kb(
     # Index the KB
     entries_indexed = 0
     index_error: str | None = None
+    db = None
     try:
         config = load_config()  # reload to get the newly added KB
         db = open_index_db(config)
-        index_mgr = IndexManager(db, config)
-        entries_indexed = index_mgr.index_kb(kb_name)
-        db.close()
+        entries_indexed = KBService(config, db).index_kb(kb_name)
     except Exception as exc:
         logger.warning("Initial indexing failed for %s", kb_name, exc_info=True)
         index_error = str(exc) or type(exc).__name__
+    finally:
+        if db is not None:
+            db.close()
 
     # Result
     type_names = list(preset.get("types", {}).keys())

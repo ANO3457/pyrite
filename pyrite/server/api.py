@@ -24,7 +24,9 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from .. import __version__
 from ..config import PyriteConfig, Settings, load_config
+from ..exceptions import KBNotFoundError
 from ..services import access_policy
 from ..services.access_policy import (
     FORBIDDEN,
@@ -60,8 +62,6 @@ if TYPE_CHECKING:
     from ..services.auth_service import AuthService
     from ..services.embedding_worker import EmbeddingWorker
     from ..services.qa_service import QAService
-    from ..services.site_cache import SiteCacheService
-    from ..services.sitemap_service import SitemapService
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +154,7 @@ def get_kb_service(
     return KBService(config, db)
 
 
-def _drain_embed_queue(db: PyriteDB, *, label: str = "") -> int:
+def _drain_embed_queue(db: PyriteDB, *, label: str = "", model_name: str | None = None) -> int:
     """Embed everything a write left in `embed_queue`. Blocking; never raises.
 
     Thin alias for `services.embedding_worker.settle_embed_queue`, which is
@@ -163,7 +163,7 @@ def _drain_embed_queue(db: PyriteDB, *, label: str = "") -> int:
     """
     from ..services.embedding_worker import settle_embed_queue
 
-    return settle_embed_queue(db, label=label)
+    return settle_embed_queue(db, label=label, model_name=model_name)
 
 
 def get_task_service(
@@ -393,42 +393,14 @@ def get_qa_service(
     return QAService(config, db, llm_service=llm_service)
 
 
-def get_sitemap_service(
-    config: PyriteConfig = Depends(get_config),
-    db: PyriteDB = Depends(get_db),
-) -> "SitemapService":
-    """Get SitemapService instance via DI."""
-    from ..services.sitemap_service import SitemapService
-
-    return SitemapService(config, db)
-
-
 def get_embedding_worker(
+    config: PyriteConfig = Depends(get_config),
     db: PyriteDB = Depends(get_db),
 ) -> "EmbeddingWorker":
     """Get an EmbeddingWorker (the embed queue) via DI."""
     from ..services.embedding_worker import EmbeddingWorker
 
-    return EmbeddingWorker(db)
-
-
-def get_site_cache_factory(
-    config: PyriteConfig = Depends(get_config),
-    db: PyriteDB = Depends(get_db),
-) -> "Callable[[], SiteCacheService]":
-    """A zero-argument builder for SiteCacheService.
-
-    A factory, not the service: the constructor reads ``branding.yaml`` and
-    may raise ``BrandingInvalidError``, which ``POST /site/render`` answers
-    with a 409 -- so the handler must be the one that calls it.
-    """
-
-    def build() -> "SiteCacheService":
-        from ..services.site_cache import SiteCacheService
-
-        return SiteCacheService(config, db)
-
-    return build
+    return EmbeddingWorker(db, model_name=config.settings.embedding_model)
 
 
 def get_kb_default_role_resolver(
@@ -901,15 +873,17 @@ async def _enforce_kb_tier(
     db: PyriteDB,
     kb_name: str,
     tier: str,
-    not_found: HTTPException,
+    not_found: HTTPException | None,
 ) -> None:
     """The per-KB write rule for one KB.
 
     Passes when the caller's effective role on `kb_name` is at least `tier`.
-    Otherwise: 404 (`not_found`) when the caller may not read the KB or the KB
-    does not exist -- the two must answer alike, or the answer is an oracle
-    for private KB names -- and 403 when the caller can read it but not
-    write it.
+    Otherwise: 404 when the caller may not read the KB or the KB does not
+    exist -- the two must answer alike, or the answer is an oracle for
+    private KB names -- and 403 when the caller can read it but not write
+    it. The 404 is `not_found` (a row's own not-found, for a row resource)
+    or, when None, the resolver's refusal for the KB the request named,
+    with its suggestion (#952).
     """
     # The policy checks existence before role (ADR-0037 §4): a missing KB
     # answers exactly like a private one, for every caller and on every write
@@ -926,6 +900,8 @@ async def _enforce_kb_tier(
         )
     # NOT_FOUND -- and UNAUTHENTICATED, which both callers answer with 401
     # before reaching here, and which this guard always answered as 404.
+    if not_found is None:
+        raise decision.refusal or KBNotFoundError(f"KB '{kb_name}' not found")
     raise not_found
 
 
@@ -1015,7 +991,9 @@ def requires_kb_tier(tier: str, *, resolve_kb=None):
             )
 
         for kb_name in kb_names:
-            await _enforce_kb_tier(request, config, db, kb_name, tier, kb_not_found(kb_name))
+            # The name as the caller spelled it: the policy resolves it
+            # (#952), so a shortname is refused with the full name suggested.
+            await _enforce_kb_tier(request, config, db, kb_name, tier, None)
 
     return _check_kb_tier
 
@@ -1025,7 +1003,7 @@ def requires_kb_tier(tier: str, *, resolve_kb=None):
 # =============================================================================
 
 
-def negotiate_response(request: Request, data: Any) -> Response | None:
+def negotiate_response(request: Request, data: Any, **kwargs) -> Response | None:
     """Check Accept header and return formatted response, or None for default JSON.
 
     Endpoints call this after computing their result dict. If the client
@@ -1034,10 +1012,6 @@ def negotiate_response(request: Request, data: Any) -> Response | None:
     the endpoint can use its normal Pydantic response model.
     """
     accept = request.headers.get("accept", "application/json")
-
-    # Skip negotiation for standard JSON requests
-    if not accept or accept == "*/*" or "application/json" in accept.split(",")[0]:
-        return None
 
     from ..formats import format_response, negotiate_format
 
@@ -1059,7 +1033,7 @@ def negotiate_response(request: Request, data: Any) -> Response | None:
     if fmt == "json":
         return None  # Use default
 
-    content, media_type = format_response(data, fmt)
+    content, media_type = format_response(data, fmt, **kwargs)
     return Response(content=content, media_type=media_type)
 
 
@@ -1088,7 +1062,7 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
     application = FastAPI(
         title="pyrite API",
         description="REST API for pyrite knowledge management",
-        version="0.12.0",
+        version=__version__,
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -1274,7 +1248,11 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
         # fails with `'generator' object has no attribute '_raw_conn'`, so the
         # drain never runs and a stock install embeds nothing.
         db = _app_db()
-        await run_in_threadpool(lambda: _drain_embed_queue(db, label="startup"))
+        await run_in_threadpool(
+            lambda: _drain_embed_queue(
+                db, label="startup", model_name=config.settings.embedding_model
+            )
+        )
 
     # Sync routes and IndexWorker threads have no running loop; they hand
     # WebSocket events to this one (#326, #322). Captured here, not at import,
@@ -1365,11 +1343,6 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
     from .branding_endpoints import branding_router
 
     application.include_router(branding_router)
-
-    # SEO endpoints: sitemap.xml + robots.txt (public — crawlers don't auth)
-    from .seo_endpoints import seo_router
-
-    application.include_router(seo_router)
 
     # MCP SSE transport (mounted outside /api — handles its own Bearer auth)
     from .mcp_routes import mount_mcp_routes
@@ -1465,15 +1438,6 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
     )
     if dist_dir is None:
         dist_dir = Path(__file__).parent.parent.parent / "web" / "dist"
-    # Always mount /site and /viewer routes (independent of SPA dist)
-
-    from .static import SiteRefresher, mount_site_routes
-
-    application.state.site_refresh = SiteRefresher(
-        get_config=lambda: application.state.pyrite_config, open_db=_app_db
-    )
-    mount_site_routes(application)
-
     # Mount SPA static files if dist directory exists
     if dist_dir.is_dir():
         from .static import mount_static
@@ -1487,7 +1451,20 @@ def create_app(config: PyriteConfig | None = None) -> FastAPI:
 # Default application instance (used by uvicorn / existing imports)
 # =============================================================================
 
-app = create_app()
+_default_app: FastAPI | None = None
+
+
+def __getattr__(name: str):
+    """The uvicorn import-string entry point owns logging; the factory does not."""
+    global _default_app
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    if _default_app is None:
+        from ..logging import configure_entry_point_logging
+
+        configure_entry_point_logging(default="INFO")
+        _default_app = create_app()
+    return _default_app
 
 
 # =============================================================================
