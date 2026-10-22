@@ -43,3 +43,15 @@ assert 'httpx' not in sys.modules, f"httpx was eagerly imported: {sys.modules.ge
         cwd=REPO_ROOT,
     )
     assert result.returncode == 0, f"Import check failed: {result.stderr}"
+
+
+def test_cli_context_exposes_real_pyrite_db_class_via_getattr():
+    """Verify that pyrite.cli.context.PyriteDB lazily resolves to the real class for subclassing."""
+    import pyrite.cli.context as cli_context
+
+    real_db_class = cli_context.PyriteDB
+
+    class TrackingDB(real_db_class):
+        pass
+
+    assert issubclass(TrackingDB, real_db_class)

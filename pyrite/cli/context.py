@@ -20,30 +20,30 @@ if TYPE_CHECKING:
     from ..services.kb_service import KBService
     from ..storage.database import PyriteDB
     from ..storage.index import IndexManager
-else:
 
-    def PyriteDB(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
-        cls = importlib.import_module("..storage.database", __package__).PyriteDB
-        return cls(*args, **kwargs)
-
-    def IndexManager(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
-        cls = importlib.import_module("..storage.index", __package__).IndexManager
-        return cls(*args, **kwargs)
-
-    def KBService(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
-        cls = importlib.import_module("..services.kb_service", __package__).KBService
-        return cls(*args, **kwargs)
-
-    def KBRegistryService(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
-        cls = importlib.import_module(
-            "..services.kb_registry_service", __package__
-        ).KBRegistryService
-        return cls(*args, **kwargs)
+_LAZY_ATTRS = {
+    "PyriteDB": "..storage.database",
+    "IndexManager": "..storage.index",
+    "KBService": "..services.kb_service",
+    "KBRegistryService": "..services.kb_registry_service",
+    "SQLAlchemyError": "sqlalchemy.exc",
+}
 
 
-def _ensure_sqlalchemy_error() -> None:
-    if "SQLAlchemyError" not in globals():
-        globals()["SQLAlchemyError"] = importlib.import_module("sqlalchemy.exc").SQLAlchemyError
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_ATTRS:
+        mod = importlib.import_module(_LAZY_ATTRS[name], __package__)
+        val = getattr(mod, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _ensure_lazy(*names: str) -> None:
+    g = globals()
+    for name in names:
+        if name not in g:
+            __getattr__(name)
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +95,7 @@ def _init_base(
     kbs: tuple[object, ...], output_format: str | None
 ) -> tuple[PyriteConfig, PyriteDB, KBService]:
     """Shared construction for all CLI context managers."""
+    _ensure_lazy("KBService")
     config, db = get_config_and_db()
     try:
         _require_kbs(config, db, kbs, output_format)
@@ -137,6 +138,7 @@ def cli_registry_context(
     *, kbs: tuple[object, ...] = (), output_format: str | None = None
 ) -> Generator[tuple[PyriteConfig, PyriteDB, KBService, KBRegistryService], None, None]:
     """Provide config, db, service, and registry for CLI commands that need KB management."""
+    _ensure_lazy("IndexManager", "KBRegistryService")
     config, db, svc = _init_base(kbs, output_format)
     index_mgr = IndexManager(db, config)
     registry = KBRegistryService(config, db, index_mgr)
@@ -169,6 +171,7 @@ def open_index_db(config: PyriteConfig) -> PyriteDB:
     which #380 moved here unchanged so that opening the index happens in one
     module. The caller closes it.
     """
+    _ensure_lazy("PyriteDB")
     return PyriteDB(config.settings.index_path)
 
 
@@ -188,6 +191,7 @@ def get_config_and_db(config: PyriteConfig | None = None) -> tuple[PyriteConfig,
     Pass an already-loaded config when a command owns config loading; otherwise
     this helper loads it. Callers are responsible for calling db.close().
     """
+    _ensure_lazy("PyriteDB")
     config = config or load_config()
     db = PyriteDB(config.settings.index_path)
     try:
@@ -213,7 +217,7 @@ def open_index_for_validation(
     caller is a check command, and a check that cannot be made is a refusal
     (exit 1, ``STORAGE_ERROR``), not a clean verdict from the YAML alone.
     """
-    _ensure_sqlalchemy_error()
+    _ensure_lazy("SQLAlchemyError", "IndexManager")
     try:
         config, db = get_config_and_db(config)
     except (OSError, sqlite3.Error, SQLAlchemyError) as exc:
@@ -256,7 +260,7 @@ def get_config_with_registered_kbs(
     if config.get_kb(name) is not None:
         return config
 
-    _ensure_sqlalchemy_error()
+    _ensure_lazy("PyriteDB", "SQLAlchemyError")
     try:
         db = PyriteDB(config.settings.index_path)
         try:
