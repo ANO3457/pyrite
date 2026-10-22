@@ -37,8 +37,6 @@ from ..exceptions import (
     ValidationError,
 )
 from ..logging import configure_entry_point_logging
-from ..services.access_policy import UNSCOPED
-from ..services.kb_service import KBService
 from ..utils.errors import PyriteCLIGroup, cli_error, exit_unless_whole
 from .browse_commands import register_browse_commands
 from .collection_commands import collections_app
@@ -181,6 +179,8 @@ def _get_svc():
 
     Deprecated: use cli_context() directly in new code.
     """
+    from ..services.kb_service import KBService
+
     config = load_config()
     db = open_index_db(config)
     return KBService(config, db), db
@@ -330,6 +330,7 @@ def ci_command(
             )
 
         qa = QAService(config, db, llm_service=llm_service)
+        from ..services.access_policy import UNSCOPED
 
         if kb:
             result = {"kbs": [qa.validate_kb(kb, readable_kbs=UNSCOPED, tier=tier)]}

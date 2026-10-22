@@ -5,12 +5,14 @@ Unified search operations with FTS5 query sanitization and hybrid search.
 Used by API, CLI, and UI layers.
 """
 
+from __future__ import annotations
+
 import logging
 import re
 import sqlite3
 import time
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..exceptions import (
     QuerySyntaxError,
@@ -19,7 +21,9 @@ from ..exceptions import (
     StorageError,
     ValidationError,
 )
-from ..storage.database import PyriteDB
+
+if TYPE_CHECKING:
+    from ..storage.database import PyriteDB
 
 logger = logging.getLogger(__name__)
 

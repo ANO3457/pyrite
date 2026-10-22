@@ -15,7 +15,6 @@ import typer
 from rich.console import Console
 
 from ..config import load_config
-from ..services.index_backup import backup_index
 from ..utils.errors import cli_error
 
 logger = logging.getLogger(__name__)
@@ -32,6 +31,8 @@ def db_backup(
     ] = None,
 ):
     """Create a backup of the Pyrite index database."""
+    from ..services.index_backup import backup_index
+
     config = load_config()
     db_path = config.settings.index_path
 
