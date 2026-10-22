@@ -1,1 +1,1 @@
-Declare typed return signature for GitService.get_status and resolve hook context typing (#1047).
+- Declare typed return signature for `GitService.get_status` and resolve hook context typing (#1047).
