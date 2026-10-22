@@ -1,0 +1,1 @@
+- Add `kb_names`, `status`, and `exclude_status` filters to MCP `kb_timeline` (#62).

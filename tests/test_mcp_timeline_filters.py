@@ -204,11 +204,12 @@ def test_offset_paging_stays_stable_under_the_filters(server):
     """The 09-18 groom's paging regime: `kb_names` + the exclusion, paged
     by `offset`/`limit`, walk canon's rows once each."""
     seen: list[str] = []
-    for offset in range(0, 11, 5):
+    for offset in range(0, 15, 5):
         out = _timeline(
             server, kb_names=[CANON], exclude_status=["unprocessed"], limit=5, offset=offset
         )
         seen.extend(e["id"] for e in out["events"])
         if not out["events"]:
             break
+    assert len(seen) == 11
     assert len(seen) == len(set(seen))  # no row twice
