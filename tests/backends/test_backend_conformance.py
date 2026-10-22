@@ -392,19 +392,19 @@ class TestGraph:
         backend.upsert_entry(
             _make_entry(
                 "stale-source",
-                links=[{"target": "target", "relation": "transclusion"}],
+                links=[{"target": "target", "relation": "late_declared_relation_621"}],
             )
         )
 
         declared_types = dict(provenance.get_all_relationship_types())
-        assert "transclusion" not in declared_types
+        assert "late_declared_relation_621" not in declared_types
         monkeypatch.setattr(
             provenance,
             "get_all_relationship_types",
             lambda: {
                 **declared_types,
-                "transclusion": {
-                    "inverse": "transcluded_by",
+                "late_declared_relation_621": {
+                    "inverse": "late_inverse_621",
                     "description": "Declared after the link was indexed",
                 },
             },
@@ -422,9 +422,9 @@ class TestGraph:
                 "inverse_relation": None,
             },
             "stale-source": {
-                "forward_relation": "transclusion",
+                "forward_relation": "late_declared_relation_621",
                 "relation": "related_to",
-                "inverse_relation": "transcluded_by",
+                "inverse_relation": "late_inverse_621",
             },
         }
 
