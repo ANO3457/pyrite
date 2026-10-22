@@ -1,6 +1,7 @@
 """Markdown exports must carry parseable, lossless YAML metadata."""
 
 from copy import deepcopy
+from datetime import date
 
 import pytest
 import yaml
@@ -30,3 +31,29 @@ def test_special_titles_and_tags_round_trip_without_mutating_the_record(title):
     }
     assert body == entry["body"]
     assert entry == before
+
+
+@pytest.mark.parametrize("value", [None, "", []])
+def test_empty_optional_values_are_omitted(value):
+    entry = {"id": "sample", "title": "Title", "date": value, "tags": value}
+    front = markdown_serialize(entry)[4:].split("\n---\n\n", 1)[0]
+    assert yaml.safe_load(front) == {"id": "sample", "title": "Title"}
+
+
+def test_date_zero_and_scalar_tags_keep_their_values():
+    entry = {
+        "id": "sample",
+        "title": "Title",
+        "date": date(2026, 10, 22),
+        "importance": 0,
+        "tags": "news",
+    }
+    before = deepcopy(entry)
+    front = markdown_serialize(entry)[4:].split("\n---\n\n", 1)[0]
+    assert yaml.safe_load(front) == before
+    assert entry == before
+
+
+def test_false_is_data_not_an_empty_value():
+    front = markdown_serialize({"id": "sample", "title": "Title", "importance": False})
+    assert yaml.safe_load(front[4:].split("\n---\n\n", 1)[0])["importance"] is False

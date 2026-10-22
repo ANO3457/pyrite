@@ -45,7 +45,7 @@ def _entry_to_markdown(entry: dict) -> str:
         value = entry.get(key)
         if key == "type" and value is None:
             value = entry.get("entry_type")
-        if value is not None:
+        if value is not None and value != "" and value != []:
             # dump_yaml quotes YAML1.1-ambiguous strings recursively; copy so
             # rendering cannot change the caller's nested tag list.
             value = deepcopy(value)
