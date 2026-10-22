@@ -212,6 +212,11 @@ top-level key for, such as the web New Entry form's Status, travels in
 REST `PATCH /api/entries/{id}` also refuses any top-level key its body model
 does not declare: 400 `VALIDATION_FAILED`, naming the unknown key(s), before
 writing the file or index (#1221). It accepts `kb`, `field`, `value` and `op`.
+ADR-0034 read transport markers (`body_truncated`, `body_length`, `body_offset`,
+`body_chunk_size`) remain accepted and are never stored as entry fields. A
+truthy truncation marker still refuses a body write; it is inert for a patch
+of a non-body field.
+
 A misspelt `vaule` is not an instruction to clear the field. Explicit `value:
 null` remains a valid set; `append`, `remove` and `unset` keep their existing
 semantics.

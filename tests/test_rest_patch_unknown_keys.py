@@ -61,3 +61,32 @@ def test_patch_accepts_declared_append(patch_world):
     )
     assert response.status_code == 200, response.text
     assert yaml.safe_load(path.read_text().split("---", 2)[1])["tags"] == ["one", "two"]
+
+
+@pytest.mark.parametrize("marker", [True, False])
+def test_patch_accepts_transport_markers_for_non_body_fields(patch_world, marker):
+    import yaml
+
+    world, path = patch_world
+    before_body = world.client.get("/api/entries/note", params={"kb": "demo"}).json()["body"]
+    response = world.client.patch(
+        "/api/entries/note",
+        json={
+            "kb": "demo",
+            "field": "custom",
+            "value": "changed",
+            "body_truncated": marker,
+            "body_length": 100,
+            "body_offset": 0,
+            "body_chunk_size": 10,
+        },
+    )
+    assert response.status_code == 200, response.text
+    frontmatter = yaml.safe_load(path.read_text().split("---", 2)[1])
+    assert frontmatter["custom"] == "changed"
+    assert (
+        not {"body_truncated", "body_length", "body_offset", "body_chunk_size"} & frontmatter.keys()
+    )
+    assert (
+        world.client.get("/api/entries/note", params={"kb": "demo"}).json()["body"] == before_body
+    )

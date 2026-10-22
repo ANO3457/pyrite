@@ -489,6 +489,12 @@ class PatchEntryRequest(BaseModel):
     field: str
     value: Any = None
     op: Literal["set", "append", "remove", "unset"] = "set"
+    # ADR-0034 read transport, checked on the raw request by refuses_truncated_body.
+    # These are not entry content and the PATCH handler never persists them.
+    body_truncated: Any = None
+    body_length: Any = None
+    body_offset: Any = None
+    body_chunk_size: Any = None
 
 
 class EntryListResponse(BaseModel):
