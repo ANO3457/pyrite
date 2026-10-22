@@ -4,8 +4,11 @@
 or httpx before any command is executed.
 """
 
+from pathlib import Path
 import subprocess
 import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_import_pyrite_cli_does_not_import_sqlalchemy():
@@ -15,7 +18,13 @@ import sys
 import pyrite.cli
 assert 'sqlalchemy' not in sys.modules, f"sqlalchemy was eagerly imported: {sys.modules.get('sqlalchemy')}"
 """
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=REPO_ROOT,
+    )
     assert result.returncode == 0, f"Import check failed: {result.stderr}"
 
 
@@ -26,5 +35,11 @@ import sys
 import pyrite.cli
 assert 'httpx' not in sys.modules, f"httpx was eagerly imported: {sys.modules.get('httpx')}"
 """
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=REPO_ROOT,
+    )
     assert result.returncode == 0, f"Import check failed: {result.stderr}"

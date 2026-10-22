@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import sqlite3
 from collections.abc import Generator
@@ -13,17 +14,36 @@ from ..config import PyriteConfig, load_config
 from ..exceptions import PyriteError, StorageError
 
 if TYPE_CHECKING:
-    pass
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from ..services.kb_registry_service import KBRegistryService
+    from ..services.kb_service import KBService
+    from ..storage.database import PyriteDB
+    from ..storage.index import IndexManager
+else:
+
+    def PyriteDB(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        cls = importlib.import_module("..storage.database", __package__).PyriteDB
+        return cls(*args, **kwargs)
+
+    def IndexManager(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        cls = importlib.import_module("..storage.index", __package__).IndexManager
+        return cls(*args, **kwargs)
+
+    def KBService(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        cls = importlib.import_module("..services.kb_service", __package__).KBService
+        return cls(*args, **kwargs)
+
+    def KBRegistryService(*args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        cls = importlib.import_module(
+            "..services.kb_registry_service", __package__
+        ).KBRegistryService
+        return cls(*args, **kwargs)
 
 
-def _db_errors() -> tuple[type[Exception], ...]:
-    """Return database exception types to catch, importing SQLAlchemy lazily."""
-    try:
-        from sqlalchemy.exc import SQLAlchemyError
-
-        return (sqlite3.Error, OSError, SQLAlchemyError)
-    except ImportError:
-        return (sqlite3.Error, OSError)
+def _ensure_sqlalchemy_error() -> None:
+    if "SQLAlchemyError" not in globals():
+        globals()["SQLAlchemyError"] = importlib.import_module("sqlalchemy.exc").SQLAlchemyError
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +53,7 @@ def require_kb(
     config: PyriteConfig,
     name: object,
     *,
-    db: Any = None,
+    db: PyriteDB | None = None,
     output_format: str | None = None,
 ):
     """The KB a ``-k``/``--kb`` or positional KB names, or None when it names none.
@@ -71,10 +91,10 @@ def require_kb(
         raise  # unreachable: cli_error_from always exits
 
 
-def _init_base(kbs: tuple[object, ...], output_format: str | None) -> tuple[PyriteConfig, Any, Any]:
+def _init_base(
+    kbs: tuple[object, ...], output_format: str | None
+) -> tuple[PyriteConfig, PyriteDB, KBService]:
     """Shared construction for all CLI context managers."""
-    from ..services.kb_service import KBService
-
     config, db = get_config_and_db()
     try:
         _require_kbs(config, db, kbs, output_format)
@@ -86,7 +106,7 @@ def _init_base(kbs: tuple[object, ...], output_format: str | None) -> tuple[Pyri
 
 
 def _require_kbs(
-    config: PyriteConfig, db: Any, kbs: tuple[object, ...], output_format: str | None
+    config: PyriteConfig, db: PyriteDB, kbs: tuple[object, ...], output_format: str | None
 ) -> None:
     """Resolve every KB a command named (``cli_context(kbs=...)``) before its body runs."""
     for name in kbs:
@@ -96,7 +116,7 @@ def _require_kbs(
 @contextmanager
 def cli_context(
     *, kbs: tuple[object, ...] = (), output_format: str | None = None
-) -> Generator[tuple[PyriteConfig, Any, Any], None, None]:
+) -> Generator[tuple[PyriteConfig, PyriteDB, KBService], None, None]:
     """Provide config, db, and service for CLI commands.
 
     ``kbs`` are the KB names the command took (``-k``, a positional KB, a
@@ -115,12 +135,9 @@ def cli_context(
 @contextmanager
 def cli_registry_context(
     *, kbs: tuple[object, ...] = (), output_format: str | None = None
-) -> Generator[tuple[PyriteConfig, Any, Any, Any], None, None]:
+) -> Generator[tuple[PyriteConfig, PyriteDB, KBService, KBRegistryService], None, None]:
     """Provide config, db, service, and registry for CLI commands that need KB management."""
     config, db, svc = _init_base(kbs, output_format)
-    from ..services.kb_registry_service import KBRegistryService
-    from ..storage.index import IndexManager
-
     index_mgr = IndexManager(db, config)
     registry = KBRegistryService(config, db, index_mgr)
     registry.seed_from_config()
@@ -133,7 +150,7 @@ def cli_registry_context(
 @contextmanager
 def cli_db_context(
     *, kbs: tuple[object, ...] = (), output_format: str | None = None
-) -> Generator[tuple[PyriteConfig, Any], None, None]:
+) -> Generator[tuple[PyriteConfig, PyriteDB], None, None]:
     """Provide config and db for commands that only need db access."""
     config, db = get_config_and_db()
     try:
@@ -143,7 +160,7 @@ def cli_db_context(
         db.close()
 
 
-def open_index_db(config: PyriteConfig) -> Any:
+def open_index_db(config: PyriteConfig) -> PyriteDB:
     """Open the index database for ``config`` exactly as configured.
 
     Unlike ``get_config_and_db`` this does **not** merge DB-registered KBs
@@ -152,13 +169,11 @@ def open_index_db(config: PyriteConfig) -> Any:
     which #380 moved here unchanged so that opening the index happens in one
     module. The caller closes it.
     """
-    from ..storage.database import PyriteDB
-
     return PyriteDB(config.settings.index_path)
 
 
 @contextmanager
-def index_db_context(config: PyriteConfig) -> Generator[Any, None, None]:
+def index_db_context(config: PyriteConfig) -> Generator[PyriteDB, None, None]:
     """``open_index_db`` as a context manager: the database is closed on exit."""
     db = open_index_db(config)
     try:
@@ -167,14 +182,12 @@ def index_db_context(config: PyriteConfig) -> Generator[Any, None, None]:
         db.close()
 
 
-def get_config_and_db(config: PyriteConfig | None = None) -> tuple[PyriteConfig, Any]:
+def get_config_and_db(config: PyriteConfig | None = None) -> tuple[PyriteConfig, PyriteDB]:
     """Get config and db without a context manager, merging DB-registered KBs.
 
     Pass an already-loaded config when a command owns config loading; otherwise
     this helper loads it. Callers are responsible for calling db.close().
     """
-    from ..storage.database import PyriteDB
-
     config = config or load_config()
     db = PyriteDB(config.settings.index_path)
     try:
@@ -189,7 +202,7 @@ def get_config_and_db(config: PyriteConfig | None = None) -> tuple[PyriteConfig,
 
 def open_index_for_validation(
     config: PyriteConfig,
-) -> tuple[PyriteConfig, Any | None, dict[str, Any]]:
+) -> tuple[PyriteConfig, PyriteDB | None, dict[str, Any]]:
     """Open the index and collect health, falling back to YAML on DB errors.
 
     The returned database belongs to the caller, which must close it. If
@@ -200,9 +213,10 @@ def open_index_for_validation(
     caller is a check command, and a check that cannot be made is a refusal
     (exit 1, ``STORAGE_ERROR``), not a clean verdict from the YAML alone.
     """
+    _ensure_sqlalchemy_error()
     try:
         config, db = get_config_and_db(config)
-    except _db_errors() as exc:
+    except (OSError, sqlite3.Error, SQLAlchemyError) as exc:
         logger.warning(
             "Could not read index database %s while validating KBs; "
             "using YAML config without content-drift checks: %s",
@@ -212,10 +226,8 @@ def open_index_for_validation(
         return load_config(), None, {}
 
     try:
-        from ..storage.index import IndexManager
-
         health = IndexManager(db, config).check_health()
-    except _db_errors() as exc:
+    except (sqlite3.Error, SQLAlchemyError) as exc:
         logger.warning(
             "Could not read index database %s while validating KBs; "
             "using YAML config without content-drift checks: %s",
@@ -244,15 +256,14 @@ def get_config_with_registered_kbs(
     if config.get_kb(name) is not None:
         return config
 
+    _ensure_sqlalchemy_error()
     try:
-        from ..storage.database import PyriteDB
-
         db = PyriteDB(config.settings.index_path)
         try:
             db.merge_registered_kbs(config)
         finally:
             db.close()
-    except (*_db_errors(), StorageError) as exc:
+    except (OSError, sqlite3.Error, SQLAlchemyError, StorageError) as exc:
         logger.warning(
             "Could not read KB registry from index database %s while resolving %r; "
             "using YAML config: %s",
