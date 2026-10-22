@@ -144,7 +144,7 @@ def test_open_parent_with_unresolved_child_cannot_skip_to_done(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "field,value", [("title", "Updated parent title"), ("body", "Updated notes.")]
+    ("field", "value"), [("title", "Updated parent title"), ("body", "Updated notes.")]
 )
 @pytest.mark.parametrize("operations", [False, True])
 def test_unrelated_edit_of_claimed_complete_parent_is_allowed(tmp_path, field, value, operations):
