@@ -1952,6 +1952,10 @@ class KBService:
                 raise ValidationError(
                     f"Cannot update '{entry_id}': the result would not load ({e})"
                 ) from e
+            if new_entry.entry_type == "task" and getattr(new_entry, "status", None) == "claimed":
+                refusal = self._refuse_claim_of_complete_task(entry_id, kb_name)
+                if refusal:
+                    raise ValidationError(refusal["error"])
             # Once, on the entry parsed from the result (decision 2): the
             # type, managed-field and enum refusals happen before anything is
             # written.
@@ -3491,7 +3495,8 @@ class KBService:
                 "children are resolved (derived), so there is nothing left to claim. "
                 "Add an open subtask with `pyrite task create 'New work' "
                 f"-k {shlex.quote(kb_name)} --parent {shlex.quote(entry_id)}`, "
-                "then claim again."
+                "then claim again. Or mark the completed parent done with "
+                f"`pyrite task update {shlex.quote(entry_id)} -k {shlex.quote(kb_name)} -s done`."
             ),
             "current_status": derived["effective_status"],
             "derived": derived,
