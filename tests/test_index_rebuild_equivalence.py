@@ -71,13 +71,13 @@ def test_incremental_session_equals_a_files_only_rebuild(tmp_path):
     root = tmp_path / "kb"
     root.mkdir()
     (root / "kb.yaml").write_text(
-        "name: demo\ntypes:\n  note:\n    fields:\n      related: {type: object-ref}\n"
+        "name: demo\ntypes:\n  event:\n    fields:\n      related: {type: object-ref}\n"
         "  relation:\n    edge_type: true\n    fields:\n      owner: {type: object-ref}\n"
-        "    endpoints:\n      source:\n        field: owner\n        accepts: [note]\n",
+        "    endpoints:\n      source:\n        field: owner\n        accepts: [event]\n",
         encoding="utf-8",
     )
     (root / "source.md").write_text(
-        "---\nid: source\ntitle: Source\ntype: note\ntags: [two]\n"
+        "---\nid: source\ntitle: Source\ntype: event\ntags: [two]\n"
         "date: 2025-02-03\nimportance: 8\nrelated: source\n"
         "created_at: 2025-01-01T00:00:00+00:00\nupdated_at: 2025-01-02T00:00:00+00:00\n"
         "sources:\n  - title: Primary source\n    url: https://example.invalid/source\n"
