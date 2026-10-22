@@ -273,9 +273,9 @@ The reference row is [`KB_NOT_FOUND`](json-contracts.md#write-refusals-create-im
   of passing silently. A KB whose declared checks were never run across all its
   entries can start failing `pyrite ci` with no change to its files: run
   `pyrite qa validate <kb>` to see the findings before you upgrade CI (#1143).
-  To adopt checks gradually, set `rubric_action: warn` (or `validation: {rubric: warn}`)
+  To adopt checks gradually, set `rubric_action: warn`
   in `kb.yaml` or `action: warn` on individual rubric items; `pyrite ci` then reports
-  the findings and exits 0 (#1166).
+  named findings without failing on them; existing bulk warnings still fail (#1166).
 - **An unknown `--mode` is refused.** `pyrite search --mode zzz` and `links
   discover|batch-suggest --mode zzz` used to search as keyword and exit `0`.
   They exit `1` with `VALIDATION_FAILED` (REST: `400`); the valid modes are

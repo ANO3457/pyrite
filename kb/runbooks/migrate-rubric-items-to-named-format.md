@@ -67,12 +67,6 @@ Whole-KB QA and `pyrite ci` enforce named rubric checks. When migrating an exist
    name: my-kb
    rubric_action: warn  # findings report as warnings and pyrite ci exits 0 (default: fail)
    ```
-   Or under `validation`:
-   ```yaml
-   validation:
-     rubric: warn
-   ```
-
 2. **Per-checker setting** in `evaluation_rubric`:
    ```yaml
    evaluation_rubric:
@@ -82,6 +76,10 @@ Whole-KB QA and `pyrite ci` enforce named rubric checks. When migrating an exist
        action: warn   # this check warns without failing ci; others follow the KB default
        text: "Component specifies its filesystem path"
    ```
+
+Existing bulk missing-tag and missing-link findings keep failing CI. Invalid
+`rubric_action` or item `action` values fail CI and name the key and allowed
+values (`warn`, `fail`).
 
 ## Verifying Migration
 

@@ -399,6 +399,11 @@ def ci_command(
                                 "rule": i.get("rule", ""),
                                 "field": i.get("field", ""),
                                 "message": i.get("message", ""),
+                                **(
+                                    {"rubric_action": i["rubric_action"]}
+                                    if "rubric_action" in i
+                                    else {}
+                                ),
                             }
                             for i in s["issues"]
                             if severity_order.get(i.get("severity", "info"), 2) <= fail_threshold
