@@ -217,7 +217,26 @@ class URLChecker:
         if not self.cache_path or not self.cache_path.exists():
             return {}
         try:
-            data = json.loads(self.cache_path.read_text())
-            return {url: URLCheckResult.from_dict(d) for url, d in data.items()}
-        except (json.JSONDecodeError, KeyError):
+            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeError, OSError) as exc:
+            logger.warning("Ignoring unreadable URL cache: %s", exc)
             return {}
+        if not isinstance(data, dict):
+            logger.warning("Ignoring URL cache: expected an object")
+            return {}
+        cached = {}
+        for url, record in data.items():
+            if (
+                not isinstance(record, dict)
+                or record.get("url") != url
+                or type(record.get("status_code", 0)) is not int
+                or type(record.get("ok", False)) is not bool
+                or any(
+                    not isinstance(record.get(field, ""), str)
+                    for field in ("error", "checked_at", "redirect_url")
+                )
+            ):
+                logger.warning("Ignoring malformed URL cache record")
+                continue
+            cached[url] = URLCheckResult.from_dict(record)
+        return cached
