@@ -17,18 +17,20 @@ def subdir_git_kb(tmp_path):
     repo_root.mkdir()
 
     # Git init
-    subprocess.run(["git", "init"], cwd=str(repo_root), capture_output=True, check=True)
+    subprocess.run(["git", "init"], cwd=str(repo_root), capture_output=True, check=True, timeout=30)
     subprocess.run(
         ["git", "config", "user.email", "test@test.com"],
         cwd=str(repo_root),
         capture_output=True,
         check=True,
+        timeout=30,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
         cwd=str(repo_root),
         capture_output=True,
         check=True,
+        timeout=30,
     )
 
     kb_path = repo_root / "kbs" / "docs"
@@ -43,12 +45,15 @@ def subdir_git_kb(tmp_path):
     )
     (repo_root / "outside.txt").write_text("root file\n", encoding="utf-8")
 
-    subprocess.run(["git", "add", "."], cwd=str(repo_root), capture_output=True, check=True)
+    subprocess.run(
+        ["git", "add", "."], cwd=str(repo_root), capture_output=True, check=True, timeout=30
+    )
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
         cwd=str(repo_root),
         capture_output=True,
         check=True,
+        timeout=30,
     )
 
     # Now make the changes:
