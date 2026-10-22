@@ -57,6 +57,7 @@ jobs:
   # ===========================================================================
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # dorny/paths-filter reads the PR's changed-files list on pull_request
     # events, which needs pull-requests: read beyond the workflow default.
     # The `queue` step lists this workflow's merge_group runs: actions: read.
@@ -189,6 +190,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.kb == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -528,6 +530,7 @@ jobs:
     needs: [changes, test, collect]
     if: ${{ !cancelled() && needs.test.result != 'skipped' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -607,6 +610,7 @@ jobs:
     needs: changes
     if: (needs.changes.outputs.backend == 'true' || github.ref == 'refs/heads/main') && needs.changes.outputs.queue_passed != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -709,6 +713,7 @@ jobs:
     needs: changes
     if: (needs.changes.outputs.web == 'true' || github.ref == 'refs/heads/main') && needs.changes.outputs.queue_passed != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -1128,6 +1133,7 @@ jobs:
       && needs.experimental.result != 'success'
       && needs.experimental.result != 'skipped' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       # gh label create / issue create / issue comment.
@@ -1164,6 +1170,7 @@ jobs:
     needs: [changes, kb, test, shard-report, frontend]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Fail if any gating job failed or was cancelled
         env:
