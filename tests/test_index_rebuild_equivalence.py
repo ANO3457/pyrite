@@ -91,6 +91,7 @@ def test_incremental_session_equals_a_files_only_rebuild(tmp_path):
             **stamps,
         )
         service.create_entry("demo", "discard", "Discard", "note", body="Delete me")
+        before_target = next(row for row in snapshot(path)["entry"] if row["id"] == "target")
         service.update_entry(
             "target",
             "demo",
@@ -108,8 +109,8 @@ def test_incremental_session_equals_a_files_only_rebuild(tmp_path):
         for table in ("source", "entry_ref", "block", "edge_endpoint"):
             assert incremental[table], table
         renamed = next(row for row in incremental["entry"] if row["id"] == "renamed")
-        assert renamed["created_at"].startswith("2025-01-01")
-        assert not renamed["updated_at"].startswith("2025-01-02")
+        assert renamed["created_at"] == before_target["created_at"]
+        assert renamed["updated_at"] != before_target["updated_at"]
         source = next(row for row in incremental["entry"] if row["id"] == "source")
         assert source["date"] == "2025-02-03" and source["importance"] == 8
     finally:
