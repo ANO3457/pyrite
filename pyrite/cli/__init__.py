@@ -22,9 +22,9 @@ from rich.markup import escape
 from rich.table import Table
 
 from ..config import (
-    CONFIG_FILE,
     Repository,
     auto_discover_kbs,
+    current_config_file,
     load_config,
     open_registration_warning,
     save_config,
@@ -491,10 +491,11 @@ def list_kbs(
 @app.command("config")
 def show_config():
     """Show current configuration."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Subscriptions:[/bold] {len(config.subscriptions)}")
@@ -1034,7 +1035,16 @@ def generate_readme_cmd(
                     suggestion="Run `pyrite kb list` to see available KBs.",
                 )
             readme_path = kb_config.path / "README.md"
-            readme_path.write_text(readme, encoding="utf-8")
+            from ..utils.errors import cli_error_from
+            from ..utils.kb_files import KBFiles
+
+            try:
+                # A README.md that is a link out of the KB is not written through.
+                KBFiles(readme_path.parent).write_bytes(readme_path, readme.encode("utf-8"))
+            except PyriteError as e:
+                cli_error_from(e)
+            except OSError as e:  # a hard-linked README.md (`HardLinked`)
+                cli_error(str(e), error_code="STORAGE_ERROR")
             console.print(f"[green]Written:[/green] {readme_path}")
         elif output:
             output.write_text(readme, encoding="utf-8")
