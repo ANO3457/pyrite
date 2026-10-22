@@ -55,9 +55,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 from ..exceptions import FrontmatterError
+
+_BODY_FIELD_LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):[ \t]*")
 
 _BOM = "﻿"
 _LEADING = re.compile(r"(?:[ \t\r]*\n)*")
@@ -123,11 +126,26 @@ def next_delimiter(text: str, pos: int = 0) -> tuple[int, int] | None:
     return None
 
 
-def split_frontmatter(text: str) -> SplitResult:
-    """Split ``text`` into frontmatter and body by the rule in the module doc."""
+def _opening(text: str) -> tuple[int, re.Match[str] | None]:
+    """Where the content starts (after a BOM and blank lines), and the opening
+    ``---`` line there, if the text opens with one."""
     start = 1 if text.startswith(_BOM) else 0
     start = _LEADING.match(text, start).end()
-    opening = _OPENING.match(text, start)
+    return start, _OPENING.match(text, start)
+
+
+def yaml_start(text: str) -> int | None:
+    """Where the YAML starts: the end of the opening ``---`` line. None when the
+    text does not open with one, so ``split_frontmatter`` returns no
+    ``Frontmatter``. Where, and whether, it closes is not looked for: a reader
+    that stops at an earlier line (``could_hold_id``) need not find out."""
+    opening = _opening(text)[1]
+    return opening.end() if opening else None
+
+
+def split_frontmatter(text: str) -> SplitResult:
+    """Split ``text`` into frontmatter and body by the rule in the module doc."""
+    start, opening = _opening(text)
     if not opening:
         if _TOML_OPENING.match(text, start):
             return Unsupported("toml")
@@ -193,3 +211,43 @@ def load_frontmatter(text: str) -> tuple[dict[str, Any], str] | None:
     if not isinstance(split, Frontmatter):
         return None
     return load_yaml(split.text), split.body
+
+
+def leaked_frontmatter_line(frontmatter: dict[str, Any], body: str) -> tuple[str, str] | None:
+    """Return a body line that repeats one exact scalar frontmatter field.
+
+    A migration can leave the first frontmatter field rendered as prose.  The
+    line is valid body text and must be preserved; this helper only detects and
+    reports the shape, so callers can surface it without repairing the file.
+    """
+    from .yaml import load_yaml
+
+    first = body.splitlines()[0] if body else ""
+    match = _BODY_FIELD_LINE.match(first)
+    if not match:
+        return None
+    key = match.group(1)
+    value = frontmatter.get(key)
+    scalar_types = (str, int, float, bool, date, datetime)
+    if key not in frontmatter or not isinstance(value, scalar_types):
+        return None
+    try:
+        raw_value = first[match.end() :].rstrip(" \t")
+        parsed = load_yaml(f"{key}: {raw_value}\n")[key]
+    except Exception:
+        return None
+    if isinstance(parsed, date) and isinstance(value, date):
+        same_scalar_type = True
+    elif isinstance(parsed, bool) or isinstance(value, bool):
+        same_scalar_type = isinstance(parsed, bool) and isinstance(value, bool)
+    elif isinstance(parsed, (int, float)) or isinstance(value, (int, float)):
+        same_scalar_type = isinstance(parsed, (int, float)) and isinstance(value, (int, float))
+    else:
+        same_scalar_type = isinstance(parsed, str) and isinstance(value, str)
+    if same_scalar_type and parsed == value:
+        return key, first
+    if isinstance(parsed, date) and isinstance(value, str) and parsed.isoformat() == value:
+        return key, first
+    if isinstance(value, date) and isinstance(parsed, str) and value.isoformat() == parsed:
+        return key, first
+    return None

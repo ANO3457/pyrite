@@ -44,14 +44,14 @@ def test_search(tmp_kb):
 
 ```bash
 # Backend
-# Diagnostic example: substitute the node relevant to your change
+# Diagnostic example: one named test, not the general suite policy
 .venv/bin/pytest tests/path/test_file.py::test_name -v
 
 # Frontend unit
 cd web && npx vitest run src/path/file.test.ts -t "test name"
 
 # Frontend E2E
-cd web && npx playwright test e2e/file.spec.ts
+scripts/e2e.sh e2e/file.spec.ts   # Playwright under the machine lock
 ```
 
 Confirm:
@@ -77,10 +77,11 @@ Write the simplest code that makes the test pass. Nothing more.
 Run the specific test AND the full suite for the area:
 
 ```bash
-# Backend: specific test then full suite
-# Diagnostic example: substitute the node relevant to your change
+# Backend: specific test, then the affected tests (the whole suite is CI's
+# job; if you need it, scripts/heavy_lock.py -- <command>)
+# Diagnostic example: one named test, not the general suite policy
 .venv/bin/pytest tests/path/test_file.py::test_name -v
-# General suite commands: CONTRIBUTING.md#running-the-tests
+scripts/test-affected --run
 
 # Frontend: specific then full
 cd web && npx vitest run src/path/file.test.ts
@@ -193,6 +194,3 @@ If you catch yourself:
 - Saying "I already manually tested it"
 
 **Delete the code. Write the test first. Start over.**
-
-General test commands and local worker limits live in
-[CONTRIBUTING](../../../CONTRIBUTING.md#running-the-tests).

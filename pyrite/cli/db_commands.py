@@ -15,6 +15,7 @@ import typer
 from rich.console import Console
 
 from ..config import load_config
+from ..services.index_backup import backup_index
 from ..utils.errors import cli_error
 
 logger = logging.getLogger(__name__)
@@ -53,14 +54,7 @@ def db_backup(
         output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use SQLite's backup API for safe, consistent backups
-    source_conn = sqlite3.connect(str(db_path))
-    dest_conn = sqlite3.connect(str(output_path))
-    try:
-        source_conn.backup(dest_conn)
-    finally:
-        dest_conn.close()
-        source_conn.close()
+    backup_index(db_path, output_path)
 
     # soft_wrap: a long path must stay copy-pasteable. Rich's default wrapping
     # breaks it across lines at the console width, so the one thing the

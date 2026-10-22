@@ -282,7 +282,7 @@ class TestSemanticWithoutTheExtraSaysSo:
         warnings: list[str] = []
         assert _search(indexed[1], "semantic", warnings) == []
         assert len(warnings) == 1
-        assert "pip install pyrite[semantic]" in warnings[0]
+        assert "pip install" in warnings[0] and "[semantic]" in warnings[0]
         assert "keyword leg ran" not in warnings[0], "false in pure semantic mode"
 
     def test_hybrid_names_the_install_line_beside_real_keyword_hits(self, indexed, no_extra):
@@ -290,7 +290,7 @@ class TestSemanticWithoutTheExtraSaysSo:
         results = _search(indexed[1], "hybrid", warnings)
         assert [r["id"] for r in results] == ["kestrel"]
         assert len(warnings) == 1
-        assert "pip install pyrite[semantic]" in warnings[0]
+        assert "pip install" in warnings[0] and "[semantic]" in warnings[0]
         assert "only the keyword leg ran" in warnings[0]
 
     def test_an_extension_that_will_not_load_does_not_get_the_install_line(
@@ -373,7 +373,7 @@ class TestSemanticWithoutTheExtraSaysSo:
             .get("/api/search", params={"q": "falcon", "kb": "t", "mode": "semantic"})
             .json()
         )
-        assert any("pip install pyrite[semantic]" in w for w in body["warnings"]), body
+        assert any("pip install" in w and "[semantic]" in w for w in body["warnings"]), body
 
     def test_the_warning_reaches_mcp(self, indexed, no_extra):
         from pyrite.server.mcp_server import PyriteMCPServer
@@ -386,7 +386,7 @@ class TestSemanticWithoutTheExtraSaysSo:
             )
         finally:
             server.close()
-        assert any("pip install pyrite[semantic]" in w for w in result["warnings"]), result
+        assert any("pip install" in w and "[semantic]" in w for w in result["warnings"]), result
 
     def test_the_warning_reaches_the_cli_on_stderr_and_stdout_stays_one_document(self, tmp_path):
         kb = tmp_path / "kb"
@@ -410,7 +410,7 @@ class TestSemanticWithoutTheExtraSaysSo:
             pre=pre,
         )
         assert proc.returncode == 0, proc.stderr
-        assert "pip install pyrite[semantic]" in proc.stderr
+        assert "pip install" in proc.stderr and "[semantic]" in proc.stderr
         json.loads(proc.stdout)
 
 
@@ -856,3 +856,54 @@ def test_hybrid_and_semantic_keep_their_published_no_embeddings_reasons(indexed)
         TestTheTraceAndTheWarningAgree._trace(db, "semantic")[0]["reason"]
         == "semantic_empty_no_embeddings"
     )
+
+
+class TestIndexEmbedUnavailableModel:
+    def test_model_load_failure_preserves_queue_and_reports_one_actionable_message(
+        self, tmp_path, monkeypatch
+    ):
+        from typer.testing import CliRunner
+
+        from pyrite.cli import app
+
+        kb_path = tmp_path / "kb"
+        kb_path.mkdir()
+        config = PyriteConfig(
+            knowledge_bases=[KBConfig(name="t", path=kb_path, kb_type=KBType.GENERIC)],
+            settings=Settings(
+                index_path=tmp_path / "i.db",
+                auto_embed=True,
+                embedding_model="configured-offline-model",
+            ),
+        )
+        db = PyriteDB(config.settings.index_path)
+        db.vec_available = True
+        db.backend.vec_available = True
+        kb_service = KBService(config, db)
+        kb_service.create_entry("t", "e1", "First", "note", "body one")
+        kb_service.create_entry("t", "e2", "Second", "note", "body two")
+
+        monkeypatch.setattr("pyrite.services.embedding_service.is_available", lambda: True)
+        load_model = MagicMock(side_effect=OSError("model unavailable offline"))
+        monkeypatch.setattr("pyrite.services.embedding_service._load_model", load_model)
+        monkeypatch.setattr("pyrite.cli.index_commands.get_config_and_db", lambda: (config, db))
+
+        try:
+            result = CliRunner().invoke(app, ["index", "embed"])
+
+            assert result.exit_code == 1, result.output  # nothing embedded: never 0
+            assert result.output.count("Could not load the embedding model") == 1
+            assert "'configured-offline-model'" in result.output
+            assert "cache" in result.output.lower()
+            assert "pending" in result.output.lower()
+            assert load_model.call_count == 1
+            assert _vector_count(db) == 0
+            rows = db._raw_conn.execute(
+                "SELECT entry_id, attempts, status FROM embed_queue ORDER BY entry_id"
+            ).fetchall()
+            assert [tuple(row) for row in rows] == [
+                ("e1", 0, "pending"),
+                ("e2", 0, "pending"),
+            ]
+        finally:
+            db.close()

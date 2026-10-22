@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { entryHref } from '$lib/utils/entry-href';
 	import Topbar from '$lib/components/layout/Topbar.svelte';
 	import TemplatePicker from '$lib/components/entry/TemplatePicker.svelte';
 	import TypeChoice from '$lib/components/entry/TypeChoice.svelte';
@@ -166,7 +167,6 @@
 					.filter(Boolean);
 			if (date) req.date = date;
 			if (importance !== 5) req.importance = importance;
-			if (status.trim()) req.status = status.trim();
 			// Only the explicit "use a type this KB does not declare" choice
 			// (TypeChoice's own toggle) sends this; the client itself never
 			// opts in on the caller's behalf, and a template naming an
@@ -175,11 +175,15 @@
 
 			// Merge non-empty custom fields into metadata, coerced by schema type.
 			const meta = buildMetadata(customFields, selectedTypeSchema?.fields);
+			// The create body has no top-level `status` (#1090: POST /api/entries
+			// refuses a key its model does not declare), so the Status input
+			// travels in `metadata`, the one place the model takes it.
+			if (status.trim()) meta.status = status.trim();
 			if (Object.keys(meta).length > 0) req.metadata = meta;
 
 			const res = await api.createEntry(req as any);
 			uiStore.toast('Entry created', 'success');
-			goto(`/entries/${res.id}`);
+			goto(entryHref(res.id, res.kb_name));
 		} catch (e) {
 			// Surface the server's own refusal message (e.g. #378's
 			// undeclared-type refusal) instead of a generic failure -- the
