@@ -329,7 +329,7 @@ class WorktreeService:
         if not compared:
             return False, "Could not compare committed worktree changes"
         if not diff.strip():
-            return False, "No committed worktree changes to merge"
+            return False, "No committed worktree changes to merge; reject this empty submission"
 
         # Merge user branch into main
         success, msg = GitService.merge_branch(repo_path, wt.branch, into="main")

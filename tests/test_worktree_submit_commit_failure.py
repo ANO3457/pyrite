@@ -90,3 +90,5 @@ def test_rest_merge_does_not_report_an_empty_branch_as_merged(worktree_world):
     assert response.status_code == 200, response.text
     assert response.json()["merged"] is False
     assert service.get_worktree("test-kb", wt.user_id).status == "submitted"
+
+    assert "reject" in response.json()["message"].lower()
