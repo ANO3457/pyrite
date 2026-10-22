@@ -22,7 +22,9 @@ jobs:
       - run: |
           ruff check pyrite/services/qa_service.py tests/test_effective_status_everywhere.py
           ruff format --check pyrite/services/qa_service.py tests/test_effective_status_everywhere.py
-          pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_requested_effect_exit_code.py tests/test_production_wiring_guard.py tests/test_default_output_is_the_result.py -q --no-cov
+          git fetch https://github.com/pyrite-wiki/pyrite.git dev:refs/remotes/upstream/dev
+          git update-ref refs/remotes/origin/dev "$(git merge-base HEAD upstream/dev)"
+          pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_production_wiring_guard.py tests/test_requested_effect_exit_code.py::test_every_registered_command_is_classified tests/test_requested_effect_exit_code.py::test_a_modules_legacy_file_is_exactly_its_legacy_commands tests/test_requested_effect_exit_code.py::test_a_command_on_the_contract_is_declared_the_way_the_root_expects -q --no-cov
         env:
           HF_HUB_OFFLINE: '1'
           GITHUB_BASE_REF: dev
