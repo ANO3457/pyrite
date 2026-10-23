@@ -1,0 +1,32 @@
+name: Validate existing documentation contribution
+on:
+  push:
+    branches: ['validation/codex23-general-835']
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Documentation guards and preserved duration workflow
+        run: pytest tests/test_dev_process_config.py::TestDocumentationCommandHome tests/test_duration_refresh.py -q
+      - name: Affected tests for resolved documentation
+        run: python scripts/test-affected --run --files docs/testing.md
+        env:
+          HF_HUB_OFFLINE: '1'
+      - name: Source checks
+        run: |
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
