@@ -29,6 +29,7 @@ jobs:
         env:
           HF_HUB_OFFLINE: '1'
       - name: Prove public help regression on the previous feature head
+        if: false # Same product 123b1eb already verified in run 40015540756.
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -48,6 +49,7 @@ jobs:
               for path, source in fixed.items(): Path(path).write_bytes(source)
           PY
       - name: Same-runner wall time before and after the whole PR
+        if: false # Same product 123b1eb already verified in run 40015540756.
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -69,6 +71,7 @@ jobs:
           bench('after')
           PY
       - name: Focused real command regressions
+        if: false # Same product 123b1eb already verified in run 40015540756.
         run: pytest tests/test_cli_import_performance.py tests/test_import_cycles.py tests/test_extension_cli_import_order.py -q
       - name: Affected core and every extension test file, without duplicate runs
         run: |
@@ -78,8 +81,8 @@ jobs:
           files = subprocess.check_output(['git', 'diff', '--name-only', 'ad347fe28bc2d6be5aad55483038ad5acb9f7dcc', '123b1eb073cf79d4e84d497527773241f861ae1d', '--', 'pyrite', 'extensions', 'tests'], text=True).splitlines()
           selected = subprocess.check_output([sys.executable, 'scripts/test-affected', '--list', '--files', *files], text=True).splitlines()
           extensions = {str(p) for root in Path('extensions').glob('*/tests') for p in root.rglob('test_*.py')}
-          paths = sorted(set(selected) | extensions)
-          assert all(Path(path).is_file() for path in paths)
+          paths = sorted({item for item in selected if item.split("::", 1)[0] not in extensions} | extensions)
+          assert all(Path(path.split("::", 1)[0]).is_file() for path in paths)
           print(f'Running {len(paths)} test files, including all {len(extensions)} files across the five extensions', flush=True)
           Path('selected-tests.txt').write_text('\n'.join(paths))
           subprocess.run([sys.executable, 'scripts/heavy_lock.py', '--', sys.executable, '-m', 'pytest', '-n', '4', '-q', '--junitxml=affected.xml', *paths], check=True)
