@@ -369,8 +369,8 @@ has it.
 
 These interfaces remain supported in 0.26.0 and are scheduled for removal in
 0.27. CLI aliases warn on stderr; response fields remain in responses until
-removal. `db.conn` emits a `DeprecationWarning`, and the class attribute logs
-once per class.
+removal. `db.conn` emits a `DeprecationWarning`, and `FRONTMATTER_ALIASES` logs
+a warning once per class.
 
 - **`-f` as `--format`** on the `task` commands leaves in 0.27. Use
   `--format`, or set `PYRITE_FORMAT`.

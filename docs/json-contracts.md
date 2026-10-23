@@ -94,7 +94,7 @@ MCP reports the class-level `error_code`. Where its old code differed,
 transition field. The CLI has no transition field. This table is the single
 reference for the tool-specific transitions still accepted in 0.26.0.
 The maintainer set removal to 0.27; these compatibility spellings remain
-accepted in 0.26 (see [0.26.0](../CHANGELOG.md#0260--2026-10-22)).
+accepted in 0.26 (see [0.26.0](../CHANGELOG.md#0260---2026-10-22)).
 The evidence column records the introduction where known, rather than
 inventing a release date for older class-level transitions.
 
