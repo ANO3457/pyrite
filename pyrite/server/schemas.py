@@ -441,7 +441,7 @@ class CreateEntryRequest(BaseModel):
 
     ``extra="forbid"``: the model has no free top-level fields, so a key it
     does not declare is never silently dropped. The create route also reads
-    the raw body (`refuses_unknown_create_keys`) to answer such a key with
+    the raw body (`refuses_undeclared_keys`) to answer such a key with
     the service's own refusal -- 400 ``VALIDATION_FAILED`` naming it -- while
     the ``metadata`` envelope spelling reaches the service and is refused
     there (#1010, #1090).
@@ -466,16 +466,8 @@ class CreateEntryRequest(BaseModel):
 class UpdateEntryRequest(BaseModel):
     """JSON body for updating an entry."""
 
-    # Preserve unknown names until the endpoint can issue the same domain
-    # refusal as create, rather than silently dropping them or returning 422.
-    model_config = {"extra": "allow"}
+    model_config = ConfigDict(extra="forbid")
 
-    # Transport control, not an entry field. The body-bounds dependency
-    # refuses truthy markers on a body write; explicit false remains valid.
-    body_truncated: Any = False
-    body_length: Any = None
-    body_offset: Any = None
-    body_chunk_size: Any = None
     kb: str
     title: str | None = None
     body: str | None = None
@@ -499,12 +491,6 @@ class PatchEntryRequest(BaseModel):
     field: str
     value: Any = None
     op: Literal["set", "append", "remove", "unset"] = "set"
-    # ADR-0034 read transport, checked on the raw request by refuses_truncated_body.
-    # These are not entry content and the PATCH handler never persists them.
-    body_truncated: Any = None
-    body_length: Any = None
-    body_offset: Any = None
-    body_chunk_size: Any = None
 
 
 class EntryListResponse(BaseModel):
