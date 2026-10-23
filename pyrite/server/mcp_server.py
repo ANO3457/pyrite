@@ -389,6 +389,21 @@ NON_KB_CONTENT_TOOLS = frozenset(
 )
 
 
+def _located_ids(spec: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
+    """The entry ids a `locates_entry` call names: each `id_args` value, a
+    string or a list of strings, with blanks and non-strings dropped."""
+    ids: list[str] = []
+    for arg in spec["id_args"]:
+        value = arguments.get(arg)
+        values = value if isinstance(value, list | tuple) else [value]
+        ids.extend(v for v in values if isinstance(v, str) and v.strip())
+    return ids
+
+
+def _no_id_message(spec: dict[str, Any]) -> str:
+    return f"Name an entry id in {' or '.join(spec['id_args'])}"
+
+
 def _kbs_named_in(arguments: dict[str, Any]) -> list[str]:
     """Every KB name the call names, under any of `KB_ARGUMENT_NAMES`.
 
@@ -573,8 +588,18 @@ class PyriteMCPServer:
         )
 
     def _register_tool(self, name: str, schema: dict[str, Any], tier: str) -> None:
-        """Label a copy at registration, keeping shared schemas unmodified."""
+        """Label a copy at registration, keeping shared schemas unmodified.
+
+        A tool that declares `locates_entry` takes `kb_name` as optional,
+        whatever its plugin's schema says (#1310): the SDK validates a call
+        against `inputSchema` before `_dispatch_tool` runs, so a required
+        `kb_name` would refuse the call the lookup exists to answer. Derived
+        here from the declaration, so no plugin can get it wrong."""
         self._tool_tiers[name] = tier
+        if schema.get("locates_entry"):
+            input_schema = schema.get("inputSchema") or {}
+            required = [r for r in input_schema.get("required", []) if r != "kb_name"]
+            schema = {**schema, "inputSchema": {**input_schema, "required": required}}
         self.tools[name] = {
             **schema,
             "description": f"[{tier}] {schema.get('description') or ''}",
@@ -2606,6 +2631,35 @@ class PyriteMCPServer:
         except LandingRefusedError as e:
             return None, _refusal(e)
 
+    def _locate_entry_ids(
+        self, spec: dict[str, Any], arguments: dict[str, Any], readable_kbs: set[str] | None
+    ) -> dict[str, Any]:
+        """``arguments`` with ``kb_name`` set to the KB that holds the entry ids.
+
+        The plugin tools' door to ``KBService.locate`` (#1310, the MCP half of
+        #911), the rule the CLI's ``require_entry_kb`` applies: a ``kb_name``
+        absent or blank names no KB, and the id is then found in the one
+        readable KB that holds it, refused ``AMBIGUOUS`` (with
+        ``candidate_kbs``) when several do, ``ENTRY_NOT_FOUND`` when none does.
+        A named KB must hold the id. ``spec`` is the tool's ``locates_entry``:
+        ``id_args`` (the arguments that carry entry ids, each a string or a
+        list of strings) and ``entry_type`` (the one type the tool acts on, or
+        absent for a tool that takes any). Every id must be in the one KB.
+        Raises ``PyriteError``; the caller renders the refusal.
+        """
+        ids = _located_ids(spec, arguments)
+        if not ids:
+            # `_dispatch_tool` refuses this before any check; kept here so no
+            # caller of this method hands a handler an id it did not resolve.
+            raise ValidationError(_no_id_message(spec))
+        kb = named_kb(arguments.get("kb_name"))
+        for entry_id in ids:
+            found = self.svc.locate(
+                entry_id, kb, readable_kbs=readable_kbs, entry_type=spec.get("entry_type")
+            )
+            kb = kb or found
+        return {**arguments, "kb_name": kb}
+
     def _dispatch_tool(
         self,
         name: str,
@@ -2668,6 +2722,31 @@ class PyriteMCPServer:
                     suggestion=f"Wait {info['retry_after']} seconds",
                     retryable=True,
                 )
+
+        # A tool that takes an entry id declares `locates_entry` (#1310). The
+        # KB its handler works in is `kb_name`, so with `kb_name` not named
+        # the id is resolved to the KB that holds it HERE, before `named_kbs`
+        # is computed: the found KB is then a named KB like any other, and
+        # every check below (read, write, landing) runs on it by
+        # construction. Keyed on `kb_name` alone, never on `named_kbs`: a KB
+        # named under another argument does not choose the handler's KB, so
+        # it must not skip the lookup either. With `kb_name` named, the checks
+        # run first (a caller who may not write there is told so, not "not
+        # found") and the id is verified in that KB just before the handler.
+        #
+        # No handler is called with an id the dispatcher has not resolved: a
+        # call whose id arguments are all blank (missing, empty, whitespace)
+        # is refused here, before any check, whatever KB it names -- else the
+        # handler would choose a KB itself (a default KB, or '').
+        spec = self.tools[name].get("locates_entry")
+        if spec and not _located_ids(spec, arguments):
+            return _refusal(ValidationError(_no_id_message(spec)))
+        kb_name_named = named_kb(arguments.get("kb_name")) is not None
+        if spec and not kb_name_named:
+            try:
+                arguments = self._locate_entry_ids(spec, arguments, readable_kbs)
+            except PyriteError as e:
+                return _refusal(e)
 
         # Every KB the call names goes through the one resolver (#952),
         # for every caller: an unknown name, a KB outside a scoped caller's
@@ -2752,6 +2831,10 @@ class PyriteMCPServer:
         try:
             handler = self.tools[name]["handler"]
             with binding(target):
+                if spec and kb_name_named:
+                    # Verifies each id in the `kb_name` the caller named (the
+                    # checks above ran on it); raises the refusal.
+                    arguments = self._locate_entry_ids(spec, arguments, readable_kbs)
                 if takes_readable:
                     # A cross-KB handler: nothing was named to refuse, so it
                     # must filter instead. Only handlers that declare the
