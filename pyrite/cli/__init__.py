@@ -372,8 +372,16 @@ def ci_command(
         has_failure = False
         if fail_threshold >= 0 and total_errors > 0:
             has_failure = True
-        if fail_threshold >= 1 and total_warnings > 0:
-            has_failure = True
+        if fail_threshold >= 1:
+            # Warnings fail CI unless a named rubric checker's action is configured to warn (#1166)
+            failing_warnings = [
+                i
+                for s in kb_summaries
+                for i in s["issues"]
+                if i.get("severity") == "warning" and i.get("rubric_action") != "warn"
+            ]
+            if failing_warnings:
+                has_failure = True
 
         result_str = "fail" if has_failure else "pass"
 
@@ -392,6 +400,11 @@ def ci_command(
                                 "rule": i.get("rule", ""),
                                 "field": i.get("field", ""),
                                 "message": i.get("message", ""),
+                                **(
+                                    {"rubric_action": i["rubric_action"]}
+                                    if "rubric_action" in i
+                                    else {}
+                                ),
                             }
                             for i in s["issues"]
                             if severity_order.get(i.get("severity", "info"), 2) <= fail_threshold

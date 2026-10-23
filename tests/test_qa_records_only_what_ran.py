@@ -890,6 +890,7 @@ def _unreadable_issues(issues: list[dict]) -> list[dict]:
 def test_ci_json_fails_a_kb_whose_files_cannot_be_read(broken_plain):
     config, fault = broken_plain
     result = _invoke(config, ["ci", "--severity", "error", "--format", "json"])
+    assert not isinstance(result.exception, OSError), repr(result.exception)
     body = json.loads(result.stdout)
     assert result.exit_code == 1, result.stdout + result.stderr
     assert body["result"] == "fail"
