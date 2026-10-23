@@ -18,8 +18,6 @@ from .cli.search_commands import register_search_command
 from .config import current_config_file, load_config
 from .exceptions import PyriteError, refusal_fields
 from .logging import configure_entry_point_logging, logging_epilog
-from .services.access_policy import UNSCOPED
-from .services.kb_service import KBService
 from .utils.errors import PyriteCLIGroup
 
 # The same root as `pyrite` and `pyrite-admin`: the one point a command's
@@ -74,6 +72,8 @@ def _get_svc(*kbs: object, output_format: str = "rich"):
     one resolver (#952, #924): an unknown name or a shortname is refused
     before anything is read, rendered in ``output_format``; None names no KB.
     """
+    from .services.kb_service import KBService
+
     config = load_config()
     db = open_index_db(config)
     try:
@@ -112,6 +112,8 @@ def get_entry(
     ),
 ):
     """Get a specific entry by ID."""
+    from .services.access_policy import UNSCOPED
+
     svc, db = _get_svc(kb_name, output_format=output_format)
     try:
         result = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=UNSCOPED)
@@ -339,6 +341,8 @@ def backlinks_cmd(
     ),
 ):
     """Find entries that link to a given entry."""
+    from .services.access_policy import UNSCOPED
+
     svc, db = _get_svc(kb_name, output_format=output_format)
     try:
         from .services.graph_service import GraphService
