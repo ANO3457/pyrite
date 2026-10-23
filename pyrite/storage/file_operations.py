@@ -1778,7 +1778,7 @@ def _append(doc: _Doc, segs: list, op: Append, conv: _Conv) -> list:
         raise OperationRefusedError(f"{_show(segs)} is not a list; cannot append to it", op)
     items = node.value
     if node.flow_style:
-        hint = _style(items[-1]) if items else None
+        hint = _style_tree(items[-1]) if items else None
         new = _emit_flow(op.value, hint)
         if not items:
             return [(doc.s(node) + 1, doc.s(node) + 1, new)]
@@ -1786,7 +1786,7 @@ def _append(doc: _Doc, segs: list, op: Append, conv: _Conv) -> list:
         return [(end, end, ", " + new)]
     last = len(items) - 1
     dash_col, content_col = _item_cols(doc, node, last)
-    lines = _emit_item_lines(op.value, dash_col, content_col, _style(items[last]), conv)
+    lines = _emit_item_lines(op.value, dash_col, content_col, _style_tree(items[last]), conv)
     pos = _item_range(doc, node, last)[1]
     return [(pos, pos, "".join(line + doc.eol for line in lines))]
 
@@ -1856,6 +1856,30 @@ def _set_node(doc: _Doc, container: Node, idx: int, node: Node, cur: Any, new: A
 
 def _style(node: Node) -> str | None:
     return node.style if isinstance(node, ScalarNode) else None
+
+
+def _style_tree(node: Node) -> Any:
+    """The quoting styles a neighbour item was written with, in its shape.
+
+    A scalar's style; a mapping's styles by key; a sequence's by position. An
+    appended item is spelled like the item beside it (ADR-0042 decision 2),
+    and that used to stop at the item's own node: `_style` answers ``None``
+    for a mapping, so `- target: "foo"` got a bare `- target: bar` (#1023).
+    A key the neighbour does not have, or a value whose spelling would not
+    read back, falls to the emitter's own rule (`_emit_scalar`).
+    """
+    if isinstance(node, ScalarNode):
+        return node.style
+    if isinstance(node, MappingNode):
+        # keyed by the loaded key (`1`, not the text "1"): emitters look values up by it
+        return {
+            loaded: _style_tree(value)
+            for key, value in node.value
+            if (loaded := _node_key(key)) is not _MISSING
+        }
+    if isinstance(node, SequenceNode):
+        return [_style_tree(value) for value in node.value]
+    return None
 
 
 def _scalar_edit(doc: _Doc, node: Node, new_text: str, flow: bool) -> list:
@@ -2029,6 +2053,8 @@ def _edit_seq(doc, container, idx, node: SequenceNode, cur: list, new: list, con
     plan = _plan(cur, new)
     if plan is None:  # nothing kept: write the list afresh, in its own style
         if node.flow_style:
+            # a fresh rewrite copies nothing from a neighbour: `_style_tree` of
+            # item 0 would be the styles one level down; keep only the scalar style
             hint = _style(items[0]) if items else None
             return [(doc.s(node), doc.e(node), _emit_flow(new, hint))]
         return _replace_fresh(doc, container, idx, node, new, conv)
@@ -2040,7 +2066,7 @@ def _edit_seq(doc, container, idx, node: SequenceNode, cur: list, new: list, con
         edits += _flow_delete(doc, items, deletes, _end)
         for anchor, js in inserts:
             ref = items[first_kept if anchor is None else anchor]
-            text = ", ".join(_emit_flow(new[j], _style(ref)) for j in js)
+            text = ", ".join(_emit_flow(new[j], _style_tree(ref)) for j in js)
             if anchor is None:
                 edits.append((doc.s(ref), doc.s(ref), text + ", "))
             else:
@@ -2057,7 +2083,9 @@ def _edit_seq(doc, container, idx, node: SequenceNode, cur: list, new: list, con
         lines = [
             line
             for j in js
-            for line in _emit_item_lines(new[j], dash_col, content_col, _style(items[ref]), conv)
+            for line in _emit_item_lines(
+                new[j], dash_col, content_col, _style_tree(items[ref]), conv
+            )
         ]
         pos = start if anchor is None else end
         edits.append((pos, pos, "".join(line + doc.eol for line in lines)))
@@ -2243,15 +2271,25 @@ def _widen_edits(doc: _Doc, op: Any, expected: dict) -> list | None:
     conv = _conventions(doc)
     text = doc.text
     if node.flow_style and isinstance(node, SequenceNode) and isinstance(new, list):
-        pieces, used = [], 0
-        for item in new:
-            copied = None
+        kept, used = {}, 0  # new index -> old index, copied by bytes
+        for j, item in enumerate(new):
             for i in range(used, len(node.value)):
                 if values_equal(old[i], item):
-                    copied = text[doc.s(node.value[i]) : _end(doc, node.value[i])]
+                    kept[j] = i
                     used = i + 1
                     break
-            pieces.append(copied if copied is not None else _emit_flow(item, None))
+        pieces = []
+        for j, item in enumerate(new):
+            if j in kept:
+                pieces.append(text[doc.s(node.value[kept[j]]) : _end(doc, node.value[kept[j]])])
+                continue
+            # a new item is spelled like the kept item before it (else after it),
+            # as the narrow path does; with none kept the list is fresh: no style
+            before = [kept[k] for k in kept if k < j]
+            after = [kept[k] for k in kept if k > j]
+            near = before[-1] if before else after[0] if after else None
+            style = None if near is None else _style_tree(node.value[near])
+            pieces.append(_emit_flow(item, style))
         return [(doc.s(node), doc.e(node), "[" + ", ".join(pieces) + "]")]
     if not _is_block(node) or not new or not isinstance(new, Mapping | list):
         return None
@@ -2300,15 +2338,18 @@ def _widen_seq(doc: _Doc, node: SequenceNode, old: list, new: list, conv) -> lis
     region_start = _item_range(doc, node, 0)[0]
     dash_col, content_col = _item_cols(doc, node, 0)
 
-    def emit(values: list) -> str:
+    def emit(values: list, ref: int | None) -> str:
+        # the item the new ones go beside, as `_edit_seq` spells them (#1023);
+        # None for a fresh rewrite, which has no neighbour
+        style = None if ref is None else _style_tree(items[ref])
         return "".join(
-            x + eol for v in values for x in _emit_item_lines(v, dash_col, content_col, None, conv)
+            x + eol for v in values for x in _emit_item_lines(v, dash_col, content_col, style, conv)
         )
 
     plan = _plan(old, new)
     if plan is None:
         end = _item_range(doc, node, len(items) - 1)[1]
-        return [(region_start, end, emit(new))]
+        return [(region_start, end, emit(new, None))]
     replaces, deletes, inserts, first_kept = plan
     after = dict(inserts)
     chunks: list[str] = []
@@ -2318,13 +2359,13 @@ def _widen_seq(doc: _Doc, node: SequenceNode, old: list, new: list, conv) -> lis
         chunks.append(text[prev:start])  # the lines between items stay
         prev = end
         if i == first_kept and None in after:
-            chunks.append(emit([new[j] for j in after[None]]))
+            chunks.append(emit([new[j] for j in after[None]], first_kept))
         if i in replaces:
-            chunks.append(emit([new[replaces[i]]]))
+            chunks.append(emit([new[replaces[i]]], i))
         elif i not in deletes:
             chunks.append(text[start:end])
         if i in after:
-            chunks.append(emit([new[j] for j in after[i]]))
+            chunks.append(emit([new[j] for j in after[i]], i))
     return [(region_start, prev, "".join(chunks))]
 
 
@@ -2343,37 +2384,73 @@ def _emit_inline(value: Any, style: str | None) -> str:
     return _emit_scalar(value, style, None, False)
 
 
-def _emit_pair_lines(key: Any, value: Any, col: int, conv: _Conv) -> list[str]:
+def _emit_pair_lines(key: Any, value: Any, col: int, conv: _Conv, style: Any = None) -> list[str]:
     pad = " " * col
     name = _emit_key(key, False)
     if _is_inline(value):
-        return [f"{pad}{name}: {_emit_inline(value, None)}"]
+        return [f"{pad}{name}: {_emit_inline(value, style)}"]
     step = conv.map_indent if isinstance(value, Mapping) else conv.seq_offset
-    return [f"{pad}{name}:", *_emit_block(value, col + step, conv)]
+    return [f"{pad}{name}:", *_emit_block(value, col + step, conv, style)]
 
 
-def _emit_block(value: Any, col: int, conv: _Conv) -> list[str]:
-    """A non-empty mapping or list in block style, its first line at ``col``."""
+def _emit_block(value: Any, col: int, conv: _Conv, style: Any = None) -> list[str]:
+    """A non-empty mapping or list in block style, its first line at ``col``.
+
+    ``style`` is a neighbour's `_style_tree`, matched by key or position: its
+    quoting is copied where the value can carry it (#1023).
+    """
     if isinstance(value, Mapping):
-        return [line for k, v in value.items() for line in _emit_pair_lines(k, v, col, conv)]
-    return [line for item in value for line in _emit_item_lines(item, col, col + 2, None, conv)]
+        return [
+            line
+            for key, item in value.items()
+            for line in _emit_pair_lines(
+                key, item, col, conv, style.get(key) if isinstance(style, Mapping) else None
+            )
+        ]
+    return [
+        line
+        for i, item in enumerate(value)
+        for line in _emit_item_lines(
+            item,
+            col,
+            col + 2,
+            style[i] if isinstance(style, list) and i < len(style) else None,
+            conv,
+        )
+    ]
 
 
 def _emit_item_lines(item: Any, dash_col: int, content_col: int, style, conv) -> list[str]:
     lead = " " * dash_col + "-" + " " * max(1, content_col - dash_col - 1)
     if _is_inline(item):
         return [lead + _emit_inline(item, style)]
-    lines = _emit_block(item, content_col, conv)
+    lines = _emit_block(item, content_col, conv, style)
     return [lead + lines[0][content_col:], *lines[1:]]
 
 
-def _emit_flow(value: Any, style: str | None) -> str:
+def _flow_item_style(style: Any, i: int) -> Any:
+    """The style for item ``i`` of a flow list: a neighbour's tree is matched by
+    position; a plain scalar style applies to every item, as it always has."""
+    if isinstance(style, list):
+        return style[i] if i < len(style) else None
+    return style if isinstance(style, str) else None
+
+
+def _emit_flow(value: Any, style: Any) -> str:
     if isinstance(value, Mapping):
-        inner = ", ".join(f"{_emit_key(k, True)}: {_emit_flow(v, None)}" for k, v in value.items())
+        inner = ", ".join(
+            f"{_emit_key(k, True)}: "
+            f"{_emit_flow(v, style.get(k) if isinstance(style, Mapping) else None)}"
+            for k, v in value.items()
+        )
         return "{" + inner + "}"
     if isinstance(value, list | tuple):
-        return "[" + ", ".join(_emit_flow(v, style) for v in value) + "]"
-    return _emit_scalar(value, style, None, True)
+        return (
+            "["
+            + ", ".join(_emit_flow(v, _flow_item_style(style, i)) for i, v in enumerate(value))
+            + "]"
+        )
+    return _emit_scalar(value, style if isinstance(style, str) else None, None, True)
 
 
 def _emit_key(key: Any, flow: bool) -> str:

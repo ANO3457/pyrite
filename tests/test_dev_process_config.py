@@ -779,7 +779,13 @@ class TestCloudEnvironment:
 
         repo = tmp_path / "checkout"
         (repo / "scripts").mkdir(parents=True)
-        for name in ("cloud-env-setup.sh", "setup-checkout.sh", "cloud-postgres.sh"):
+        for name in (
+            "cloud-env-setup.sh",
+            "setup-checkout.sh",
+            "cloud-postgres.sh",
+            "known_cloud_failures.py",
+            "known-cloud-failures.json",
+        ):
             shutil.copy(REPO / "scripts" / name, repo / "scripts" / name)
         (repo / "pyproject.toml").write_text("[project]\nname='x'\n")
         (repo / "extensions" / "ext").mkdir(parents=True)
@@ -877,6 +883,35 @@ class TestCloudEnvironment:
         assert run_hook().returncode == 0
         assert len(uv_log.read_text().splitlines()) > before, "pyproject changed: reinstall"
 
+    @pytest.mark.parametrize("broken_registry", ["missing", "malformed"])
+    def test_a_broken_optional_brief_does_not_prevent_session_setup(
+        self, scratch_checkout, broken_registry
+    ):
+        import subprocess
+
+        repo, env, uv_log = scratch_checkout
+        registry = repo / "scripts" / "known-cloud-failures.json"
+        if broken_registry == "missing":
+            registry.unlink()
+        else:
+            registry.write_text("not json")
+        result = subprocess.run(
+            ["bash", str(REPO / "scripts" / "cloud-session-start.sh")],
+            env={
+                **env,
+                "CLAUDE_CODE_REMOTE": "true",
+                "CLAUDE_PROJECT_DIR": str(repo),
+                "PYRITE_SETUP_POSTGRES": "0",
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "known-failure brief unavailable" in result.stderr
+        assert uv_log.exists(), "setup-checkout must still run"
+        assert (repo / ".venv" / ".pyrite-install-stamp").exists()
+
     def test_session_hook_exports_the_url_through_the_env_file(
         self, scratch_checkout, fake_docker, listener, tmp_path
     ):
@@ -904,6 +939,8 @@ class TestCloudEnvironment:
         lines = env_file.read_text().splitlines()
         assert any(l.startswith('export PATH="') and ".venv/bin" in l for l in lines)
         assert any("PYRITE_TEST_PG_URL=" in l and f":{listener}/pyrite_test" in l for l in lines)
+        assert "Known cloud-only failures (not a CI waiver):" in result.stdout
+        assert "issues/1110" in result.stdout
 
     def test_contributing_pastes_the_line_the_script_documents_and_names_the_opt_out(self):
         line = "curl -fsSL https://raw.githubusercontent.com/pyrite-wiki/pyrite/dev/scripts/cloud-env-setup.sh | bash"
@@ -1173,10 +1210,10 @@ class TestRunningTheTestsDoc:
 class TestDevPushReusesTheMergeQueuesPass:
     """Each commit is tested once (maintainer, 2026-09-25).
 
-    The merge queue runs the full matrix and the frontend on the exact commit
-    that then lands on dev -- its head_sha is the push's SHA. The push to dev
-    used to run both again on that same commit. Now a successful merge_group
-    run for the SHA skips them on the push; smoke still runs (the queue does
+    The merge queue runs the frontend and `test` on 3.13 on the exact commit
+    that then lands on dev -- its head_sha is the push's SHA. A successful
+    merge_group run for the SHA skips the frontend on the push and narrows
+    `test` to 3.11 and 3.12 (2026-10-21); smoke still runs (the queue does
     not run it), and main and workflow_dispatch never skip.
     """
 
@@ -1210,12 +1247,19 @@ class TestDevPushReusesTheMergeQueuesPass:
         assert "event=merge_group" in run and "head_sha=$GITHUB_SHA" in run
         assert '.conclusion == \\"success\\"' in run
 
-    @pytest.mark.parametrize("name", ["test", "frontend"])
-    def test_test_and_frontend_skip_when_the_queue_passed(self, ci, name):
-        cond = str(ci["jobs"][name]["if"])
+    def test_frontend_skips_when_the_queue_passed(self, ci):
+        cond = str(ci["jobs"]["frontend"]["if"])
         assert "needs.changes.outputs.queue_passed != 'true'" in cond, cond
         # The skip is ANDed onto the existing condition, never ORed.
         assert cond.startswith("(") and ") && needs.changes.outputs.queue_passed" in cond, cond
+
+    @pytest.mark.parametrize("name", ["test", "collect"])
+    def test_test_runs_the_interpreters_the_queue_did_not(self, ci, name):
+        # Since 2026-10-21 the queue runs 3.13 only, so the push to dev is
+        # where 3.11 and 3.12 run: `test` and `collect` no longer skip on a
+        # passed queue; their matrix narrows instead
+        # (tests/test_ci_workflow_triggers.py, TestTheMatrixNarrowsWhereItShould).
+        assert "queue_passed" not in str(ci["jobs"][name]["if"]), name
 
     @pytest.mark.control(reason="pins that the skip stays off jobs that never had it")
     @pytest.mark.parametrize("name", ["smoke", "kb", "gate"])
@@ -1572,7 +1616,8 @@ class TestTheRedLineIsFirstAndEveryGatingRunLeavesATimingRecord:
         job = ci["jobs"]["mypy"]
         run = "\n".join(str(s.get("run", "")) for s in job["steps"])
         assert "mypy_ratchet.py mypy.out --base mypy-base.out" in run
-        assert "HEAD^1" in run and "PUSH_BEFORE" in run
+        assert "bash scripts/mypy_base.sh" in run
+        assert "PUSH_BEFORE" in job["steps"][-1]["env"]
         checkout = next(s for s in job["steps"] if "checkout" in str(s.get("uses", "")))
         assert checkout["with"]["fetch-depth"] >= 2, "HEAD^1 of the merge ref must exist"
 

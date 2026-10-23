@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..config import PyriteConfig, load_config
-from ..exceptions import PyriteError
+from ..exceptions import PyriteError, StorageError
 from ..services.kb_registry_service import KBRegistryService
 from ..services.kb_service import KBService
 from ..storage.database import PyriteDB
@@ -58,6 +58,46 @@ def require_kb(
         from ..utils.errors import cli_error_from
 
         cli_error_from(exc, output_format)
+        raise  # unreachable: cli_error_from always exits
+
+
+def require_entry_kb(
+    entry_id: str,
+    kb_name: object,
+    *,
+    entry_type: str | None = None,
+    output_format: str | None = None,
+) -> str:
+    """The KB that holds ``entry_id``, for a command whose ``-k`` is optional (#911).
+
+    The CLI's door to ``KBService.locate``, the one rule for an id given
+    with or without a KB: ``-k`` resolved by :func:`require_kb`, then the id
+    found in that KB; without ``-k``, the one KB that holds it (config.yaml
+    and registry-only KBs, as ``pyrite get`` searches), or ``AMBIGUOUS`` with
+    ``candidate_kbs`` when several do, or ``NOT_FOUND``. A command calls it
+    before it reads or writes anything, and then works in the KB it returns
+    -- never in ``kb_name or ""``, which is a KB named '' that holds nothing
+    (rows written there belong to no entry). Unscoped: the CLI runs as the
+    local principal.
+
+    ``output_format`` as :func:`require_kb`: None raises for the root to
+    render (a command on the ADR-0046 contract); a legacy command passes its
+    format and the refusal is printed here, exit 1.
+    """
+    from ..exceptions import EntryNotFoundError
+    from ..services.access_policy import UNSCOPED
+
+    try:
+        with cli_context(kbs=(kb_name,)) as (_config, _db, svc):
+            return svc.locate(entry_id, kb_name, readable_kbs=UNSCOPED, entry_type=entry_type)
+    except PyriteError as exc:
+        if output_format is None:
+            raise
+        from ..utils.errors import cli_error_from
+
+        # The CLI spells a missing entry NOT_FOUND (utils/errors.py).
+        code = "NOT_FOUND" if isinstance(exc, EntryNotFoundError) else None
+        cli_error_from(exc, output_format, error_code=code)
         raise  # unreachable: cli_error_from always exits
 
 
@@ -178,7 +218,10 @@ def open_index_for_validation(
     The returned database belongs to the caller, which must close it. If
     opening or checking the index fails, the returned config is freshly loaded
     from YAML so partially merged DB-only KBs cannot leak into validation.
-    File-system errors while checking KB contents still propagate.
+    File-system errors while checking KB contents still propagate. A
+    ``StorageError`` (a corrupt or truncated index, #922) propagates too: the
+    caller is a check command, and a check that cannot be made is a refusal
+    (exit 1, ``STORAGE_ERROR``), not a clean verdict from the YAML alone.
     """
     try:
         config, db = get_config_and_db(config)
@@ -228,7 +271,7 @@ def get_config_with_registered_kbs(
             db.merge_registered_kbs(config)
         finally:
             db.close()
-    except (OSError, sqlite3.Error, SQLAlchemyError) as exc:
+    except (OSError, sqlite3.Error, SQLAlchemyError, StorageError) as exc:
         logger.warning(
             "Could not read KB registry from index database %s while resolving %r; "
             "using YAML config: %s",
@@ -251,11 +294,25 @@ def require_input_file(path: Path | str, what: str = "File") -> Path:
     """
     from ..exceptions import EntryNotFoundError, ValidationError
 
+    if isinstance(path, str) and not path.strip():
+        raise ValidationError(f"{what}: no path given")
     p = Path(path)
     if not p.exists():
         raise EntryNotFoundError(f"{what} not found: {path}")
     if p.is_dir():
         raise ValidationError(f"{what} is a directory, not a file: {path}")
+    if not p.is_file():
+        import stat
+
+        mode = p.stat().st_mode
+        kind = (
+            "FIFO"
+            if stat.S_ISFIFO(mode)
+            else "device"
+            if stat.S_ISCHR(mode) or stat.S_ISBLK(mode)
+            else "non-regular file"
+        )
+        raise ValidationError(f"{what} is a {kind}, not a regular file: {path}")
     return p
 
 

@@ -15,10 +15,10 @@ from rich.console import Console
 
 from .cli.context import require_kb
 from .config import (
-    CONFIG_FILE,
     KBConfig,
     Repository,
     auto_discover_kbs,
+    current_config_file,
     load_config,
     save_config,
 )
@@ -253,6 +253,7 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
 
     from .cli.context import get_config_and_db
     from .services.embedding_service import (
+        EmbeddingModelUnavailableError,
         EmbeddingService,
         is_available,
         semantic_unavailable_for,
@@ -283,9 +284,19 @@ def index_embed(kb_name: str = typer.Argument(..., help="KB to generate embeddin
             )
         # This called `embed_kb`, which EmbeddingService has never had; the
         # ImportError arm hid that from every run without the extra.
-        stats = EmbeddingService(db, model_name=config.settings.embedding_model).embed_all(
-            kb_name=kb_name
-        )
+        try:
+            stats = EmbeddingService(db, model_name=config.settings.embedding_model).embed_all(
+                kb_name=kb_name
+            )
+        except EmbeddingModelUnavailableError as e:
+            # The finder in `is_available()` saw the package; its first real
+            # import failed. That is a missing dependency, not a bad entry
+            # (#1101).
+            cli_error(
+                str(e),
+                error_code="DEPENDENCY_MISSING",
+                suggestion=extra_install_command("semantic"),
+            )
     finally:
         db.close()
     console.print(
@@ -308,16 +319,19 @@ def index_health():
         kb_svc = KBService(config, db)
 
         health = kb_svc.check_index_health()
-        is_healthy = not (
-            health["missing_files"]
-            or health["unindexed_files"]
-            or health["stale_entries"]
-            or health["unreadable_files"]
-            or health["orphaned_entries"]
-        )
+        from .services.index_health import health_verdict
 
-        if is_healthy:
+        # The same verdict `pyrite index health` and QA's index check use
+        # (#1119): this command used to ignore duplicates, content_changed and
+        # error-severity off-list values, so it called an index healthy that
+        # the main command called unhealthy.
+        verdict = health_verdict(health)
+        if verdict["status"] == "healthy":
             console.print("[green]Index is healthy.[/green]")
+        elif verdict["status"] == "warning":
+            console.print(
+                "[yellow]Index has warnings; run `pyrite index health` for details.[/yellow]"
+            )
         else:
             console.print("[yellow]Index has issues:[/yellow]")
             if health["missing_files"]:
@@ -326,10 +340,19 @@ def index_health():
                 console.print(f"  Unindexed files: {len(health['unindexed_files'])}")
             if health["stale_entries"]:
                 console.print(f"  Stale entries: {len(health['stale_entries'])}")
+            if health.get("content_changed"):
+                console.print(f"  Content changed: {len(health['content_changed'])}")
+            if health.get("duplicates"):
+                console.print(f"  Duplicate ids: {len(health['duplicates'])}")
             if health["unreadable_files"]:
                 console.print(f"  Unreadable files: {len(health['unreadable_files'])}")
             if health["orphaned_entries"]:
                 console.print(f"  Orphaned index entries: {len(health['orphaned_entries'])}")
+            off_list_errors = [
+                row for row in health.get("off_list_values") or [] if row.get("severity") == "error"
+            ]
+            if off_list_errors:
+                console.print(f"  Off-list values: {len(off_list_errors)}")
             raise typer.Exit(1)  # as `pyrite index health` does (#526)
 
 
@@ -568,10 +591,11 @@ def auth_logout():
 @config_app.command("show")
 def config_show():
     """Show current configuration."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Repositories:[/bold] {len(config.repositories)}")

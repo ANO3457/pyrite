@@ -226,11 +226,27 @@ class TestRemoveKB:
 
 
 class TestUpdateKB:
-    def test_update_changes_description(self, registry):
-        """update_kb changes the description."""
-        registry.seed_from_config()
+    def test_update_config_metadata_is_refused(self, cli_world):
+        """A hand-written config is authoritative; refusal leaves the row unchanged."""
+        from pyrite.exceptions import KBDefinedInConfigError
 
-        result = registry.update_kb("test-kb", description="Updated description")
+        world = cli_world()
+        registry = KBRegistryService(world.config, world.db)
+        before = registry.get_kb("test-kb")["description"]
+        with pytest.raises(KBDefinedInConfigError, match="config.yaml"):
+            registry.update_kb("test-kb", description="Updated description")
+        assert registry.get_kb("test-kb")["description"] == before
+
+    @pytest.mark.control(
+        reason="A DB-only KB remains editable; only hand-defined config KBs refuse"
+    )
+    def test_update_changes_registry_description(self, cli_world):
+        world = cli_world()
+        folder = world.root / "registry-only"
+        folder.mkdir()
+        world.db.register_kb("registry-only", "generic", str(folder), source="user")
+        registry = KBRegistryService(world.config, world.db)
+        result = registry.update_kb("registry-only", description="Updated description")
         assert result["description"] == "Updated description"
 
     def test_update_missing_raises_not_found(self, registry):

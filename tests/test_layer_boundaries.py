@@ -52,6 +52,9 @@ The inventory checks use the shared entry-point list
 (`tests/_surface_inventory.py`, ADR-0037): every REST operation and MCP
 tool handler is in a module this scan covers, or in an installed plugin
 package (extension code is #384's, and outside this ratchet).
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#architecture
 """
 
 from __future__ import annotations
@@ -111,10 +114,10 @@ COMPOSITION_ROOTS: dict[tuple[str, str], tuple[int, str]] = {
     (f"{_MCP}.__init__", "storage"): (1, _MCP_ROOT),
     (f"{_MCP}.__init__", ".db"): (7, _MCP_ROOT),
     (f"{_MCP}.close", ".db"): (1, "closes what __init__ opened"),
-    (f"{_MCP}.qa_svc", ".db"): (2, _MCP_ROOT),
-    (f"{_MCP}.task_svc", ".db"): (1, _MCP_ROOT),
-    (f"{_MCP}.search_svc", ".db"): (1, _MCP_ROOT),
-    (f"{_MCP}.link_svc", ".db"): (1, _MCP_ROOT),
+    # The one place the shared server's index is read: the instance's own, or
+    # the call's bound write target (ADR-0044 §1); every service builds on it.
+    (f"{_MCP}.db", ".db"): (1, _MCP_ROOT + " (or the call's bound write target)"),
+    (f"{_MCP}.db", "db."): (1, _MCP_ROOT + " (or the call's bound write target)"),
     (f"{_MCP}._get_index_worker", ".db"): (1, _MCP_ROOT),
     (f"{_MCP}._register_plugin_tools", ".db"): (1, _MCP_ROOT + " (the plugins' PluginContext)"),
     (f"{_CTX}::<module>", "PyriteDB"): (1, _CLI_ROOT),
@@ -140,7 +143,7 @@ COMPOSITION_ROOTS: dict[tuple[str, str], tuple[int, str]] = {
         "the return annotation of _get_service, the task commands' get_config_and_db wrapper",
     ),
 }
-COMPOSITION_ROOTS_SIZE = 36  # a new root is a design decision: raise it only with one
+COMPOSITION_ROOTS_SIZE = 34  # a new root is a design decision: raise it only with one
 
 # -- Not yet moved: (function, rule) -> (count, why and where it moves) --------
 
@@ -177,10 +180,6 @@ ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
         1,
         "WorktreeDB; " + _FOLLOW,
     ),
-    ("pyrite/server/worktree_resolver.py::WorktreeResolver.get_write_context", "storage"): (
-        1,
-        "WorktreeDB; " + _FOLLOW,
-    ),
     ("pyrite/cli/index_commands.py::index_build", "storage"): (2, _INDEX),
     ("pyrite/cli/index_commands.py::index_build", "db."): (1, "db.vec_available; " + _FOLLOW),
     ("pyrite/cli/index_commands.py::index_sync", "storage"): (2, _INDEX),
@@ -193,13 +192,12 @@ ALLOWLIST: dict[tuple[str, str], tuple[int, str]] = {
         1,
         "backup/restore of the index file; " + _FOLLOW,
     ),
-    ("pyrite/cli/db_commands.py::db_backup", "sqlite3"): (2, "sqlite3 backup API; " + _FOLLOW),
     ("pyrite/cli/db_commands.py::db_restore", "sqlite3"): (
         2,
         "sqlite3 integrity check; " + _FOLLOW,
     ),
 }
-ALLOWLIST_SIZE = 23  # lower it with every entry removed; never raise it
+ALLOWLIST_SIZE = 21  # lower it with every entry removed; never raise it
 
 SURFACES = (
     "pyrite/server/",

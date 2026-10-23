@@ -263,6 +263,10 @@ class TestEmbed:
         (stub / "sentence_transformers" / "__init__.py").write_text(
             "raise ImportError('no semantic extra')\n"
         )
+        # `is_available()` answers through the import system's finder, so the
+        # broken install is named at the first real load (#1101): there has to
+        # be an entry for that load to happen.
+        _create(cli, "Needs a vector")
         cli.pyrite("index", "sync")
         out = cli.run(
             "pyrite.admin_cli",
@@ -475,6 +479,7 @@ class _Venv:
             "HOME": str(root / "home"),
             "PYRITE_CONFIG_DIR": str(root / "cfg"),
             "PYTHONPATH": str(REPO),
+            # pip's negative boolean option is inverted: 0 disables build isolation.
             "PIP_NO_BUILD_ISOLATION": "0",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "HF_HUB_OFFLINE": "1",
@@ -1596,10 +1601,6 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
-    ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_resolve_adr_kb"): (
-        "safe",
-        "tries the next KB",
-    ),
     ("extensions/software-kb/src/pyrite_software_kb/cli.py", "sw_milestones"): (
         "safe",
         "bad metadata reads as empty",
@@ -1612,7 +1613,10 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
-    ("pyrite/cli/__init__.py", "<module>"): ("safe", "plugin CLI loading: not a command's effect"),
+    ("pyrite/cli/__init__.py", "_mount_plugin_cli"): (
+        "safe",
+        "optional plugin CLI loading: logs unavailable groups, not a command's requested effect",
+    ),
     ("pyrite/cli/collection_commands.py", "list_collections"): (
         "safe",
         "bad metadata reads as empty",
@@ -1762,7 +1766,6 @@ PRINTS: dict[tuple[str, str], tuple[str, str]] = {
     ("pyrite/admin_cli.py", "kb_validate"): ("safe", "exits 1 after listing the errors"),
     ("pyrite/admin_cli.py", "repo_sync"): ("fixed", "TestAdminRepo"),
     ("pyrite/cli/__init__.py", "import_entries"): ("fixed", "TestImportAndBulkLinks"),
-    ("pyrite/cli/extension_commands.py", "extension_install"): ("fixed", "TestExtensionVerify"),
     ("pyrite/cli/index_commands.py", "_report_health"): (
         "safe",
         "index health exits 1 when unhealthy, in its caller",

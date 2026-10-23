@@ -467,6 +467,11 @@ def init_kb(
 
         cli_error(str(exc), error_code="INVALID_KB_NAME")
 
+    if schema_file is not None:
+        from .context import input_file_or_exit
+
+        input_file_or_exit(schema_file, "Schema file", output_format)
+
     # Idempotency: if kb.yaml exists, warn and return
     kb_yaml_path = path / "kb.yaml"
     if kb_yaml_path.exists():
@@ -485,10 +490,7 @@ def init_kb(
 
     # Resolve preset: try plugin presets first, fall back to built-in
     preset = None
-    if schema_file:
-        from .context import input_file_or_exit
-
-        input_file_or_exit(schema_file, "Schema file", output_format)
+    if schema_file is not None:
         preset = load_yaml_file(schema_file)
     else:
         try:

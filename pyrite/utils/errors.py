@@ -675,6 +675,8 @@ class PyriteCLIGroup(TyperGroup):
     - **A rich renderer chooses its words.** The kind, the exit code and every
       machine format are still decided here. Text a renderer printed before it
       raised stays above the ``NO_OUTCOME`` line.
+    - **Root-context close callbacks**: drained inside this method's guard,
+      before the answer is published; their prints or exits are NO_OUTCOME.
     - **After this method returns**: ``os._exit`` (exit 0, empty stdout, which
       no outcome ever is), an ``atexit`` handler, a thread that outlives the
       command, a buffer of the command's own over descriptor 1 that is
@@ -694,6 +696,16 @@ class PyriteCLIGroup(TyperGroup):
     back, and its exceptions pass through, except a refused config save
     (#377), which is one error line and exit 1. If it returns an ``Outcome``
     (a plugin, decision 5), that is rendered here in the default format.
+    Its own private ``--format`` parameter is not the shared contract and
+    does not choose that rendering. An unsupported ``PYRITE_FORMAT`` is a
+    usage error for the shared option, but falls back to JSON for a legacy
+    Outcome. These two legacy behaviours are outside the shared-option
+    guarantee (#838). A standalone sub-app needs this root to join it.
+
+    Root-context close callbacks run here, before the guard ends and before
+    the answer is emitted. A cleanup print or exit cannot append a second
+    document or replace the decided exit code. A printed body followed by a
+    refusal is NO_OUTCOME; the original refusal reason is retained on stderr.
     """
 
     def main(
@@ -737,7 +749,7 @@ class PyriteCLIGroup(TyperGroup):
     def _invoke(self, ctx):
         from ..cli.outcome import Outcome
         from ..cli.output import BODY_GUARD_META_KEY
-        from ..exceptions import ConfigSaveRefusedError
+        from ..exceptions import ConfigSaveRefusedError, StorageError
 
         if BODY_GUARD_META_KEY in ctx.meta:
             # A PyriteCLIGroup mounted under another: the outer one decides.
@@ -752,6 +764,8 @@ class PyriteCLIGroup(TyperGroup):
             if not guard.entered:
                 if isinstance(exc, ConfigSaveRefusedError):
                     cli_error(str(exc), error_code="CONFIG_SAVE_REFUSED")
+                if isinstance(exc, StorageError):
+                    cli_error_from(exc, _format_in(_ARGV.get()))
                 raise
             raised = exc
 
@@ -761,6 +775,15 @@ class PyriteCLIGroup(TyperGroup):
             return result
 
         fmt = guard.format or _default_format()
+        # Click normally closes the root after invoke returns. Drain its
+        # ExitStack while stdout is still held; the later close is idempotent.
+        try:
+            ctx.close()
+        except KeyboardInterrupt:
+            raise
+        except BaseException as exc:
+            if not isinstance(raised, KeyboardInterrupt):
+                raised = exc
         try:
             # Still watched: serialising a payload can print or raise too.
             try:
@@ -781,6 +804,8 @@ class PyriteCLIGroup(TyperGroup):
                 except Exception:  # no stderr to move it to; the answer still stands
                     pass
         if held:
+            if isinstance(raised, PyriteError | ValueError):
+                typer.echo(public_text(raised, log=logger), err=True)
             answer = _error_answer(
                 _no_outcome_payload(
                     f"the command wrote {len(held)} bytes to stdout itself (moved to stderr)"

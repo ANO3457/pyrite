@@ -7,6 +7,7 @@ semantic similarity search across knowledge base entries.
 Requires the optional semantic extra; remedies use the current source install.
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -24,12 +25,18 @@ logger = logging.getLogger(__name__)
 
 
 def is_available() -> bool:
-    """Check if sentence-transformers is installed."""
-    try:
-        import sentence_transformers  # noqa: F401
+    """Is sentence-transformers installed? Answered by the import system's
+    finder, not by importing the package.
 
-        return True
-    except ImportError:
+    Importing it pulls in torch -- about 300 MB of work per process, once per
+    test worker and in every CLI or server path that asks (#1101). A package
+    the finder can see but whose import fails is reported when the model first
+    loads (:func:`_load_model`), where the remedy can name the extra.
+    """
+    try:
+        return importlib.util.find_spec("sentence_transformers") is not None
+    except (ImportError, ValueError):
+        # A broken parent package, or None in sys.modules: not usable here.
         return False
 
 
@@ -320,6 +327,13 @@ class EmbeddingModelRefusedError(RuntimeError):
     that Pyrite does not trust."""
 
 
+class EmbeddingModelUnavailableError(RuntimeError):
+    """sentence-transformers is installed but cannot be imported.
+
+    The finder in :func:`is_available` sees a broken install; the first real
+    load is where the failure can be named (#1101)."""
+
+
 def _check_model_source(name: str) -> None:
     """Refuse a model that could run code shipped beside it.
 
@@ -369,11 +383,20 @@ def _load_model(name: str) -> Any:
 
     _check_model_source(name)
 
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as e:
+        # is_available() only sees the package through the finder, so a broken
+        # install reaches its first load here: name it and the remedy (#1101).
+        raise EmbeddingModelUnavailableError(
+            "sentence-transformers is installed but cannot be imported: "
+            f"{e}. Reinstall it with `{extra_install_command('semantic')}`."
+        ) from e
+
     # Suppress noisy output during model loading:
     # - transformers.disable_progress_bar() silences weight-loading tqdm bars
     # - Log levels silence the HF load report and auth warnings
     import transformers.utils.logging as tf_logging
-    from sentence_transformers import SentenceTransformer
 
     tf_logging.disable_progress_bar()
     loggers = ["transformers", "huggingface_hub"]
@@ -576,6 +599,11 @@ class EmbeddingService:
                 embedding = self.embed_text(text)
                 backend.upsert_embedding(row["id"], row["kb_name"], embedding)
                 stats["embedded"] += 1
+            except EmbeddingModelUnavailableError:
+                # Not this entry's fault: the extra is installed but broken, and
+                # every entry would fail the same way. Let the caller report the
+                # dependency once (the CLI answers DEPENDENCY_MISSING, #1101).
+                raise
             except Exception as e:
                 logger.warning("Failed to embed entry %s: %s", row.get("id"), e)
                 stats["errors"] += 1
@@ -625,7 +653,7 @@ class EmbeddingService:
 
         Returns list of entry dicts with ``similarity`` (cosine, 3 places, the
         same on every backend), ``snippet``, and ``distance`` (backend-specific:
-        sqlite-vec's L2, pgvector's cosine distance; kept for one release).
+        sqlite-vec's L2, pgvector's cosine distance; kept until 0.27; use ``similarity``).
         """
         backend = self.db.backend
         if not backend.vec_available:

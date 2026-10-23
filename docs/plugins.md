@@ -129,3 +129,14 @@ Pyrite plugins are standard Python packages that expose entry types, MCP tools, 
 1. Build and test your plugin against the latest Pyrite release
 2. Open a PR to [pyrite-wiki/pyrite](https://github.com/pyrite-wiki/pyrite) adding your plugin to the Community Plugins section of this page
 3. Include a link to your plugin's repository, a one-line description, and what it adds
+
+## Plugin Verification
+
+To install a local plugin and check that its declared entry points load in a fresh
+interpreter, run `pyrite extension install ./my-plugin --verify`. Verification uses
+the same loader as runtime discovery: each `pyrite.plugins` entry point must load,
+instantiate, and expose a `name` attribute. Exit code **3** means installation
+succeeded but verification failed, including when the distribution declares no
+`pyrite.plugins` entry points. JSON output reports `verified: false` and
+`verify_errors`; diagnostic warnings go to stderr.
+

@@ -1740,60 +1740,44 @@ class SoftwareKBPlugin:
     def _mcp_create_adr(
         self, args: dict[str, Any], *, readable_kbs: set[str] | None = None
     ) -> dict[str, Any]:
-        """Create a new ADR with auto-numbering."""
-        import json
+        """Create a new ADR with auto-numbering from files (#1082, #1175)."""
+        from .adr_listing import next_adr_number, resolve_adr_kb
 
-        db, should_close = self._get_db()
+        config = self._get_config()
         kb_name = args.get("kb_name")
-
-        try:
-            # Find next ADR number
-            query = "SELECT * FROM entry WHERE entry_type = 'adr'"
-            clause, scope_params = kb_scope_clause("kb_name", kb_name, readable_kbs)
-            query += clause
-            params = list(scope_params)
-            rows = db._raw_conn.execute(query, params).fetchall()
-
-            max_num = 0
-            for row in rows:
-                meta = {}
-                if row["metadata"]:
-                    try:
-                        meta = json.loads(row["metadata"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                num = meta.get("adr_number", 0)
-                if isinstance(num, int) and num > max_num:
-                    max_num = num
-
-            next_num = max_num + 1
-            title = args["title"]
-            slug = generate_entry_id(title)
-            status = args.get("status", "proposed")
-
-            # Build structured body
-            context = args.get("context", "")
-            decision = args.get("decision", "")
-            consequences = args.get("consequences", "")
-            body_parts = []
-            body_parts.append(f"## Context\n\n{context or 'TODO'}")
-            body_parts.append(f"## Decision\n\n{decision or 'TODO'}")
-            body_parts.append(f"## Consequences\n\n{consequences or 'TODO'}")
-            body = "\n\n".join(body_parts)
-
+        kb_conf = resolve_adr_kb(config, kb_name, readable_kbs=readable_kbs)
+        if kb_conf is None:
             return {
-                "created": True,
-                "adr_number": next_num,
-                "title": title,
-                "status": status,
-                "filename": f"adrs/{next_num:04d}-{slug}.md",
-                "body": body,
-                "deciders": args.get("deciders", []),
-                "note": "Create the markdown file with this frontmatter and body to complete.",
+                "created": False,
+                "error": "No KB resolved for the ADR (pass kb_name).",
+                "error_code": "KB_NOT_FOUND" if kb_name else "VALIDATION_FAILED",
             }
-        finally:
-            if should_close:
-                db.close()
+
+        next_num = next_adr_number(kb_conf)
+        title = args["title"]
+        slug = generate_entry_id(title)
+        status = args.get("status", "proposed")
+
+        # Build structured body
+        context = args.get("context", "")
+        decision = args.get("decision", "")
+        consequences = args.get("consequences", "")
+        body_parts = []
+        body_parts.append(f"## Context\n\n{context or 'TODO'}")
+        body_parts.append(f"## Decision\n\n{decision or 'TODO'}")
+        body_parts.append(f"## Consequences\n\n{consequences or 'TODO'}")
+        body = "\n\n".join(body_parts)
+
+        return {
+            "created": True,
+            "adr_number": next_num,
+            "title": title,
+            "status": status,
+            "filename": f"adrs/{next_num:04d}-{slug}.md",
+            "body": body,
+            "deciders": args.get("deciders", []),
+            "note": "Create the markdown file with this frontmatter and body to complete.",
+        }
 
     def _mcp_review_queue(
         self, args: dict[str, Any], *, readable_kbs: set[str] | None = None

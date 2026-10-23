@@ -1,0 +1,1 @@
+- Ensure PostgreSQL schema migration adds `aliases` column on existing databases (#1011).

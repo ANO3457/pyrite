@@ -286,11 +286,14 @@ class WorktreeService:
 
         status = GitService.get_status(worktree_path)
         if not status.get("clean", True):
-            GitService.commit(
+            committed, result = GitService.commit(
                 worktree_path,
                 message=f"Submit changes from {wt.username}",
                 paths=None,
             )
+            if not committed:
+                logger.error("Worktree submit commit failed: %s", result.get("error"))
+                raise StorageError("Could not commit worktree changes; submission was not recorded")
 
         # Update status
         now = datetime.now(UTC).isoformat()
@@ -318,6 +321,15 @@ class WorktreeService:
         repo_path = Path(wt.repo_path)
 
         from pyrite.services.git_service import GitService
+
+        # Uncommitted edits (including a failed submit) and an empty branch
+        # have nothing to land. Git merge calls that a successful no-op;
+        # the user-facing operation must not claim a change was merged.
+        compared, diff = GitService.diff_branches(repo_path, "main", wt.branch)
+        if not compared:
+            return False, "Could not compare committed worktree changes"
+        if not diff.strip():
+            return False, "No committed worktree changes to merge; reject this empty submission"
 
         # Merge user branch into main
         success, msg = GitService.merge_branch(repo_path, wt.branch, into="main")

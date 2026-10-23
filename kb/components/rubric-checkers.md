@@ -34,3 +34,27 @@ All checkers accept `(entry, schema, params=None)` and return an issue dict or N
 Called by `QAService._check_rubric_evaluation()` via named lookup. Rubric items in `kb.yaml` bind to checkers using `{text, checker, params}` dict format. Plain string items are judgment-only (LLM-evaluated). Items with `covered_by: schema` are skipped.
 
 Plugins register additional checkers via `PyritePlugin.get_rubric_checkers()`, aggregated by `PluginRegistry.get_all_rubric_checkers()`.
+
+
+## CI action for named checkers
+
+`kb.yaml` accepts exactly two action settings: a top-level
+`rubric_action: warn|fail` beside `evaluation_rubric` (default `fail`), and
+`action: warn|fail` on a named rubric item, which overrides that default.
+For example:
+
+```yaml
+rubric_action: fail
+evaluation_rubric:
+  - text: Has an owner
+    checker: has_field
+    params: {field: owner}
+    action: warn
+```
+
+Type-level `rubric_action`, `rubric`, `validation.rubric`, item `mode` and
+item `severity` are not action aliases. Invalid values of either supported
+key are configuration errors naming the key and allowed values, and fail CI.
+`warn` applies only to named checker findings. Existing bulk missing-tag and
+missing-link findings keep failing CI, and a broken or unknown checker still
+fails. JSON CI rows include `rubric_action` when a named check assigned one.

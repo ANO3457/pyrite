@@ -549,10 +549,12 @@ class BaseBackend(ABC):
 
         query = query.limit(limit).offset(offset)
         rows = query.all()
+        entry_keys = [(entry.id, entry.kb_name) for entry in rows]
+        tags_by_entry = self._get_tags_for_entries(entry_keys)
         entries = []
         for entry in rows:
             e = self._entry_to_dict(entry)
-            e["tags"] = self._get_entry_tags(entry.id, entry.kb_name)
+            e["tags"] = tags_by_entry.get((entry.id, entry.kb_name), [])
             entries.append(e)
         return entries
 
@@ -742,6 +744,10 @@ class BaseBackend(ABC):
         - ``inverse_relation``: the declared inverse of ``forward_relation``,
           ``None`` when it is not a declared type. Computed at query time, so
           an index built before a plugin registered the type still answers.
+        - ``prefix``: the KB prefix the source wrote for this link, exactly
+          as written (``None`` for a row indexed before #980). It is part of
+          the link's identity: ``[[ops:x]]`` and ``[[ops-kb:x]]`` are two
+          rows, and a reader that merges rows must keep them apart (#1062).
 
         ``readable_kbs`` (the caller's ``ReadScope`` set; ``None`` unscoped)
         drops a source the caller cannot read -- the same answer as a source
@@ -750,7 +756,7 @@ class BaseBackend(ABC):
         sql = """
             SELECT e.id, e.kb_name, e.title, e.entry_type,
                    l.inverse_relation as relation, l.relation as forward_relation,
-                   l.note
+                   l.target_prefix as prefix, l.note
             FROM link l
             JOIN entry e ON l.source_id = e.id AND l.source_kb = e.kb_name
             WHERE l.target_id = :entry_id AND l.target_kb = :kb_name
@@ -780,7 +786,7 @@ class BaseBackend(ABC):
         return self._exec(
             f"""
             SELECT l.target_id as id, l.target_kb as kb_name,
-                   e.title, e.entry_type, l.relation, l.note
+                   e.title, e.entry_type, l.relation, l.target_prefix as prefix, l.note
             FROM link l
             LEFT JOIN entry e ON l.target_id = e.id AND l.target_kb = e.kb_name
                 {f"AND {scope}" if scope else ""}
@@ -795,7 +801,7 @@ class BaseBackend(ABC):
             """
             SELECT l.target_id, e.id, e.kb_name, e.title, e.entry_type,
                    l.inverse_relation as relation, l.relation as forward_relation,
-                   l.note
+                   l.target_prefix as prefix, l.note
             FROM link l
             JOIN entry e ON l.source_id = e.id AND l.source_kb = e.kb_name
             WHERE l.target_kb = :kb_name
@@ -815,7 +821,7 @@ class BaseBackend(ABC):
             """
             SELECT l.source_id,
                    l.target_id as id, l.target_kb as kb_name,
-                   e.title, e.entry_type, l.relation, l.note
+                   e.title, e.entry_type, l.relation, l.target_prefix as prefix, l.note
             FROM link l
             LEFT JOIN entry e ON l.target_id = e.id AND l.target_kb = e.kb_name
             WHERE l.source_kb = :kb_name
@@ -977,30 +983,24 @@ class BaseBackend(ABC):
                 frontier = next_frontier
         else:
             params: dict[str, Any] = {}
-            if readable_kbs is None:
-                sql = """
-                    SELECT e.id, e.kb_name, e.title, e.entry_type
-                    FROM entry e
-                    WHERE (e.id IN (SELECT source_id FROM link)
-                       OR e.id IN (SELECT target_id FROM link))
-                """
-            else:
-                # A node earns its place by a link the caller can see: one it
-                # makes itself, or one made to it from a readable source.
-                # Otherwise a readable entry linked only from a private KB
-                # would appear, and take a slot of `limit`, because of it.
-                inbound = kb_names_clause("l.source_kb", readable_kbs, params)
-                entry_scope = kb_names_clause("e.kb_name", readable_kbs, params)
-                sql = f"""
-                    SELECT e.id, e.kb_name, e.title, e.entry_type
-                    FROM entry e
-                    WHERE (EXISTS (SELECT 1 FROM link l
-                                   WHERE l.source_id = e.id AND l.source_kb = e.kb_name)
-                       OR EXISTS (SELECT 1 FROM link l
-                                  WHERE l.target_id = e.id AND l.target_kb = e.kb_name
-                                    AND {inbound}))
-                      AND {entry_scope}
-                """
+            # A node earns its place by a link that names it by id *and* KB:
+            # one it makes itself, or one made to it from a readable source
+            # (when the caller is scoped). The id alone pulled in `kb:x`
+            # because `ka:x` was linked (#1058), and a readable entry linked
+            # only from a private KB would appear, and take a slot of
+            # `limit`, because of it.
+            inbound = kb_names_clause("l.source_kb", readable_kbs, params)
+            entry_scope = kb_names_clause("e.kb_name", readable_kbs, params)
+            sql = f"""
+                SELECT e.id, e.kb_name, e.title, e.entry_type
+                FROM entry e
+                WHERE (EXISTS (SELECT 1 FROM link l
+                               WHERE l.source_id = e.id AND l.source_kb = e.kb_name)
+                   OR EXISTS (SELECT 1 FROM link l
+                              WHERE l.target_id = e.id AND l.target_kb = e.kb_name
+                                {f"AND {inbound}" if inbound else ""}))
+                  {f"AND {entry_scope}" if entry_scope else ""}
+            """
             if kb_name:
                 sql += " AND e.kb_name = :kb_name"
                 params["kb_name"] = kb_name

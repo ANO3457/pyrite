@@ -1044,6 +1044,15 @@ def _task_validate_transition(entry: Entry, context: dict) -> Entry:
     if not old_status or not new_status or old_status == new_status:
         return entry
 
+    # A task already complete by its children can record that fact explicitly.
+    # Keep this out of TASK_WORKFLOW: plugin types also fall back to that table.
+    if entry.entry_type == "task" and old_status == "open" and new_status == "done":
+        completion = TaskService(context["config"], context["db"]).derived_for(
+            context["kb_name"], entry.id
+        )["completion"]
+        if completion.get("complete") is True and completion.get("basis") == "children":
+            return entry
+
     # The reason field carries through frontmatter as `status_reason`; an
     # absent attribute is treated as empty string.
     status_reason = getattr(entry, "status_reason", "") or ""
@@ -1066,13 +1075,22 @@ def _task_validate_transition(entry: Entry, context: dict) -> Entry:
             allowed_msg = (
                 err.split("Allowed next:", 1)[-1].strip() if "Allowed next:" in err else ""
             )
-            raise ValidationError(
+            refusal = ValidationError(
                 f"Cannot move task from '{old_status}' to '{new_status}'. "
                 f"Allowed next: {allowed_msg} "
                 f"Tasks follow open → claimed → in_progress → done/failed/blocked/review; "
                 f"walk through the intermediate states rather than skipping "
                 f"(or use 'cancelled' to retire an obsolete task from any state)."
             )
+            if (
+                entry.entry_type == "task"
+                and new_status == "open"
+                and old_status in {"in_progress", "blocked"}
+            ):
+                refusal.suggestion = (
+                    "Use `pyrite task reset` to release a stale claim with an audit trail."
+                )
+            raise refusal
         raise ValidationError(err)
 
     return entry

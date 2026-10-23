@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,19 @@ logger = logging.getLogger(__name__)
 #: stands behind (#795). `qa_assessment`'s schema mentions a tier 3 that
 #: nothing implements.
 QA_TIERS = (1, 2)
+
+
+def require_qa_tier(tier: int, *, llm_available: Callable[[], bool]) -> None:
+    """Validate before opening an index; only tier2 consults model availability."""
+    if isinstance(tier, bool) or tier not in QA_TIERS:
+        raise InvalidQATierError(
+            f"QA tier {tier!r} does not exist; choose one of {', '.join(str(t) for t in QA_TIERS)}"
+        )
+    if tier >= 2 and not llm_available():
+        raise AINotConfiguredError(
+            "QA tier 2 runs the model-judged rubric and no model is configured; "
+            "nothing was assessed"
+        )
 
 
 class QAService:
@@ -196,8 +210,12 @@ class QAService:
 
             # Per-entry schema pass (only if kb.yaml exists): the kb.yaml itself,
             # then each entry, its typed attributes read from its file
+            self._check_rubric_action_config(issues, kb_name)
             self._check_schema_retypes_core_fields(issues, kb_name)
             self._check_schema_all(issues, kb_name, sources)
+
+            # The bulk SQL checks above do not know a KB's named rubric (#956).
+            self._check_named_rubric_all(issues, kb_name)
 
             if tier >= 2:
                 self._check_llm_rubric_all(issues, kb_name)
@@ -249,16 +267,43 @@ class QAService:
         (#960 item 15, review of #1061).
         """
         from ..storage.index import IndexManager
+        from .index_health import health_verdict
 
         if self.config.get_kb(kb_name) is None:
             return
         health = IndexManager(self.db, self.config).check_health(kb_name)
+        # The same verdict every other reader of this report uses (#1119):
+        # this check used to look only at unindexed/stale/missing, so an index
+        # whose only defect was orphaned entries (or duplicates) passed.
+        if not health_verdict(health)["is_unhealthy"]:
+            return
+        off_list_errors = [
+            row for row in health.get("off_list_values") or [] if row.get("severity") == "error"
+        ]
         counts = {
             "unindexed": len(health["unindexed_files"]),
             "stale": len(health["stale_entries"]) + len(health["content_changed"]),
             "missing": len(health["missing_files"]),
+            "unreadable": len(health["unreadable_files"]),
+            "orphaned": len(health["orphaned_entries"]),
+            "duplicate": len(health["duplicates"]),
+            "off-list": len(off_list_errors),
         }
-        if not any(counts.values()):
+        if off_list_errors and not any(n for key, n in counts.items() if key != "off-list"):
+            issues.append(
+                {
+                    "entry_id": "",
+                    "kb_name": kb_name,
+                    "rule": "index_unhealthy",
+                    "severity": "error",
+                    "field": "index",
+                    "message": (
+                        f"KB '{kb_name}': {len(off_list_errors)} enforced enum value(s) are invalid; "
+                        "run `pyrite index health`, correct the reported values in their files, "
+                        f"then run `pyrite index sync -k {kb_name}`"
+                    ),
+                }
+            )
             return
         found = ", ".join(f"{n} {what}" for what, n in counts.items() if n)
         issues.append(
@@ -378,16 +423,7 @@ class QAService:
         Called before anything is checked or written, so a refused tier
         leaves no record (#795, maintainer decision 2026-10-15).
         """
-        if isinstance(tier, bool) or tier not in QA_TIERS:
-            raise InvalidQATierError(
-                f"QA tier {tier!r} does not exist; choose one of "
-                f"{', '.join(str(t) for t in QA_TIERS)}"
-            )
-        if tier >= 2 and not self.llm_available:
-            raise AINotConfiguredError(
-                "QA tier 2 runs the model-judged rubric and no model is configured; "
-                "nothing was assessed"
-            )
+        require_qa_tier(tier, llm_available=lambda: self.llm_available)
 
     # =========================================================================
     # Assessment API
@@ -1566,6 +1602,71 @@ class QAService:
 
         return items
 
+    def _check_named_rubric_all(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+        """Run the single-entry deterministic rubric without repeating SQL findings."""
+        by_entry: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for issue in issues:
+            key = (issue.get("entry_id", ""), issue.get("kb_name", ""))
+            by_entry.setdefault(key, []).append(issue)
+        rows = self.db.execute_sql(
+            "SELECT id, kb_name, entry_type, title, date, importance, body, status, metadata "
+            "FROM entry WHERE kb_name = :kb_name ORDER BY id",
+            {"kb_name": kb_name},
+        )
+        for row in rows:
+            findings: list[dict[str, Any]] = []
+            self._check_rubric_evaluation(row, findings)
+            existing = by_entry.setdefault((row["id"], row["kb_name"]), [])
+            for finding in findings:
+                comparable = {k: v for k, v in finding.items() if k != "rubric_action"}
+                if not any(
+                    comparable == {k: v for k, v in old.items() if k != "rubric_action"}
+                    for old in existing
+                ):
+                    issues.append(finding)
+                    existing.append(finding)
+
+    def _check_rubric_action_config(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+        config = self.config.get_kb(kb_name)
+        schema = config.kb_schema if config else None
+        if schema is None:
+            return
+        settings = [("rubric_action", schema.rubric_action)]
+        rubrics = [("evaluation_rubric", schema.evaluation_rubric)]
+        rubrics.extend(
+            (f"types.{name}.evaluation_rubric", kind.evaluation_rubric)
+            for name, kind in schema.types.items()
+        )
+        for path, items in rubrics:
+            for index, item in enumerate(items):
+                if isinstance(item, dict) and "action" in item:
+                    settings.append((f"{path}[{index}].action", item["action"]))
+        for key, value in settings:
+            if not isinstance(value, str) or value not in ("warn", "fail"):
+                issues.append(
+                    {
+                        "entry_id": "",
+                        "kb_name": kb_name,
+                        "rule": "config_error",
+                        "severity": "error",
+                        "field": key,
+                        "message": f"kb.yaml {key} must be warn or fail; got {value!r}",
+                    }
+                )
+
+    def _get_rubric_action(self, kb_name: str, item: dict[str, Any] | None = None) -> str:
+        """Only a named item action overrides the KB's rubric_action (#1166)."""
+        if item is not None and "action" in item:
+            action = item["action"]
+            return action if isinstance(action, str) and action in ("warn", "fail") else "fail"
+        kb_config = self.config.get_kb(kb_name)
+        try:
+            schema = kb_config.kb_schema if kb_config else None
+        except OSError:
+            return "fail"  # The file checks report unreadability.
+        action = schema.rubric_action if schema else "fail"
+        return action if isinstance(action, str) and action in ("warn", "fail") else "fail"
+
     def _check_rubric_evaluation(self, entry: dict[str, Any], issues: list[dict[str, Any]]) -> None:
         """Run rubric checks on a single entry."""
         entry_id = entry["id"]
@@ -1630,6 +1731,7 @@ class QAService:
             try:
                 issue = fn(enriched, kb_schema, params)
                 if issue is not None:
+                    issue["rubric_action"] = self._get_rubric_action(kb_name, item)
                     issues.append(issue)
             except Exception as exc:
                 # The item was not checked: report it, like an unknown checker

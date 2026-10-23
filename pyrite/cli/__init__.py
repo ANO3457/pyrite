@@ -18,12 +18,13 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from ..config import (
-    CONFIG_FILE,
     Repository,
     auto_discover_kbs,
+    current_config_file,
     load_config,
     open_registration_warning,
     save_config,
@@ -66,7 +67,65 @@ logger = logging.getLogger(__name__)
 # prints it, and the callback below carries no docstring of its own.
 TAGLINE = "Knowledge-as-Code for humans and AI agents."
 
-app = typer.Typer(
+
+class _LazyPluginTyper(typer.Typer):
+    """Mount plugin CLI groups when the app is resolved, not while importing.
+
+    Every extension's ``cli.py`` imports ``pyrite.cli`` helpers at module top.
+    Mounting the plugin groups here, at the bottom of this module's import,
+    asked such a plugin for its Typer app before that module had defined it;
+    the import failed, the group vanished, and whether it existed depended on
+    which module the process imported first (#1000, #1109). The first consumer
+    that resolves the app mounts the groups instead, by which point every
+    plugin module that triggered this import has finished.
+    """
+
+    _plugins_ready = False
+    _plugins_mounted = False
+
+    def __init__(self, *args, **kwargs):
+        self._groups: list = []
+        super().__init__(*args, **kwargs)
+
+    @property
+    def registered_groups(self) -> list:  # type: ignore[override]
+        if self._plugins_ready and not self._plugins_mounted:
+            self._plugins_mounted = True
+            self._mount_plugin_cli()
+        return self._groups
+
+    @registered_groups.setter
+    def registered_groups(self, value: list) -> None:
+        self._groups = value
+
+    def _mount_plugin_cli(self) -> None:
+        try:
+            from ..plugins import get_registry
+
+            registry = get_registry()
+            commands = registry.get_all_cli_commands()
+            # A plugin whose get_cli_commands raised would vanish from `app`;
+            # say so on stderr rather than only in a logger nobody listens to
+            # (#900).
+            for plugin, method, exc in registry.aggregate_failures:
+                if method == "get_cli_commands":
+                    print(
+                        f"pyrite: plugin '{plugin}' CLI commands are unavailable: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+            for name, command in commands:
+                if hasattr(command, "registered_commands"):
+                    # It's a Typer app -- register as sub-app
+                    self.add_typer(command, name=name)
+                else:
+                    # It's a single command callback
+                    self.command(name)(command)
+        except Exception:
+            logging.getLogger(__name__).warning("Plugin CLI loading failed", exc_info=True)
+
+
+app = _LazyPluginTyper(
     cls=PyriteCLIGroup,
     name="pyrite",
     help=TAGLINE,
@@ -182,34 +241,11 @@ register_browse_commands(app)
 # Task management (core, not plugin)
 app.add_typer(task_app, name="task")
 
-# Register plugin CLI commands
-try:
-    from ..plugins import get_registry
-
-    _registry = get_registry()
-    _cli_commands = _registry.get_all_cli_commands()
-    # A plugin whose get_cli_commands raised vanishes from `app`; say so on
-    # stderr rather than only in a logger nobody listens to (#900).
-    for _plugin, _method, _exc in _registry.aggregate_failures:
-        if _method == "get_cli_commands":
-            import sys as _sys
-
-            print(
-                f"pyrite: plugin '{_plugin}' CLI commands are unavailable: "
-                f"{type(_exc).__name__}: {_exc}",
-                file=_sys.stderr,
-            )
-    for name, command in _cli_commands:
-        if hasattr(command, "registered_commands"):
-            # It's a Typer app — register as sub-app
-            app.add_typer(command, name=name)
-        else:
-            # It's a single command callback
-            app.command(name)(command)
-except Exception:
-    import logging
-
-    logging.getLogger(__name__).warning("Plugin CLI loading failed", exc_info=True)
+# Plugin CLI groups mount on the first resolution of `app` (see
+# `_LazyPluginTyper`), not here: this module may be importing because a
+# plugin's own cli.py imported one of its helpers, and that module has not
+# defined its Typer app yet (#1000, #1109).
+app._plugins_ready = True
 
 
 def _format_output(data: dict, fmt: str) -> str | None:
@@ -257,7 +293,7 @@ def ci_command(
     validated.
     """
     from ..services.llm_service import LLMService
-    from ..services.qa_service import QAService
+    from ..services.qa_service import QAService, require_qa_tier
     from ..utils.errors import cli_error_from
 
     config = load_config()
@@ -266,8 +302,9 @@ def ci_command(
     # KB to validate: `ci` never says "pass" for a tier that did not run (#795).
     llm_service = LLMService(config.settings) if tier >= 2 else None
     try:
-        # require_tier reads no database; no index is opened for a refused tier.
-        QAService(config, None, llm_service=llm_service).require_tier(tier)  # type: ignore[arg-type]
+        require_qa_tier(
+            tier, llm_available=lambda: bool(llm_service and llm_service.status()["configured"])
+        )
     except PyriteError as exc:
         cli_error_from(exc, output_format)
     # Resolve KBs as the other commands do, DB-registered ones merged, so a
@@ -335,8 +372,16 @@ def ci_command(
         has_failure = False
         if fail_threshold >= 0 and total_errors > 0:
             has_failure = True
-        if fail_threshold >= 1 and total_warnings > 0:
-            has_failure = True
+        if fail_threshold >= 1:
+            # Warnings fail CI unless a named rubric checker's action is configured to warn (#1166)
+            failing_warnings = [
+                i
+                for s in kb_summaries
+                for i in s["issues"]
+                if i.get("severity") == "warning" and i.get("rubric_action") != "warn"
+            ]
+            if failing_warnings:
+                has_failure = True
 
         result_str = "fail" if has_failure else "pass"
 
@@ -355,6 +400,11 @@ def ci_command(
                                 "rule": i.get("rule", ""),
                                 "field": i.get("field", ""),
                                 "message": i.get("message", ""),
+                                **(
+                                    {"rubric_action": i["rubric_action"]}
+                                    if "rubric_action" in i
+                                    else {}
+                                ),
                             }
                             for i in s["issues"]
                             if severity_order.get(i.get("severity", "info"), 2) <= fail_threshold
@@ -454,10 +504,11 @@ def list_kbs(
 @app.command("config")
 def show_config():
     """Show current configuration."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Subscriptions:[/bold] {len(config.subscriptions)}")
@@ -951,9 +1002,7 @@ def import_entries(
                         "    [yellow]Warning:[/yellow]", _json.dumps(warning, default=str)
                     )
                 if r.get("ignored"):
-                    console.print(
-                        "    [yellow]Ignored:[/yellow]", ", ".join(r["ignored"]), markup=False
-                    )
+                    console.print("    [yellow]Ignored:[/yellow]", escape(", ".join(r["ignored"])))
             else:
                 failed += 1
                 console.print(_refusal_line("Failed", record, r))
@@ -999,7 +1048,16 @@ def generate_readme_cmd(
                     suggestion="Run `pyrite kb list` to see available KBs.",
                 )
             readme_path = kb_config.path / "README.md"
-            readme_path.write_text(readme, encoding="utf-8")
+            from ..utils.errors import cli_error_from
+            from ..utils.kb_files import KBFiles
+
+            try:
+                # A README.md that is a link out of the KB is not written through.
+                KBFiles(readme_path.parent).write_bytes(readme_path, readme.encode("utf-8"))
+            except PyriteError as e:
+                cli_error_from(e)
+            except OSError as e:  # a hard-linked README.md (`HardLinked`)
+                cli_error(str(e), error_code="STORAGE_ERROR")
             console.print(f"[green]Written:[/green] {readme_path}")
         elif output:
             output.write_text(readme, encoding="utf-8")

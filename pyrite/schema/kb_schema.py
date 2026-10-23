@@ -45,6 +45,7 @@ class KBSchema:
     guidelines: dict[str, str] = field(default_factory=dict)
     goals: dict[str, str] = field(default_factory=dict)
     evaluation_rubric: list[str | dict[str, Any]] = field(default_factory=list)
+    rubric_action: str = "fail"
 
     @classmethod
     def from_yaml(cls, path: Path) -> "KBSchema":
@@ -112,17 +113,21 @@ class KBSchema:
             else:
                 types[type_name] = TypeSchema(name=type_name)
 
+        validation = data.get("validation", {})
+        rubric_action = data.get("rubric_action", "fail")
+
         return cls(
             name=data.get("name", ""),
             description=data.get("description", ""),
             kb_type=data.get("kb_type", ""),
             types=types,
             policies=data.get("policies", {}),
-            validation=data.get("validation", {}),
+            validation=validation,
             schema_version=data.get("schema_version", 0),
             guidelines=data.get("guidelines", {}),
             goals=data.get("goals", {}),
             evaluation_rubric=data.get("evaluation_rubric", []),
+            rubric_action=rubric_action,
         )
 
     def get_type_schema(self, entry_type: str) -> TypeSchema | None:
@@ -173,15 +178,6 @@ class KBSchema:
                 if isinstance(name, str):
                     fields.setdefault(name, FieldSchema(name=name))
         return {name: f for name, f in fields.items() if name not in RESERVED_FIELD_NAMES}
-
-    def get_subdirectory(self, entry_type: str) -> str:
-        """Get the subdirectory for an entry type."""
-        type_schema = self.get_type_schema(entry_type)
-        if type_schema and type_schema.subdirectory:
-            return type_schema.subdirectory
-        if entry_type in CORE_TYPES:
-            return CORE_TYPES[entry_type]["subdirectory"]
-        return f"{entry_type}s"  # Default: plural of type name
 
     def declared_types(self) -> list[str]:
         """The types this KB's kb.yaml declares, sorted; empty when it declares none.

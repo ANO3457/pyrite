@@ -745,12 +745,34 @@ def _require_fresh_replace_is_written(
 def _require_replace_landed(
     result: dict[str, Any], path: Path, op: dict[str, Any], what: str, why: str
 ) -> None:
-    on_disk = yaml.safe_load(path.read_text().split("---\n", 2)[1]) or {}
+    on_disk = _front(path.read_text())
     landed = all(on_disk.get(k) == v for k, v in op["replace"].items())
     _require(
         not _is_error(result) and landed,
         f"{what} ({result}; file now {on_disk}), so {why}",
     )
+
+
+def test_replace_landed_compares_with_the_parser_the_write_uses(tmp_path: Path):
+    """A YAML-1.1 value is not a failed write (#741).
+
+    `flag: no` is `'no'` to ruamel (what `_front` and Pyrite read) and `False`
+    to PyYAML's safe loader. Comparing the two reported a correct write as not
+    landed. The helper now uses `_front` for both sides, and still fails when
+    the value really changed. The CRLF regime goes through the same
+    normalisation.
+    """
+    path = tmp_path / "entry.md"
+    op = {"replace": {"flag": "no"}}
+    for newline in ("\n", "\r\n"):
+        path.write_bytes(
+            newline.join(("---", "id: x", "title: T", "flag: no", "---", "", "Body", "")).encode()
+        )
+        _require_replace_landed({"updated": True}, path, op, "control", "why")
+
+    path.write_bytes(b"---\nid: x\ntitle: T\nflag: yes\n---\n\nBody\n")
+    with pytest.raises(CaseNotEnteredError):
+        _require_replace_landed({"updated": True}, path, op, "control", "why")
 
 
 def _require_old_hash_still_refused(

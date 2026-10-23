@@ -47,7 +47,11 @@ import release  # noqa: E402
 
 VERSION = "0.1.0"
 GITHUB_URL = "git@github.com:acme/widget.git"
-TODAY = date.today().isoformat()
+#: The day this rehearsal runs on, read once at import (#1128). `_one_clock`
+#: freezes the script under test on the same day, so a run that crosses
+#: midnight compares one day and not two.
+TODAY_DATE = date.today()
+TODAY = TODAY_DATE.isoformat()
 
 # What pre-commit's pre-push shim does, for one pushed ref: hand the hook the
 # range and the remote, and run it. For a ref the remote has every commit of
@@ -81,6 +85,13 @@ def _write(root: Path, rel: str, text: str) -> None:
 
 def changelog(day: str = TODAY) -> str:
     return f"# Changelog\n\n## [{VERSION}] - {day}\n\n- The first release.\n"
+
+
+@pytest.fixture(autouse=True)
+def _one_clock(monkeypatch):
+    """The script under test reads the day this module dated its changelogs
+    with (#1128): one clock for the test and the run, even across midnight."""
+    monkeypatch.setattr(release, "current_day", lambda: TODAY_DATE)
 
 
 @pytest.fixture(autouse=True)
@@ -225,7 +236,7 @@ def make_untracked(checkout: Path) -> None:
 def make_stale_date(checkout: Path) -> str:
     """The section dated the day the release was PREPARED, committed and
     pushed, with `gate` green on it: everything else is in order."""
-    prepared = (date.today() - timedelta(days=1)).isoformat()
+    prepared = (TODAY_DATE - timedelta(days=1)).isoformat()
     (checkout / "CHANGELOG.md").write_text(changelog(prepared))
     _git(checkout, "commit", "-qam", "release: dated yesterday")
     _git(checkout, "push", "-q", "origin", "dev:refs/heads/dev")
@@ -454,7 +465,7 @@ class TestEveryOneIsNamedInOneRun:
 
     def test_each_is_flagged_where_it_is_found_too(self, checkout, capsys):
         make_untracked(checkout)
-        make_stale = (date.today() - timedelta(days=3)).isoformat()
+        make_stale = (TODAY_DATE - timedelta(days=3)).isoformat()
         (checkout / "CHANGELOG.md").write_text(changelog(make_stale))
         rehearse(checkout)
         out = capsys.readouterr().out
@@ -515,7 +526,7 @@ class TestEachFailureIsNamedOnce:
         rehearsal exists to have read, so they still print here -- and the wrong
         date is still named once, by the changelog check.
         """
-        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        tomorrow = (TODAY_DATE + timedelta(days=1)).isoformat()
         (checkout / "CHANGELOG.md").write_text(changelog(tomorrow))
         _git(checkout, "commit", "-qam", f"release: {VERSION}")
         _git(checkout, "push", "-q", "origin", "dev:refs/heads/dev")
