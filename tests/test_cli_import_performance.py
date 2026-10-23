@@ -55,3 +55,15 @@ def test_cli_context_exposes_real_pyrite_db_class_via_getattr():
         pass
 
     assert issubclass(TrackingDB, real_db_class)
+
+
+def test_storage_error_helpers_do_not_import_database():
+    code = "import sys; import pyrite.storage.errors; assert 'sqlalchemy' not in sys.modules"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
