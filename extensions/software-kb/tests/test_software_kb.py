@@ -2157,16 +2157,14 @@ class TestNewAdrGoesThroughPipeline:
             "new-adr must not create ./adrs in the current directory"
         )
 
-    def test_existing_adr_number_is_refused_with_entry_exists(self, env):
-        """An existing ADR's id (adr-0001) is refused; the file is untouched."""
+    def test_unindexed_existing_adr_advances_number_and_keeps_original(self, env):
+        """A file still reserves its number when its index row is missing."""
         first = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
         assert first.exit_code == 0, first.output
         expected_file = env["kb_path"] / "adrs" / "0001-original-title.md"
         original = expected_file.read_bytes()
 
-        # A second ADR that resolves to the SAME id (adr-0001) is refused.
-        # The numbering query only sees indexed ADRs, so this simulates a
-        # race/duplicate rather than the auto-increment's normal path.
+        # Removing an index row does not remove its file or free its number.
         from pyrite.storage.database import PyriteDB
 
         db = PyriteDB(env["db_path"])
@@ -2179,9 +2177,27 @@ class TestNewAdrGoesThroughPipeline:
             db.close()
 
         result = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
+        assert result.exit_code == 0, result.output
+        assert "ADR-0002" in result.output
+        second_file = env["kb_path"] / "adrs" / "0002-original-title.md"
+        assert "id: adr-0002" in second_file.read_text(encoding="utf-8")
+        assert expected_file.read_bytes() == original
+
+    def test_a_real_numbering_collision_is_still_refused(self, env):
+        """An existing ADR id without a numbering field still owns that id."""
+        first = self._run(env, ["new-adr", "Original Title", "--kb", "sw-kb"])
+        assert first.exit_code == 0, first.output
+        path = env["kb_path"] / "adrs" / "0001-original-title.md"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            "\n".join(line for line in text.split("\n") if not line.startswith("adr_number:")),
+            encoding="utf-8",
+        )
+        original = path.read_bytes()
+        result = self._run(env, ["new-adr", "Collides", "--kb", "sw-kb"])
         assert result.exit_code != 0, result.output
         assert "ENTRY_EXISTS" in result.output, result.output
-        assert expected_file.read_bytes() == original
+        assert path.read_bytes() == original
 
     def test_create_failure_prints_str_e_not_the_masked_public_message(self, env):
         """#506 item 3: this is the operator's own terminal, so there is no
@@ -2204,6 +2220,65 @@ class TestNewAdrGoesThroughPipeline:
         normalized = " ".join(result.output.split())
         assert real_message in normalized, result.output
         assert "check the server log" not in normalized, result.output
+
+
+class TestSwCreateAdrNumbersFromFiles:
+    """#1175: sw_create_adr numbers a new ADR from the files, as the CLI does."""
+
+    def test_unindexed_adr_file_advances_number(self, tmp_path):
+        """An unindexed file on disk with adr_number: 1 makes next ADR number 2."""
+        adrs_dir = tmp_path / "adrs"
+        adrs_dir.mkdir(parents=True)
+        (adrs_dir / "0001-unindexed.md").write_text(
+            "---\nid: adr-0001\ntitle: Unindexed\ntype: adr\nadr_number: 1\n---\n\nBody\n",
+            encoding="utf-8",
+        )
+        db = _make_test_db(tmp_path, entries=[])
+        try:
+            plugin = _make_plugin_with_db(db)
+            result = plugin._mcp_create_adr({"kb_name": "test", "title": "Next Decision"})
+            assert result["created"] is True
+            assert result["adr_number"] == 2
+            assert result["filename"] == "adrs/0002-next-decision.md"
+        finally:
+            db.close()
+
+    def test_single_kb_resolved_without_kb_name(self, tmp_path):
+        """Without kb_name, sw_create_adr resolves the single configured KB."""
+        (tmp_path / "adrs").mkdir(parents=True)
+        db = _make_test_db(tmp_path, entries=[])
+        try:
+            plugin = _make_plugin_with_db(db)
+            result = plugin._mcp_create_adr({"title": "No KB Flag"})
+            assert result["created"] is True
+            assert result["adr_number"] == 1
+            assert result["filename"] == "adrs/0001-no-kb-flag.md"
+        finally:
+            db.close()
+
+    def test_stale_index_row_without_file_does_not_advance_number(self, tmp_path):
+        """Maintainer decision (2026-10-21): index rows don't count, so a stale row
+        whose file is gone does not advance it."""
+        (tmp_path / "adrs").mkdir(parents=True)
+        db = _make_test_db(
+            tmp_path,
+            entries=[
+                {
+                    "id": "adr-0042",
+                    "entry_type": "adr",
+                    "title": "Stale",
+                    "meta": {"adr_number": 42},
+                }
+            ],
+        )
+        try:
+            plugin = _make_plugin_with_db(db)
+            result = plugin._mcp_create_adr({"kb_name": "test", "title": "First File ADR"})
+            assert result["created"] is True
+            assert result["adr_number"] == 1
+            assert result["filename"] == "adrs/0001-first-file-adr.md"
+        finally:
+            db.close()
 
 
 # =========================================================================

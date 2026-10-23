@@ -57,6 +57,9 @@ Answers "what can I delete and rebuild?", "where does this row come from?",
 
 ## Invariants a test could check
 
+- A new ADR number comes from the KB files, never stale or absent index rows
+  (#1082, #1175); a real id collision is still refused as `ENTRY_EXISTS`.
+
 - I2 after a reconcile the index has a row for exactly the ids that parseable
   files hold; I3 a second reconcile changes nothing ([[adr-0038]]).
 - S1 every table is declared derived or state; dropping the derived tables and
