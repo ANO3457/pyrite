@@ -680,7 +680,7 @@ _READ_SQL_ONLY = frozenset({"execute_sql"})
 _RAW_HANDLES = frozenset(
     {"db_path", "engine", "vec_load_error", "_fallback_lock", "_fallback_sessions", "_local",
      "_raw_lock", "_sa_conn", "_session_factory", "conn", "_raw_cursor", "request_handle",
-     "session_scope", "_load_extensions"}
+     "session_scope", "_load_extensions", "_version_at_open"}
 )  # fmt: skip
 
 #: Writes a change-set write makes whose rows are rebuilt from files and git,
@@ -711,5 +711,6 @@ _WRITES_REFUSED = frozenset(
      "add_workspace_repo", "delete_repo", "remove_workspace_repo", "link_kb_to_repo",
      "set_repo_upstream", "update_repo_synced", "update_workspace_role", "transaction",
      "_init_connection", "_run_migrations", "_create_plugin_tables",
-     "_create_table_from_def", "_record_private_policy"}
+     "_create_table_from_def", "_record_private_policy", "_prepare_schema",
+     "_repair_schema", "_dispose_after_failed_open"}
 )  # fmt: skip
