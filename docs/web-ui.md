@@ -121,3 +121,22 @@ worktree, and without an identity that commit fails. For a KB that is not in git
 **Changes** in the sidebar is a different view: it lists the KB's uncommitted
 git changes, and an admin's **Publish** button commits them. It is not where a
 non-admin submits.
+
+## Choose the screen for your job
+
+| Screen | Use it for | CLI equivalent |
+|---|---|---|
+| Overview | KB counts, recent entries and entry types | orient |
+| Entries / entry detail | Browse, inspect and edit an entry | list-entries, get, update |
+| Search | Keyword or semantic queries | search |
+| Graph | Follow connections between entries | backlinks, links discover |
+| Daily notes | Open a dated note | daily |
+| Timeline | Inspect dated entries | timeline |
+| Collections | Group entries and change views | collection commands |
+| Settings | Operator configuration, users and personal provider keys | config and admin commands |
+
+An entry link carries its KB context. When an ID exists in several readable
+KBs, choose the intended KB; do not guess from the first result. A read-only
+account can inspect content while the server refuses writes outside its grants.
+
+For failures and upgrade symptoms, use [Troubleshooting](troubleshooting.md).

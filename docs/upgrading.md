@@ -273,6 +273,9 @@ The reference row is [`KB_NOT_FOUND`](json-contracts.md#write-refusals-create-im
   of passing silently. A KB whose declared checks were never run across all its
   entries can start failing `pyrite ci` with no change to its files: run
   `pyrite qa validate <kb>` to see the findings before you upgrade CI (#1143).
+  To adopt checks gradually, set `rubric_action: warn`
+  in `kb.yaml` or `action: warn` on individual rubric items; `pyrite ci` then reports
+  named findings without failing on them; existing bulk warnings still fail (#1166).
 - **An unknown `--mode` is refused.** `pyrite search --mode zzz` and `links
   discover|batch-suggest --mode zzz` used to search as keyword and exit `0`.
   They exit `1` with `VALIDATION_FAILED` (REST: `400`); the valid modes are
@@ -305,9 +308,8 @@ pyrite search x -k my-kb --mode zzz
 - **`kb_read_body` and `kb_delete` answer a typed code.** A missing entry is
   `ENTRY_NOT_FOUND` and a missing KB is `KB_NOT_FOUND`, as `kb_get` and
   `kb_update` already did. The code the tool used to send stays in
-  `legacy_error_code` for one release. An agent that matched `NOT_FOUND`
-  should match the new code; see "MCP only, for one release" in [JSON
-  contracts](json-contracts.md#error-shape).
+  `legacy_error_code` until 0.27. An agent that matched `NOT_FOUND`
+  should match `error_code`; see [MCP code transitions](json-contracts.md#mcp-code-transitions).
 - **A single-entry read puts a declared field at its own key.** `pyrite get`,
   `kb_get` and REST `GET /api/entries/{id}` used to leave some declared fields
   under `metadata`. A field the type declares (a task's `evidence` or
@@ -365,13 +367,22 @@ has it.
 
 ### 8. Still deprecated
 
-These still work in 0.26.0 and print a warning on stderr. Each will go in a
-later release.
+These interfaces remain supported in 0.26.0 and are scheduled for removal in
+0.27. CLI aliases warn on stderr; response fields remain in responses until
+removal. `db.conn` emits a `DeprecationWarning`, and `FRONTMATTER_ALIASES` logs
+a warning once per class.
 
-- **`-f` as `--format`** on the `task` commands. Use `--format`, or set
-  `PYRITE_FORMAT`.
-- **`pyrite export --format` (and `-f`).** Use `--target`; the only target
-  today is `notebooklm`.
+- **`-f` as `--format`** on the `task` commands leaves in 0.27. Use
+  `--format`, or set `PYRITE_FORMAT`.
+- **`pyrite export --format` (and `-f`)** leaves in 0.27. Use `--target`;
+  the only target today is `notebooklm`.
+- **MCP `legacy_error_code`** leaves in 0.27. Match `error_code` instead.
+- **Search `distance`** leaves in 0.27. Read `similarity` instead.
+- **`task status`** leaves in 0.27. Use `task get` instead.
+- **`db.conn`** leaves in 0.27. Use `db.session` for writes or
+  `db.execute_sql()` for read-only queries.
+- **`FRONTMATTER_ALIASES`** leaves in 0.27. Declare `field_aliases` in the
+  type's schema instead.
 
 The table in [JSON contracts](json-contracts.md#format-defaults) says which
 commands take `--format`.

@@ -92,7 +92,7 @@ class PluginContext:
             List of matching entry dicts with id, kb_name, title, entry_type,
             snippet. Rows from the vector index also carry ``similarity``
             (cosine, 3 places, the same on every backend) and ``distance``
-            (backend-specific; leaves after one release). Rows from the
+            (backend-specific; removed in 0.27; use ``similarity``). Rows from the
             keyword fallback carry neither. No verdict is attached: that is
             `SearchService.search_response`, for a surface that shows a page.
         """

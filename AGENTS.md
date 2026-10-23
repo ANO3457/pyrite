@@ -90,6 +90,12 @@ Use the right `type` frontmatter so plugin tools find entries: `component`
 - **Web frontend**: `web/` — SvelteKit + Svelte 5
 - **Knowledge base**: `kb/` — ADRs, backlog, components, designs, standards, runbooks
 
+## Cloud briefs
+
+Before a cloud task, read `scripts/known-cloud-failures.json` (or run
+`python3 scripts/known_cloud_failures.py`). Include its current entries in
+the brief. When empty, add no warning. This is context, never a CI waiver.
+
 ## JSON contracts
 
 See `docs/json-contracts.md` for the canonical error shape, success

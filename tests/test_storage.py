@@ -68,6 +68,26 @@ class TestPyriteDB:
         with pytest.raises(sqlite3.ProgrammingError):
             closed_ref._raw_conn.execute("SELECT 1")
 
+    def test_fallback_session_releases_connection_on_thread_exit(self, db):
+        """A thread that uses `db.session` (fallback session) releases its
+        connection when it ends (#1100)."""
+        import threading
+        from sqlalchemy import text
+
+        initial_checked_out = db.engine.pool.checkedout()
+
+        def worker():
+            s = db.session
+            s.execute(text("SELECT 1"))
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive()
+
+        assert db.engine.pool.checkedout() == initial_checked_out
+        assert len(db._fallback_sessions) == 0
+
     def test_context_manager_closes_on_exception(self, tmp_path):
         """The connection is still closed if the with-block raises."""
         db_path = tmp_path / "ctx-err.db"

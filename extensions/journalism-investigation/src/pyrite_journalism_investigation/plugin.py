@@ -354,6 +354,7 @@ class JournalismInvestigationPlugin:
                     },
                     "required": ["entry_id"],
                 },
+                "locates_entry": {"id_args": ["entry_id"]},
                 "handler": self._mcp_network,
             }
             tools["investigation_sources"] = {
@@ -421,6 +422,7 @@ class JournalismInvestigationPlugin:
                     },
                     "required": ["claim_id"],
                 },
+                "locates_entry": {"id_args": ["claim_id"], "entry_type": "claim"},
                 "handler": self._mcp_evidence_chain,
             }
             tools["investigation_money_flow"] = {
@@ -455,6 +457,7 @@ class JournalismInvestigationPlugin:
                     },
                     "required": ["entry_id"],
                 },
+                "locates_entry": {"id_args": ["entry_id"]},
                 "handler": self._mcp_money_flow,
             }
             tools["investigation_qa_report"] = {
@@ -521,6 +524,7 @@ class JournalismInvestigationPlugin:
                     },
                     "required": ["entry_id"],
                 },
+                "locates_entry": {"id_args": ["entry_id"]},
                 "handler": self._mcp_ownership_chain,
             }
             tools["investigation_find_duplicates"] = {
@@ -794,6 +798,11 @@ class JournalismInvestigationPlugin:
                     },
                     "required": ["claim_id", "edge_type"],
                 },
+                # Only claim_id is located. The ids nested in endpoint_fields
+                # (owner, asset, ...) are not: they are written as fields of
+                # the new edge entry, in the claim's KB -- the one the
+                # dispatcher's checks ran on -- and never looked up (#1310).
+                "locates_entry": {"id_args": ["claim_id"], "entry_type": "claim"},
                 "handler": self._mcp_promote_claim,
             }
             tools["investigation_log_source"] = {

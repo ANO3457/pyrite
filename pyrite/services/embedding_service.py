@@ -653,7 +653,7 @@ class EmbeddingService:
 
         Returns list of entry dicts with ``similarity`` (cosine, 3 places, the
         same on every backend), ``snippet``, and ``distance`` (backend-specific:
-        sqlite-vec's L2, pgvector's cosine distance; kept for one release).
+        sqlite-vec's L2, pgvector's cosine distance; kept until 0.27; use ``similarity``).
         """
         backend = self.db.backend
         if not backend.vec_available:

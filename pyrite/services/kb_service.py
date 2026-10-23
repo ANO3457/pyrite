@@ -11,6 +11,7 @@ import dataclasses
 import logging
 import os
 import re
+import shlex
 import stat
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -868,16 +869,88 @@ class KBService:
                 self._attach_links(result, entry_id, kb_name, readable_kbs)
             return result
 
-        # Search all KBs the caller can read. An id the index knows in more
-        # than one of them is refused (#528), never answered by config order;
-        # only KBs in ``readable`` are counted, so a KB the caller cannot read
-        # never becomes a candidate (concealment, ADR-0037 section 4).
-        #
-        # KNOWN EXCEPTION to "never resolved silently": the by-name pass for
-        # unindexed files runs only when no readable KB's index knows the id
-        # (#857's cost bound). So an id indexed in one KB, with a
-        # not-yet-indexed <id>.md in another, is answered from the indexed KB
-        # (as #753 reads it); `pyrite index sync` removes the exception.
+        found = self._find_unqualified(entry_id, readable_kbs)
+        if found is None:
+            return None
+        name, result = found
+        self._attach_links(result, entry_id, name, readable_kbs)
+        return result
+
+    def locate(
+        self,
+        entry_id: str,
+        kb_name: str | None = None,
+        *,
+        readable_kbs: set[str] | None,
+        entry_type: str | None = None,
+    ) -> str:
+        """The one KB that holds ``entry_id``, or the refusal (#911).
+
+        For a surface that takes an id and an optional KB and then works in
+        that KB -- every plugin command with ``-k`` optional calls this once
+        before it reads or writes. It answers as ``get_entry`` does, from the
+        same pass: a named KB holding the id is that KB; without one (absent
+        or blank, ``named_kb``), an id in exactly one readable KB is that KB,
+        and an id in more than one is ``AmbiguousEntryError`` with
+        ``candidate_kbs`` (readable KBs only, config order). Anything else is
+        ``EntryNotFoundError``, whose message names only the KB the caller
+        named: a KB outside ``readable_kbs`` neither answers nor is named.
+
+        **The type rule (#1310), one for every surface.** A command or tool
+        that acts on one entry type passes it as ``entry_type`` -- ``sw``
+        backlog items (``backlog_item``), ``wiki`` articles (``article``),
+        ``social vote`` writeups (``writeup``), a claim tool ``claim`` -- and
+        only entries of that type count: a note that shares the id in another
+        KB neither makes the id ambiguous nor answers it, and an id held only
+        by other types is ``ENTRY_NOT_FOUND`` ("backlog item 'x' not found").
+        A command that accepts any type (``zettel`` graph, the investigation
+        network tools) passes none, and then two entries of any types sharing
+        the id are ``AMBIGUOUS``. The CLI (``require_entry_kb``) and the MCP
+        dispatcher (a tool's ``locates_entry``) both pass the type the command
+        or tool is documented to act on; ``pyrite get`` and ``kb_get``, which
+        return any entry, pass none.
+
+        Registry-only KBs (``pyrite kb add``) are searched when this service's
+        config has them merged (``cli.context.get_config_and_db``).
+        """
+        kb_name = named_kb(kb_name)
+        what = f"{entry_type.replace('_', ' ')} '{entry_id}'" if entry_type else f"'{entry_id}'"
+        if kb_name:
+            # The full name only: a shortname is link syntax, refused by the
+            # surface's resolver (require_kb) before this is reached (#952).
+            readable = readable_kbs is None or kb_name in readable_kbs
+            result = self._read_entry(entry_id, kb_name) if readable else None
+            if result and (entry_type is None or result.get("entry_type") == entry_type):
+                return kb_name
+            raise EntryNotFoundError(f"Entry {what} not found in KB '{kb_name}'")
+        found = self._find_unqualified(entry_id, readable_kbs, entry_type=entry_type)
+        if found is None:
+            raise EntryNotFoundError(f"Entry {what} not found in any KB")
+        return found[0]
+
+    def _find_unqualified(
+        self,
+        entry_id: str,
+        readable_kbs: set[str] | None,
+        *,
+        entry_type: str | None = None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """The (KB, entry) an id names when no KB is named; None for no match.
+
+        The one rule for an unqualified id (principle 8): ``get_entry`` and
+        ``locate`` both ask here. Search all KBs the caller can read. An id
+        the index knows in more than one of them is refused (#528), never
+        answered by config order; only KBs in ``readable`` are counted, so a
+        KB the caller cannot read never becomes a candidate (concealment,
+        ADR-0037 section 4). With ``entry_type``, only entries of that type
+        are matches.
+
+        KNOWN EXCEPTION to "never resolved silently": the by-name pass for
+        unindexed files runs only when no readable KB's index knows the id
+        (#857's cost bound). So an id indexed in one KB, with a
+        not-yet-indexed <id>.md in another, is answered from the indexed KB
+        (as #753 reads it); `pyrite index sync` removes the exception.
+        """
         readable = [
             kb.name
             for kb in self.config.all_kbs()
@@ -887,14 +960,12 @@ class KBService:
             matches: list[tuple[str, dict[str, Any]]] = []
             for name in readable:
                 result = self._read_entry(entry_id, name, unindexed=unindexed)
-                if result:
+                if result and (entry_type is None or result.get("entry_type") == entry_type):
                     matches.append((name, result))
             if len(matches) > 1:
                 raise AmbiguousEntryError(entry_id, [name for name, _ in matches])
             if matches:
-                name, result = matches[0]
-                self._attach_links(result, entry_id, name, readable_kbs)
-                return result
+                return matches[0]
         return None
 
     def _read_entry(
@@ -1953,6 +2024,16 @@ class KBService:
                 raise ValidationError(
                     f"Cannot update '{entry_id}': the result would not load ({e})"
                 ) from e
+            # Refuse a transition into claimed, not edits which preserve an
+            # existing claim after its children have since finished.
+            if (
+                new_entry.entry_type == "task"
+                and getattr(new_entry, "status", None) == "claimed"
+                and old_status != "claimed"
+            ):
+                refusal = self._refuse_claim_of_complete_task(entry_id, kb_name)
+                if refusal:
+                    raise ValidationError(refusal["error"])
             # Once, on the entry parsed from the result (decision 2): the
             # type, managed-field and enum refusals happen before anything is
             # written.
@@ -3508,8 +3589,10 @@ class KBService:
             "error": (
                 f"Task '{entry_id}' counts as done: all {completion['children']} of its "
                 "children are resolved (derived), so there is nothing left to claim. "
-                "Add a child (task decompose) to reopen the work; to write done into "
-                "its file, walk it with task update (claimed, in_progress, done)."
+                "Add an open subtask with `pyrite task create 'New work' "
+                f"-k {shlex.quote(kb_name)} --parent {shlex.quote(entry_id)}`, "
+                "then claim again. Or mark the completed parent done with "
+                f"`pyrite task update {shlex.quote(entry_id)} -k {shlex.quote(kb_name)} -s done`."
             ),
             "current_status": derived["effective_status"],
             "derived": derived,
