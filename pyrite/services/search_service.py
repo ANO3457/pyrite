@@ -698,7 +698,7 @@ class SearchService:
            row carries ``legs``, the legs that returned it. ``distance`` (the
            backend's own measure), ``rank`` (raw BM25) and ``rrf_score`` (rank
            arithmetic) order results and are not scores; ``distance`` leaves
-           the response after one release.
+           the response in 0.27; use ``similarity`` instead.
         8. The thresholds behind ``match`` belong to an embedding model. With a
            model that has no row in ``_MODEL_MATCH_THRESHOLDS`` the vector leg
            is not judged: ``match_basis`` says ``uncalibrated model <name>``,

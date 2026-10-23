@@ -309,7 +309,7 @@ def task_status(
     # Deprecation notice goes to stderr so it never corrupts JSON on stdout.
     Console(stderr=True).print(
         "[yellow]Warning:[/yellow] `task status` is deprecated and will be "
-        "removed in a future release; use `task get` instead.",
+        "removed in 0.27; use `task get` instead.",
         style="dim",
     )
     return _task_get_impl(task_id, kb_name)

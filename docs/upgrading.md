@@ -308,9 +308,8 @@ pyrite search x -k my-kb --mode zzz
 - **`kb_read_body` and `kb_delete` answer a typed code.** A missing entry is
   `ENTRY_NOT_FOUND` and a missing KB is `KB_NOT_FOUND`, as `kb_get` and
   `kb_update` already did. The code the tool used to send stays in
-  `legacy_error_code` for one release. An agent that matched `NOT_FOUND`
-  should match the new code; see "MCP only, for one release" in [JSON
-  contracts](json-contracts.md#error-shape).
+  `legacy_error_code` until 0.27. An agent that matched `NOT_FOUND`
+  should match `error_code`; see [MCP code transitions](json-contracts.md#mcp-code-transitions).
 - **A single-entry read puts a declared field at its own key.** `pyrite get`,
   `kb_get` and REST `GET /api/entries/{id}` used to leave some declared fields
   under `metadata`. A field the type declares (a task's `evidence` or
@@ -368,13 +367,22 @@ has it.
 
 ### 8. Still deprecated
 
-These still work in 0.26.0 and print a warning on stderr. Each will go in a
-later release.
+These interfaces remain supported in 0.26.0 and are scheduled for removal in
+0.27. CLI aliases warn on stderr; response fields remain in responses until
+removal. `db.conn` emits a `DeprecationWarning`, and the class attribute logs
+once per class.
 
-- **`-f` as `--format`** on the `task` commands. Use `--format`, or set
-  `PYRITE_FORMAT`.
-- **`pyrite export --format` (and `-f`).** Use `--target`; the only target
-  today is `notebooklm`.
+- **`-f` as `--format`** on the `task` commands leaves in 0.27. Use
+  `--format`, or set `PYRITE_FORMAT`.
+- **`pyrite export --format` (and `-f`)** leaves in 0.27. Use `--target`;
+  the only target today is `notebooklm`.
+- **MCP `legacy_error_code`** leaves in 0.27. Match `error_code` instead.
+- **Search `distance`** leaves in 0.27. Read `similarity` instead.
+- **`task status`** leaves in 0.27. Use `task get` instead.
+- **`db.conn`** leaves in 0.27. Use `db.session` for writes or
+  `db.execute_sql()` for read-only queries.
+- **`FRONTMATTER_ALIASES`** leaves in 0.27. Declare `field_aliases` in the
+  type's schema instead.
 
 The table in [JSON contracts](json-contracts.md#format-defaults) says which
 commands take `--format`.

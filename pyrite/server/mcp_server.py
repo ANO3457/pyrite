@@ -88,8 +88,8 @@ def _project_fields(entry: dict, fields: list[str] | None) -> dict:
 
 # ADR-0037 theme 2 (maintainer decision, 2026-09-25): "one code per
 # exception, and REST's code wins. For one release, MCP keeps emitting its
-# current code in a legacy_error_code field, then switches." Codes now live
-# on the exception classes (``pyrite.exceptions``) -- REST's spelling, since
+# current code in a legacy_error_code field, then switches." (Removal: 0.27.)
+# Codes now live on the exception classes (``pyrite.exceptions``) -- REST's spelling, since
 # REST's is the more specific one where the two transports used to disagree.
 #
 # This table and _legacy_mcp_code() below reproduce *exactly* what this
@@ -97,7 +97,7 @@ def _project_fields(entry: dict, fields: list[str] | None) -> dict:
 # most-specific-first via isinstance, falling back to the class's own old
 # error_code attribute, and finally to "REQUEST_REFUSED") -- kept only to
 # detect where that disagrees with the class's new code and populate
-# ``legacy_error_code`` for one release. It is not consulted for the code
+# ``legacy_error_code`` until 0.27. It is not consulted for the code
 # MCP reports going forward (``exc.error_code`` is). A hand-picked list of
 # "the codes that changed" was tried first and missed cases (FrontmatterError,
 # TruncatedBodyError, PluginError, StorageError -- anything that used to fall
@@ -229,7 +229,7 @@ def _error(
 def _with_old_kb_update_code(refusal: dict) -> dict:
     """``kb_update``'s ``legacy_error_code`` for a class its old handler never
     named: ``UPDATE_FAILED``, the one code it answered every such failure
-    with (its ``except PyriteError`` catch-all), kept one release (ADR-0037
+    with (its ``except PyriteError`` catch-all), kept until 0.27 (ADR-0037
     theme 2). ``_refusal`` alone would carry the module-wide fallback
     ``REQUEST_REFUSED``, a code ``kb_update`` never gave (#990)."""
     refusal["legacy_error_code"] = "UPDATE_FAILED"
@@ -249,7 +249,7 @@ def _refusal(exc: PyriteError, *, already_logged: bool = False) -> dict:
     ``VALIDATION_ERROR``). Where the class's code differs from what MCP used
     to report for this class (``_legacy_mcp_code``, replaying the old
     ``_LEGACY_DOMAIN_ERROR_CODES``/``_LEGACY_OWN_ERROR_CODE`` lookup), the old
-    code is carried one more release in ``legacy_error_code`` so an existing
+    code is carried until 0.27 in ``legacy_error_code`` so an existing
     MCP caller matching on the old string is not broken outright (ADR-0037
     theme 2, maintainer decision 2026-09-25). A class MCP and REST already
     agreed on gets no ``legacy_error_code`` key at all -- there is nothing
@@ -438,7 +438,7 @@ def _kb_refusal(svc: KBService, kb_name: object, readable_kbs: set[str] | None) 
     existence is itself private, so a caller cannot tell "you may not read
     this" from "there is no such KB". The envelope is `_refusal`'s: the class
     code `KB_NOT_FOUND`, the resolver's suggestion, `did_you_mean` and the
-    old `NOT_FOUND` in `legacy_error_code` for one release (#66, ADR-0037
+    old `NOT_FOUND` in `legacy_error_code` until 0.27 (#66, ADR-0037
     theme 2). A handler's own not-found answer is only ever reached for a
     name the caller may read.
     """
@@ -1506,7 +1506,7 @@ class PyriteMCPServer:
         except ConflictError as e:
             # A write that lost the race for its file (#955): the class's
             # own code, with the old code this handler gave everything it
-            # did not name (ADR-0037, one release).
+            # did not name (ADR-0037, removal in 0.27).
             return _with_old_kb_update_code(_refusal(e))
         except StorageError as e:
             # A storage fault on the write (a hard-linked file, the lock
@@ -1515,7 +1515,7 @@ class PyriteMCPServer:
             logger.error("Tool kb_update failed: %s", e, exc_info=e)
             return _with_old_kb_update_code(_refusal(e, already_logged=True))
         except (EntryNotFoundError, KBNotFoundError) as e:
-            # Keep the old handler-level spelling for one release while the
+            # Keep the old handler-level spelling until 0.27 while the
             # class code becomes the primary contract (ADR-0037).
             refusal = _refusal(e)
             refusal["legacy_error_code"] = "UPDATE_FAILED"

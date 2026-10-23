@@ -94,7 +94,7 @@ MCP reports the class-level `error_code`. Where its old code differed,
 transition field. The CLI has no transition field. This table is the single
 reference for the tool-specific transitions still accepted in 0.26.0.
 The maintainer set removal to 0.27; these compatibility spellings remain
-accepted in 0.26 (see `changelog.d/deprecations-retargeted.changed.md`).
+accepted in 0.26 (see [0.26.0](../CHANGELOG.md#0260--2026-10-22)).
 The evidence column records the introduction where known, rather than
 inventing a release date for older class-level transitions.
 
@@ -136,9 +136,11 @@ blank means no name. These details apply equally to CLI and REST resolution.
 - Search `distance`: read `similarity` instead. Leaves in 0.27.
 - `-f` as `--format`: spell `--format` explicitly. Leaves in 0.27.
 - `export --format`: use `export --target`. Leaves in 0.27.
+- `task status`: use `task get`. Leaves in 0.27.
+- `db.conn`: use `db.session` for writes or `db.execute_sql()` for reads. Leaves in 0.27.
+- `FRONTMATTER_ALIASES`: declare `field_aliases` in the type's schema. Leaves in 0.27.
 
-The CLI warnings also name 0.27. This reference follows that maintainer
-decision; it does not change warning strings.
+The compatibility warnings also name 0.27, following the maintainer decision.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape
@@ -1395,8 +1397,8 @@ overrides it, and an unknown format is a usage error (`2`, a `USAGE_ERROR` docum
 they exist for the shapes the REST API serves (entries, search results) and
 print a Python `repr` for anything else. A refusal is printed in the format
 asked for, YAML included. `-f` no longer
-means `--format`: where it did it remains accepted until a later
-release and prints a deprecation line on stderr (see
+means `--format`: where it did it remains accepted until 0.27
+and prints a deprecation line on stderr (see
 [Deprecated, still accepted](#deprecated-still-accepted)). Each module takes the
 shared option when it moves to the outcome contract; the commands not named in
 `tests/legacy_commands/` have it. Until then most *read* commands default to `--format json`, `config`
