@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as json_mod
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
