@@ -28,10 +28,30 @@ jobs:
         run: pytest tests/test_semantic_search_warns_when_nothing_is_embedded.py -q
         env:
           HF_HUB_OFFLINE: '1'
+      - name: Prove mixed unknown and invalid values regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+          paths = ['pyrite/server/endpoints/write_refusal.py', 'pyrite/server/endpoints/entries.py', 'pyrite/server/schemas.py']
+          fixed = {path: Path(path).read_bytes() for path in paths}
+          try:
+              for path in paths:
+                  Path(path).write_bytes(subprocess.check_output(['git', 'show', '2c6d4b9649c662062817756ee38e290136ef2b71:' + path]))
+              result = subprocess.run(['pytest', 'tests/test_rest_update_unknown_fields.py', '-k', 'unknown_invalid', '-q', '--junitxml=red-shared.xml'])
+              tree = ET.parse('red-shared.xml')
+              assert result.returncode == 1
+              assert len(tree.findall('.//testcase/failure')) == 1
+              assert not tree.findall('.//testcase/error')
+          finally:
+              for path, source in fixed.items():
+                  Path(path).write_bytes(source)
+          PY
       - name: Focused real command regressions
         run: pytest tests/test_rest_update_unknown_fields.py tests/test_rest_patch_unknown_keys.py tests/test_websocket_delivery.py -q
       - name: Required affected tests
-        run: python scripts/test-affected --run --files pyrite/server/endpoints/entries.py pyrite/server/schemas.py tests/test_rest_update_unknown_fields.py tests/test_websocket_delivery.py docs/json-contracts.md
+        run: python scripts/test-affected --run --files pyrite/server/endpoints/entries.py pyrite/server/schemas.py pyrite/server/endpoints/write_refusal.py tests/test_rest_update_unknown_fields.py tests/test_websocket_delivery.py docs/json-contracts.md
         env:
           HF_HUB_OFFLINE: '1'
       - name: Source checks
