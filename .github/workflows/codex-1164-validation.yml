@@ -1,0 +1,32 @@
+name: Validate usage-error branch maintenance
+on:
+  push:
+    branches: ['validation/codex23-1164-maintenance']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Focused real command regressions
+        run: pytest tests/test_usage_error_stream_edges.py tests/test_cli_usage_error_plain.py tests/test_cli_errors.py -q
+      - name: Required affected tests
+        run: python scripts/test-affected --run --files pyrite/utils/errors.py tests/test_usage_error_stream_edges.py docs/json-contracts.md
+        env:
+          HF_HUB_OFFLINE: '1'
+      - name: Source checks
+        run: |
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
