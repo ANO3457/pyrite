@@ -7,7 +7,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,7 +16,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: |
-          pip install -e '.[cli,server,dev]' sqlite-vec
+          pip install setuptools wheel
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[all,postgres]'
           for ext in extensions/*/; do
             if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
           done
@@ -27,6 +29,7 @@ jobs:
         env:
           HF_HUB_OFFLINE: '1'
       - name: Source checks
+        if: always()
         run: |
           ruff check pyrite/ tests/ extensions/
           ruff format --check pyrite/ tests/ extensions/
