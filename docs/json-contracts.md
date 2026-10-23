@@ -94,7 +94,7 @@ MCP reports the class-level `error_code`. Where its old code differed,
 transition field. The CLI has no transition field. This table is the single
 reference for the tool-specific transitions still accepted in 0.26.0.
 The maintainer set removal to 0.27; these compatibility spellings remain
-accepted in 0.26 (see `changelog.d/deprecations-retargeted.changed.md`).
+accepted in 0.26 (see [0.26.0](../CHANGELOG.md#0260---2026-10-22)).
 The evidence column records the introduction where known, rather than
 inventing a release date for older class-level transitions.
 
@@ -136,9 +136,11 @@ blank means no name. These details apply equally to CLI and REST resolution.
 - Search `distance`: read `similarity` instead. Leaves in 0.27.
 - `-f` as `--format`: spell `--format` explicitly. Leaves in 0.27.
 - `export --format`: use `export --target`. Leaves in 0.27.
+- `task status`: use `task get`. Leaves in 0.27.
+- `db.conn`: use `db.session` for writes or `db.execute_sql()` for reads. Leaves in 0.27.
+- `FRONTMATTER_ALIASES`: declare `field_aliases` in the type's schema. Leaves in 0.27.
 
-The CLI warnings also name 0.27. This reference follows that maintainer
-decision; it does not change warning strings.
+The compatibility warnings also name 0.27, following the maintainer decision.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape
@@ -209,6 +211,18 @@ no longer dropped with `created: true` (#1090). A field the model has no
 top-level key for, such as the web New Entry form's Status, travels in
 `metadata`.
 
+REST `PATCH /api/entries/{id}` also refuses any top-level key its body model
+does not declare: 400 `VALIDATION_FAILED`, naming the unknown key(s), before
+writing the file or index (#1221). It accepts `kb`, `field`, `value` and `op`.
+ADR-0034 read transport markers (`body_truncated`, `body_length`, `body_offset`,
+`body_chunk_size`) remain accepted and are never stored as entry fields. A
+truthy truncation marker still refuses a body write; it is inert for a patch
+of a non-body field.
+
+A misspelt `vaule` is not an instruction to clear the field. Explicit `value:
+null` remains a valid set; `append`, `remove` and `unset` keep their existing
+semantics.
+
 This is the one table of codes an agent meets while writing; the
 how-to (`docs/agent-write-path.md`) links here instead of repeating it. Each row
 is reproduced by a command in "Reproduce the codes" below, which CI runs.
@@ -223,7 +237,9 @@ is reproduced by a command in "Reproduce the codes" below, which CI runs.
 | `SCHEMA_VIOLATION` | the KB schema or a plugin validator rejected a field: enum, required, range, format. A kb.yaml enum (`options:`/`values:`, list `items:`, rule `enum:`) is refused when `validation.enforce_enums` is on (the default); every other kb.yaml finding when `validation.enforce` is on. The message names the field, the value and the allowed list (`kind: 'chore' is not one of [...]`). An update that leaves an off-list value as it was is not refused (see **Warnings**). | Re-read the message: it names the field and the allowed values. |
 | `VALIDATION_FAILED` | anything else the entry model refuses (an event without a date, a missing title), a `managed_fields` key in an update, a field Pyrite or the type manages on a create at any spelling (`status_change_log`, `adr_number`, `file_path`, ...: top level, dotted `metadata.k`, under `metadata`, or an alias of the field; REST `POST` refuses only the `metadata` spelling, see above; #1010), an `entry` key holding a whole `kb_get` envelope sent to `kb_update` or REST `PUT` (send `result["entry"]`'s fields at the top level; the file is left untouched; #1024), and the ADR-0034 truncated-body refusal below. Unchanged by ADR-0037 theme 2 (2026-09-25): REST, MCP and the CLI already agreed on this code, so no `legacy_error_code`. | Fix the named field. For a truncated body, reassemble it with `kb_read_body` and retry without the marker. |
 | `CONFLICT` | the file kept changing between the update's read and its replace, five tries in a row; nothing was written. REST answers `409`; MCP and the CLI use the shape above. | Re-read the entry, then repeat the update. |
-| `STORAGE_ERROR` | a storage fault on the write (REST `500`). The message is fixed text; the cause is in the server log. | Read `retryable`: `true` only for a locked database, so wait and repeat; `false` needs an administrator. |
+| `STORAGE_ERROR` | a storage fault on the write (REST `500`). The message is fixed text; the cause is in the server log. One exception: an index Pyrite cannot bring to its schema when it opens it (a column that cannot be added in place, a migration that failed) is refused with a message naming only schema versions and `table.column`, plus a `suggestion` (#1260); a lock met while opening, upgrading or writing the index is the retryable one. | Read `retryable`: `true` only for a locked database, so wait and repeat; `false` needs an administrator. |
+| `OUTSIDE_KB_ROOT` | a write to a KB entry whose path leaves the KB root: the entry file, or a folder on its path, is a symbolic link to somewhere outside the KB's folder, or a configured path (a type's `subdirectory`, a `file_pattern`) leads outside it. The writer opens each folder beneath the KB root without following a link, so a folder swapped for a link while the write runs is refused the same way. Every write refuses it before anything is written: `create`, `update` (including `qa fix`'s), `rename`, `delete`, `schema migrate`, the reconcile move, software-kb's `migrate-standards`. An update used to write through such a link to its target. A link whose target is inside the KB is still written through, and stays a link. The message names no path; the server log does. Two neighbours keep their codes: a write to a file with more than one hard link is `STORAGE_ERROR` (its other name may be outside the KB; the message names the KB-relative path only), in a KB under git or not, and a `rename` of an entry whose file is a symbolic link is `VALIDATION_FAILED` with the reason (the link's target is never removed). | Replace the link with the file or folder it points to, inside the KB, then retry. |
+| `LANDING_REFUSED` | a write with no place to land under the KB's `landing` (ADR-0044 §1): the KB is `landing: review` and the writer's change set cannot be made (no git repository, no user to own it), a write that names several KBs one of which lands in a change set, or a database-only record asked of a change set (a review verdict: `sw_review`, `POST`/`DELETE /api/reviews` on a `landing: review` KB), which the change set could not carry through its merge; that one is available to the operator, or after the merge. Nothing is written to the KB's files or its index, and a write never falls back to them. The refusals above come before the working copy is made, so none leaves a worktree or branch behind. Two refusals after it is made are possible in principle (its config or its index cannot be opened); they leave the new working copy, unused, at main's commit. | Write to one KB at a time, or ask the operator about the KB's landing. |
 | `QUERY_SYNTAX` | (`search`, not a write, but what an agent hits right after a failed write) a token containing `-`, `:` or `.` used beside `AND`/`OR`/`NOT` or a quote, unquoted. | Quote the token yourself: `"bar-baz"`. |
 
 All are `retryable: false` except `CONFLICT` (always `true`) and `STORAGE_ERROR`
@@ -233,6 +249,17 @@ with status `400` (`409` for `ENTRY_EXISTS`). REST `CONFLICT` is `409` with
 `{"detail": {"code", "message"}}`, no `retryable` key; treat it as retryable.
 `STORAGE_ERROR` is `500` and carries `retryable`. MCP and the CLI use the error
 shape above.
+
+**Whole-request refusals (REST).** Two refusals stop an import, or any
+request, before a record is read:
+
+| status | `code` | Meaning | What to do |
+|---|---|---|---|
+| `413` | `PAYLOAD_TOO_LARGE` | the request body is larger than `settings.max_request_body_bytes` (default 32 MiB; see `docs/configuration.md`, "Server"). Applies to every route, `/auth` and `/mcp` included. Answered as soon as the body passes the limit (at once when `Content-Length` declares it); nothing is written. | Send a smaller body: split the import into several files, or ask the operator to raise the limit. |
+| `400` | `PARSE_ERROR` | `POST /api/entries/import` could not read the file in the named format (not UTF-8, or not valid JSON, YAML, CSV or markdown frontmatter). The message is Pyrite's own and names the format; the parser's detail is in the server log, not the response. Nothing is written. | Check the file's encoding and format, or pass the right `format=`. |
+
+Both answer `{"detail": {"code", "message", "retryable": false}}`; the `413`
+adds a `hint`.
 
 **Per-item results.** `kb_bulk_create`, `POST /api/entries/import` and
 `pyrite import` refuse a bad item on its own and create its siblings;
@@ -710,6 +737,26 @@ pyrite create -k typed -t ticket --title "T1" -f kind=chore
 pyrite create -k notes -t event --title "An event"
 ```
 
+`OUTSIDE_KB_ROOT`, from an entry file that is a link to a file outside the KB; the file it points to keeps its bytes:
+
+<!-- expect-exit: 0 -->
+```bash
+printf -- '---\nid: away\ntype: note\ntitle: Away\n---\n\nKept.\n' > away.md
+ln -s ../away.md notes/away.md
+pyrite index sync
+```
+
+<!-- expect-exit: 1 -->
+<!-- expect-text: "error_code": "OUTSIDE_KB_ROOT" -->
+```bash
+pyrite update away -k notes --title x
+```
+
+<!-- expect-exit: 0 -->
+```bash
+grep -q '^title: Away$' away.md
+```
+
 `QUERY_SYNTAX`, from `search`:
 
 <!-- expect-exit: 1 -->
@@ -747,7 +794,7 @@ they are **not run** (a server would be needed).
 |---|---|---|
 | CLI | `pyrite update <id> -k <kb> --title <t>`; one item: `--append tags=gamma`, `--remove tags=alpha`, a key: `--unset extra` | **`--format` defaults to `json`:** `{"updated": true, "entry_id": "<id>", "outcome": "done"}`. With `--format rich`: `Updated: <id>`. |
 | MCP | `kb_update`; one item: `"append": {"tags": "gamma"}` or `{"links": {"target": "b", "relation": "related_to"}}`, `"remove": {"tags": "alpha"}`; keys: `"unset": ["extra"]` (a list value under `append`/`remove` means each of its items) | the block below, plus `"warnings"` when any, `"ignored"` listing keys no update writes, and `"unchanged"` listing fields an echoed read result carried at the value the read returned (not written). |
-| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`. |
+| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`, and refuses unknown body keys with HTTP 400 `VALIDATION_FAILED` (#1221). |
 
 <!-- mcp-output: kb_update -->
 ```json
@@ -1087,11 +1134,15 @@ from the entry's side, with three relation fields:
 | `inverse_relation` | the declared inverse of `forward_relation`, looked up when the query runs | `null` | the declared inverse (`informed_by`) |
 
 `inverse_relation: null` means no inverse is declared for that relation. That
-is true of a custom relation, and also of some relations Pyrite writes itself:
-`transclusion` and `references` (written by the indexer for `![[...]]` and
-object-reference fields) and the legacy default `related` are not declared
-relationship types today, so their rows read `relation: related_to`,
-`inverse_relation: null`.
+is true of an undeclared custom relation. Core-written `transclusion` (for
+`![[...]]`) and `references` (object-reference fields) have the declared
+inverses `transcluded_by` and `referenced_by`; those reverse names are declared
+too. The legacy spelling `related` is an alias of `related_to`, with
+`inverse_relation: related_to`. `forward_relation` still preserves the spelling
+in the source. Existing stored rows are not rewritten: their `relation` can
+remain `related_to` until reindexing, while `inverse_relation` already reports
+the current declared inverse. A plugin declaration of the same name takes
+precedence over a core declaration, as for other relationship types.
 
 A stale row is the last column: a plugin declares `informs` after the link was
 indexed. `relation` is a stored column and keeps `related_to`;
@@ -1318,6 +1369,24 @@ migrates; until then `kb validate` drift exits `2` and `ids missing` `3`.
   is recorded on #526. `tests/test_requested_effect_exit_code.py` classifies
   every command that can do part of its job.
 
+
+### CLI root boundaries (ADR-0046, slice 1)
+
+Shared-format commands require a `PyriteCLIGroup` root; invoking a sub-app
+under an ordinary Typer root refuses before its body. The guard drains root
+close callbacks before publishing the answer. Cleanup that prints or exits
+is `NO_OUTCOME`, rather than a second document or a replacement exit code.
+When the body printed and then raised a refusal, stdout remains the one
+`NO_OUTCOME` document and stderr retains both the printed text and the refusal.
+
+Legacy plugin commands that return `Outcome` without `OUTPUT_FORMAT` remain
+outside the shared-format guarantee: their private `--format` does not select
+the renderer, and unsupported `PYRITE_FORMAT` falls back to JSON. A shared
+option instead rejects unsupported values as usage errors (exit 2). Plugins
+that need the guarantee declare the shared option and mount under the Pyrite
+root. See the root's docstring for the other process-level limits.
+
+
 ## `--format` defaults
 
 The rule (#303, decided 2026-10-02) is one shared `--format` option
@@ -1328,8 +1397,8 @@ overrides it, and an unknown format is a usage error (`2`, a `USAGE_ERROR` docum
 they exist for the shapes the REST API serves (entries, search results) and
 print a Python `repr` for anything else. A refusal is printed in the format
 asked for, YAML included. `-f` no longer
-means `--format`: where it did it remains accepted until a later
-release and prints a deprecation line on stderr (see
+means `--format`: where it did it remains accepted until 0.27
+and prints a deprecation line on stderr (see
 [Deprecated, still accepted](#deprecated-still-accepted)). Each module takes the
 shared option when it moves to the outcome contract; the commands not named in
 `tests/legacy_commands/` have it. Until then most *read* commands default to `--format json`, `config`

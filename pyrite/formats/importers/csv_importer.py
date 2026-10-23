@@ -18,6 +18,10 @@ def import_csv(data: str | bytes) -> list[dict[str, Any]]:
     if isinstance(data, bytes):
         data = data.decode("utf-8")
 
+    # Spreadsheet UTF-8 exports prefix the document, not its first field name.
+    # Remove only that marker: a BOM inside an entry's text is content.
+    data = data.removeprefix("\ufeff")
+
     reader = csv.DictReader(io.StringIO(data))
     entries = []
 

@@ -88,7 +88,30 @@ class PyritePlugin(Protocol):
 
         Returns:
             Dict mapping tool name to tool definition.
-            Each tool has "description", "inputSchema", "handler".
+            Each tool has "description", "inputSchema", "handler", and,
+            for a tool that takes an entry id, "locates_entry".
+
+        ``locates_entry`` (#1310): ``{"id_args": [...], "entry_type": ...}``.
+        ``id_args`` names every argument that carries an entry id (a string
+        or a list of strings); ``entry_type`` is the one type the tool acts
+        on, omitted for a tool that takes any type. The MCP dispatcher finds
+        the ids through ``KBService.locate`` within the caller's readable
+        KBs -- with ``kb_name`` absent or blank, the one KB that holds them,
+        ``AMBIGUOUS`` when several do, ``ENTRY_NOT_FOUND`` when none does --
+        and sets ``args["kb_name"]`` to that KB before its read, write and
+        landing checks, so the handler always works in a checked KB. The
+        handler reads ``args["kb_name"]``; it never resolves the id itself,
+        never falls back to a default KB, and never works in
+        ``kb_name or ""``. A call whose id arguments are all blank (missing,
+        empty, whitespace) is refused ``VALIDATION_FAILED`` before any check,
+        so the handler always receives a located id. ``kb_name`` is optional
+        in the registered schema whatever the plugin's ``required`` says (the
+        SDK validates arguments before the dispatcher). With no ``kb_name``
+        the lookup reads the canonical index: an id only in the caller's
+        pending change set is found only when the call names its KB. Only the
+        top-level ``id_args`` are located; an id nested in an object argument
+        (``investigation_promote_claim``'s ``endpoint_fields``) is not, and
+        must only be written in the located KB, never used to choose one.
         """
         ...
 

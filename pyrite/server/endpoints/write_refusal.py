@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request
 
 from ...exceptions import ValidationError
 from ...services.body_bounds import ensure_not_truncated
-from ..schemas import CreateEntryRequest
+from ..schemas import CreateEntryRequest, PatchEntryRequest
 
 
 def refusal_http(exc: ValidationError) -> HTTPException:
@@ -72,7 +72,12 @@ async def refuses_truncated_body(request: Request) -> None:
         return
     try:
         payload = await request.json()
-    except Exception:
+    except ValueError:
+        # Not JSON (JSONDecodeError, UnicodeDecodeError): nothing to inspect,
+        # and FastAPI's own parse refuses it. Only a parse error is let
+        # through: a read that failed -- the body limit stopping it
+        # (server/body_limit.py), a client that went away -- propagates, so
+        # the handler never runs on a body this guard did not see.
         return
 
     # PATCH writes one named field, so it is a body write only when that field
@@ -118,5 +123,33 @@ async def refuses_unknown_create_keys(request: Request) -> None:
     raise refusal_http(
         ValidationError(
             f"Unknown field(s) on a create: {', '.join(unknown)}. A create accepts: {accepted}."
+        )
+    )
+
+
+async def refuses_unknown_patch_keys(request: Request) -> None:
+    """#1221: refuse a top-level key the patch body model does not declare.
+
+    Mirrors :func:`refuses_unknown_create_keys` and :func:`refuses_truncated_body`,
+    including FastAPI's JSON media-type check, so a misspelt ``vaule`` is refused
+    with 400 ``VALIDATION_FAILED`` naming the keys before a missing ``value`` can
+    become a null write.
+    """
+    media_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if not (media_type == "application/json" or media_type.endswith("+json")):
+        return
+    try:
+        payload = await request.json()
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    unknown = sorted(set(payload) - set(PatchEntryRequest.model_fields))
+    if not unknown:
+        return
+    accepted = ", ".join(sorted(PatchEntryRequest.model_fields))
+    raise refusal_http(
+        ValidationError(
+            f"Unknown field(s) on a patch: {', '.join(unknown)}. A patch accepts: {accepted}."
         )
     )
