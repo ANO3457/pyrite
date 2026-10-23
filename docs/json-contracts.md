@@ -209,6 +209,18 @@ no longer dropped with `created: true` (#1090). A field the model has no
 top-level key for, such as the web New Entry form's Status, travels in
 `metadata`.
 
+REST `PATCH /api/entries/{id}` also refuses any top-level key its body model
+does not declare: 400 `VALIDATION_FAILED`, naming the unknown key(s), before
+writing the file or index (#1221). It accepts `kb`, `field`, `value` and `op`.
+ADR-0034 read transport markers (`body_truncated`, `body_length`, `body_offset`,
+`body_chunk_size`) remain accepted and are never stored as entry fields. A
+truthy truncation marker still refuses a body write; it is inert for a patch
+of a non-body field.
+
+A misspelt `vaule` is not an instruction to clear the field. Explicit `value:
+null` remains a valid set; `append`, `remove` and `unset` keep their existing
+semantics.
+
 This is the one table of codes an agent meets while writing; the
 how-to (`docs/agent-write-path.md`) links here instead of repeating it. Each row
 is reproduced by a command in "Reproduce the codes" below, which CI runs.
@@ -780,7 +792,7 @@ they are **not run** (a server would be needed).
 |---|---|---|
 | CLI | `pyrite update <id> -k <kb> --title <t>`; one item: `--append tags=gamma`, `--remove tags=alpha`, a key: `--unset extra` | **`--format` defaults to `json`:** `{"updated": true, "entry_id": "<id>", "outcome": "done"}`. With `--format rich`: `Updated: <id>`. |
 | MCP | `kb_update`; one item: `"append": {"tags": "gamma"}` or `{"links": {"target": "b", "relation": "related_to"}}`, `"remove": {"tags": "alpha"}`; keys: `"unset": ["extra"]` (a list value under `append`/`remove` means each of its items) | the block below, plus `"warnings"` when any, `"ignored"` listing keys no update writes, and `"unchanged"` listing fields an echoed read result carried at the value the read returned (not written). |
-| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`. |
+| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`, and refuses unknown body keys with HTTP 400 `VALIDATION_FAILED` (#1221). |
 
 <!-- mcp-output: kb_update -->
 ```json
