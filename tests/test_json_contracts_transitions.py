@@ -42,15 +42,35 @@ def test_transition_row_matches_real_mcp_not_found(tool, missing, cli_world):
     assert refusal["retryable"] is False
 
 
-def test_removal_versions_follow_the_maintainer_decision():
-    text = PAGE.read_text(encoding="utf-8")
-    assert not re.search(r"for one\s+release|this release|next release", text)
-    for line in text.splitlines():
-        if line.startswith(
-            ("- `legacy_error_code`", "- Search `distance`", "- `-f`", "- `export --format`")
-        ):
-            assert "0.27" in line
-    assert "a later release" not in text
+@pytest.mark.parametrize(
+    ("page", "heading"),
+    [
+        ("json-contracts.md", "### Deprecated, still accepted"),
+        ("upgrading.md", "### 8. Still deprecated"),
+    ],
+)
+def test_removal_versions_follow_the_maintainer_decision(page, heading):
+    text = (PAGE.parent / page).read_text(encoding="utf-8")
+    section = text.split(heading, 1)[1].split("\n#", 1)[0]
+    assert not re.search(r"for one\s+release|this release|next release|a\s+later release", section)
+    bullets = re.findall(r"(?m)^- .*?(?=\n- |\n\n|\Z)", section, re.S)
+    for name in (
+        "`legacy_error_code`",
+        "`distance`",
+        "`-f`",
+        "export --format",
+        "`task status`",
+        "`db.conn`",
+        "`FRONTMATTER_ALIASES`",
+    ):
+        matching = [bullet for bullet in bullets if name in bullet]
+        assert matching, name
+        assert all("0.27" in bullet for bullet in matching), name
+    if page == "upgrading.md":
+        paragraph = text.split("`legacy_error_code`", 1)[1].split("\n- ", 1)[0]
+        assert "0.27" in paragraph
+        assert "json-contracts.md#mcp-code-transitions" in paragraph
+        assert not re.search(r"for one\s+release|a\s+later release", paragraph)
 
 
 def test_server_account_table_statuses_match_the_central_rest_mapping():

@@ -11,6 +11,7 @@ import dataclasses
 import logging
 import os
 import re
+import shlex
 import stat
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -1953,6 +1954,16 @@ class KBService:
                 raise ValidationError(
                     f"Cannot update '{entry_id}': the result would not load ({e})"
                 ) from e
+            # Refuse a transition into claimed, not edits which preserve an
+            # existing claim after its children have since finished.
+            if (
+                new_entry.entry_type == "task"
+                and getattr(new_entry, "status", None) == "claimed"
+                and old_status != "claimed"
+            ):
+                refusal = self._refuse_claim_of_complete_task(entry_id, kb_name)
+                if refusal:
+                    raise ValidationError(refusal["error"])
             # Once, on the entry parsed from the result (decision 2): the
             # type, managed-field and enum refusals happen before anything is
             # written.
@@ -3508,8 +3519,10 @@ class KBService:
             "error": (
                 f"Task '{entry_id}' counts as done: all {completion['children']} of its "
                 "children are resolved (derived), so there is nothing left to claim. "
-                "Add a child (task decompose) to reopen the work; to write done into "
-                "its file, walk it with task update (claimed, in_progress, done)."
+                "Add an open subtask with `pyrite task create 'New work' "
+                f"-k {shlex.quote(kb_name)} --parent {shlex.quote(entry_id)}`, "
+                "then claim again. Or mark the completed parent done with "
+                f"`pyrite task update {shlex.quote(entry_id)} -k {shlex.quote(kb_name)} -s done`."
             ),
             "current_status": derived["effective_status"],
             "derived": derived,

@@ -390,6 +390,111 @@ MY_WORKFLOW = {
 }
 ```
 
+## 8-Section Extension Test Structure
+
+Every extension test file follows this structure. Not every section is required — only include sections for capabilities your extension implements.
+
+```python
+"""Tests for the my_extension extension."""
+
+from pyrite_my_extension.entry_types import MyEntry
+from pyrite_my_extension.plugin import MyExtensionPlugin
+from pyrite_my_extension.preset import MY_PRESET
+from pyrite_my_extension.validators import validate_my_type
+
+from pyrite.plugins.registry import PluginRegistry
+
+# =========================================================================
+# 1. Plugin registration
+# =========================================================================
+
+class TestPluginRegistration:
+    def test_plugin_has_name(self):
+        plugin = MyExtensionPlugin()
+        assert plugin.name == "my_extension"
+
+    def test_register_with_registry(self):
+        registry = PluginRegistry()
+        registry.register(MyExtensionPlugin())
+        assert "my_extension" in registry.list_plugins()
+
+    def test_entry_types_registered(self):
+        registry = PluginRegistry()
+        registry.register(MyExtensionPlugin())
+        types = registry.get_all_entry_types()
+        assert "my_type" in types  # Use `in`, not len()
+
+    # ... validators, commands, presets, kb_types, mcp_tools
+
+# =========================================================================
+# 2. Entry types
+# =========================================================================
+
+class TestMyEntry:
+    def test_default_values(self): ...
+    def test_entry_type_property(self): ...
+    def test_to_frontmatter(self): ...
+    def test_to_frontmatter_omits_defaults(self): ...
+    def test_from_frontmatter(self): ...
+    def test_from_frontmatter_generates_id(self): ...
+    def test_roundtrip_markdown(self): ...
+
+# =========================================================================
+# 3. Validators
+# =========================================================================
+
+class TestValidators:
+    def test_valid_data_passes(self): ...
+    def test_required_field_missing(self): ...
+    def test_invalid_enum_value(self): ...
+    def test_ignores_unrelated_types(self): ...  # CRITICAL: always include
+
+# =========================================================================
+# 4. Hooks (if applicable)
+# =========================================================================
+
+class TestHooks:
+    def test_before_save_modifies_entry(self): ...
+    def test_before_save_raises_on_violation(self): ...
+    def test_after_save_side_effect(self): ...
+    def test_hooks_ignore_unrelated_types(self): ...
+
+# =========================================================================
+# 5. Workflows (if applicable)
+# =========================================================================
+
+class TestWorkflows:
+    def test_valid_transitions(self): ...
+    def test_invalid_transition_rejected(self): ...
+    def test_initial_state(self): ...
+
+# =========================================================================
+# 6. DB Tables (if applicable)
+# =========================================================================
+
+class TestDBTables:
+    def test_table_definitions_valid(self): ...
+    def test_table_names_prefixed(self): ...
+
+# =========================================================================
+# 7. Preset
+# =========================================================================
+
+class TestPreset:
+    def test_preset_structure(self): ...
+    def test_preset_contains_expected_types(self): ...
+    def test_preset_directories(self): ...
+
+# =========================================================================
+# 8. Core integration
+# =========================================================================
+
+class TestCoreIntegration:
+    def test_entry_class_resolution(self): ...
+    def test_entry_from_frontmatter_resolution(self): ...
+    def test_relationship_types_merged(self): ...
+```
+
 ## Installation and Development
 
 ```bash

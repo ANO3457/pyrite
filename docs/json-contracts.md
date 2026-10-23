@@ -94,7 +94,7 @@ MCP reports the class-level `error_code`. Where its old code differed,
 transition field. The CLI has no transition field. This table is the single
 reference for the tool-specific transitions still accepted in 0.26.0.
 The maintainer set removal to 0.27; these compatibility spellings remain
-accepted in 0.26 (see `changelog.d/deprecations-retargeted.changed.md`).
+accepted in 0.26 (see [0.26.0](../CHANGELOG.md#0260--2026-10-22)).
 The evidence column records the introduction where known, rather than
 inventing a release date for older class-level transitions.
 
@@ -136,9 +136,11 @@ blank means no name. These details apply equally to CLI and REST resolution.
 - Search `distance`: read `similarity` instead. Leaves in 0.27.
 - `-f` as `--format`: spell `--format` explicitly. Leaves in 0.27.
 - `export --format`: use `export --target`. Leaves in 0.27.
+- `task status`: use `task get`. Leaves in 0.27.
+- `db.conn`: use `db.session` for writes or `db.execute_sql()` for reads. Leaves in 0.27.
+- `FRONTMATTER_ALIASES`: declare `field_aliases` in the type's schema. Leaves in 0.27.
 
-The CLI warnings also name 0.27. This reference follows that maintainer
-decision; it does not change warning strings.
+The compatibility warnings also name 0.27, following the maintainer decision.
 
 **REST** answers a domain refusal as `{"detail": {"code", "message",
 "retryable", "hint"?}}` — the web client already speaks this shape
@@ -208,6 +210,18 @@ model does not declare, is refused before the service with 400
 no longer dropped with `created: true` (#1090). A field the model has no
 top-level key for, such as the web New Entry form's Status, travels in
 `metadata`.
+
+REST `PATCH /api/entries/{id}` also refuses any top-level key its body model
+does not declare: 400 `VALIDATION_FAILED`, naming the unknown key(s), before
+writing the file or index (#1221). It accepts `kb`, `field`, `value` and `op`.
+ADR-0034 read transport markers (`body_truncated`, `body_length`, `body_offset`,
+`body_chunk_size`) remain accepted and are never stored as entry fields. A
+truthy truncation marker still refuses a body write; it is inert for a patch
+of a non-body field.
+
+A misspelt `vaule` is not an instruction to clear the field. Explicit `value:
+null` remains a valid set; `append`, `remove` and `unset` keep their existing
+semantics.
 
 This is the one table of codes an agent meets while writing; the
 how-to (`docs/agent-write-path.md`) links here instead of repeating it. Each row
@@ -780,7 +794,7 @@ they are **not run** (a server would be needed).
 |---|---|---|
 | CLI | `pyrite update <id> -k <kb> --title <t>`; one item: `--append tags=gamma`, `--remove tags=alpha`, a key: `--unset extra` | **`--format` defaults to `json`:** `{"updated": true, "entry_id": "<id>", "outcome": "done"}`. With `--format rich`: `Updated: <id>`. |
 | MCP | `kb_update`; one item: `"append": {"tags": "gamma"}` or `{"links": {"target": "b", "relation": "related_to"}}`, `"remove": {"tags": "alpha"}`; keys: `"unset": ["extra"]` (a list value under `append`/`remove` means each of its items) | the block below, plus `"warnings"` when any, `"ignored"` listing keys no update writes, and `"unchanged"` listing fields an echoed read result carried at the value the read returned (not written). |
-| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`. |
+| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`, and refuses unknown body keys with HTTP 400 `VALIDATION_FAILED` (#1221). |
 
 <!-- mcp-output: kb_update -->
 ```json
@@ -1355,6 +1369,24 @@ migrates; until then `kb validate` drift exits `2` and `ids missing` `3`.
   is recorded on #526. `tests/test_requested_effect_exit_code.py` classifies
   every command that can do part of its job.
 
+
+### CLI root boundaries (ADR-0046, slice 1)
+
+Shared-format commands require a `PyriteCLIGroup` root; invoking a sub-app
+under an ordinary Typer root refuses before its body. The guard drains root
+close callbacks before publishing the answer. Cleanup that prints or exits
+is `NO_OUTCOME`, rather than a second document or a replacement exit code.
+When the body printed and then raised a refusal, stdout remains the one
+`NO_OUTCOME` document and stderr retains both the printed text and the refusal.
+
+Legacy plugin commands that return `Outcome` without `OUTPUT_FORMAT` remain
+outside the shared-format guarantee: their private `--format` does not select
+the renderer, and unsupported `PYRITE_FORMAT` falls back to JSON. A shared
+option instead rejects unsupported values as usage errors (exit 2). Plugins
+that need the guarantee declare the shared option and mount under the Pyrite
+root. See the root's docstring for the other process-level limits.
+
+
 ## `--format` defaults
 
 The rule (#303, decided 2026-10-02) is one shared `--format` option
@@ -1365,8 +1397,8 @@ overrides it, and an unknown format is a usage error (`2`, a `USAGE_ERROR` docum
 they exist for the shapes the REST API serves (entries, search results) and
 print a Python `repr` for anything else. A refusal is printed in the format
 asked for, YAML included. `-f` no longer
-means `--format`: where it did it remains accepted until a later
-release and prints a deprecation line on stderr (see
+means `--format`: where it did it remains accepted until 0.27
+and prints a deprecation line on stderr (see
 [Deprecated, still accepted](#deprecated-still-accepted)). Each module takes the
 shared option when it moves to the outcome contract; the commands not named in
 `tests/legacy_commands/` have it. Until then most *read* commands default to `--format json`, `config`

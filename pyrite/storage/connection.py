@@ -4,22 +4,28 @@ Database connection setup, extensions, migrations, and plugin tables.
 Mixin class providing __init__, close, transaction, and schema management.
 """
 
+from __future__ import annotations
+
 import copy
 import logging
 import re
 import sqlite3
 import threading
 import warnings
+import weakref
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from typing import TypeGuard
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..exceptions import StorageError
 from .backends.sqlite_backend import SQLiteBackend
+from .errors import storage_error_from
 from .models import Base
 from .virtual_tables import create_fts_tables, create_vec_table
 
@@ -69,6 +75,15 @@ CORRUPT_INDEX_SUGGESTION = (
 )
 
 
+def is_index_corruption(exc: BaseException) -> TypeGuard[sqlite3.DatabaseError]:
+    """Distinguish a broken index from query syntax, locks and other SQL errors."""
+    code = getattr(exc, "sqlite_errorcode", 0)
+    return isinstance(exc, sqlite3.DatabaseError) and (code & 0xFF) in (
+        sqlite3.SQLITE_CORRUPT,
+        sqlite3.SQLITE_NOTADB,
+    )
+
+
 def index_file_problem(db_path: Path) -> str | None:
     """Why the index file at ``db_path`` is unreadable, judged from its header, or None.
 
@@ -111,6 +126,28 @@ def index_file_problem(db_path: Path) -> str | None:
     return None
 
 
+class _FallbackSessionHolder:
+    """Holds a per-thread fallback session and releases its connection on thread exit (#1100)."""
+
+    def __init__(self, session: Session, db: ConnectionMixin) -> None:
+        self.session = session
+        self.db = weakref.ref(db)
+
+    def __del__(self) -> None:
+        try:
+            self.session.close()
+        except Exception:
+            pass
+        db = self.db()
+        if db is not None:
+            try:
+                with db._fallback_lock:
+                    if self.session in db._fallback_sessions:
+                        db._fallback_sessions.remove(self.session)
+            except Exception:
+                pass
+
+
 class ConnectionMixin:
     """Database connection, extensions, migrations, and plugin table creation."""
 
@@ -151,6 +188,19 @@ class ConnectionMixin:
                 cursor.execute("PRAGMA synchronous = NORMAL")
                 cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
                 cursor.close()
+
+            # Translate actual corruption, preserving query and lock errors.
+            # Keep the listener free of an owner reference (engine -> self
+            # would retain every request's database through an event cycle).
+            index_path_for_errors = str(self.db_path)
+
+            @event.listens_for(self.engine, "handle_error")
+            def handle_db_error(exception_context: ExceptionContext) -> None:
+                orig = exception_context.original_exception
+                if is_index_corruption(orig):
+                    err = storage_error_from(orig, f"Database error at {index_path_for_errors}")
+                    err.suggestion = CORRUPT_INDEX_SUGGESTION
+                    raise err from orig
 
             # Create ORM tables
             Base.metadata.create_all(self.engine)
@@ -263,15 +313,17 @@ class ConnectionMixin:
         stack = getattr(self._local, "scopes", None)
         if stack:
             return stack[-1]
-        session = getattr(self._local, "fallback", None)
-        if session is None:
+        holder = getattr(self._local, "fallback_holder", None)
+        if holder is None:
             session = self._session_factory()
-            self._local.fallback = session
+            holder = _FallbackSessionHolder(session, self)
+            self._local.fallback_holder = holder
             # Tracked so `close()` can dispose of sessions belonging to threads
-            # that have since exited; `threading.local` alone would leak them.
+            # that have since exited or remain alive; `_FallbackSessionHolder`
+            # disposes of the session if the thread terminates first (#1100).
             with self._fallback_lock:
                 self._fallback_sessions.append(session)
-        return session
+        return holder.session
 
     @contextmanager
     def request_handle(self):
@@ -353,6 +405,12 @@ class ConnectionMixin:
             cursor = (conn if conn is not None else self._raw_conn).cursor()
             try:
                 yield cursor
+            except sqlite3.DatabaseError as exc:
+                if not is_index_corruption(exc):
+                    raise
+                err = storage_error_from(exc, f"Database error at {self.db_path}")
+                err.suggestion = CORRUPT_INDEX_SUGGESTION
+                raise err from exc
             finally:
                 cursor.close()
 
@@ -485,11 +543,11 @@ class ConnectionMixin:
     def conn(self):
         """Backward-compat: returns raw sqlite3 connection.
 
-        Deprecated: Use ``session`` for writes and ``execute_sql()`` for
+        Deprecated; removed in 0.27. Use ``session`` for writes and ``execute_sql()`` for
         read-only raw SQL queries.
         """
         warnings.warn(
-            "db.conn is deprecated. Use db.session for writes and "
+            "db.conn is deprecated and will be removed in 0.27. Use db.session for writes and "
             "db.execute_sql() for read-only queries.",
             DeprecationWarning,
             stacklevel=2,

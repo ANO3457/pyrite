@@ -210,6 +210,7 @@ class QAService:
 
             # Per-entry schema pass (only if kb.yaml exists): the kb.yaml itself,
             # then each entry, its typed attributes read from its file
+            self._check_rubric_action_config(issues, kb_name)
             self._check_schema_retypes_core_fields(issues, kb_name)
             self._check_schema_all(issues, kb_name, sources)
 
@@ -1617,9 +1618,54 @@ class QAService:
             self._check_rubric_evaluation(row, findings)
             existing = by_entry.setdefault((row["id"], row["kb_name"]), [])
             for finding in findings:
-                if finding not in existing:
+                comparable = {k: v for k, v in finding.items() if k != "rubric_action"}
+                if not any(
+                    comparable == {k: v for k, v in old.items() if k != "rubric_action"}
+                    for old in existing
+                ):
                     issues.append(finding)
                     existing.append(finding)
+
+    def _check_rubric_action_config(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+        config = self.config.get_kb(kb_name)
+        schema = config.kb_schema if config else None
+        if schema is None:
+            return
+        settings = [("rubric_action", schema.rubric_action)]
+        rubrics = [("evaluation_rubric", schema.evaluation_rubric)]
+        rubrics.extend(
+            (f"types.{name}.evaluation_rubric", kind.evaluation_rubric)
+            for name, kind in schema.types.items()
+        )
+        for path, items in rubrics:
+            for index, item in enumerate(items):
+                if isinstance(item, dict) and "action" in item:
+                    settings.append((f"{path}[{index}].action", item["action"]))
+        for key, value in settings:
+            if not isinstance(value, str) or value not in ("warn", "fail"):
+                issues.append(
+                    {
+                        "entry_id": "",
+                        "kb_name": kb_name,
+                        "rule": "config_error",
+                        "severity": "error",
+                        "field": key,
+                        "message": f"kb.yaml {key} must be warn or fail; got {value!r}",
+                    }
+                )
+
+    def _get_rubric_action(self, kb_name: str, item: dict[str, Any] | None = None) -> str:
+        """Only a named item action overrides the KB's rubric_action (#1166)."""
+        if item is not None and "action" in item:
+            action = item["action"]
+            return action if isinstance(action, str) and action in ("warn", "fail") else "fail"
+        kb_config = self.config.get_kb(kb_name)
+        try:
+            schema = kb_config.kb_schema if kb_config else None
+        except OSError:
+            return "fail"  # The file checks report unreadability.
+        action = schema.rubric_action if schema else "fail"
+        return action if isinstance(action, str) and action in ("warn", "fail") else "fail"
 
     def _check_rubric_evaluation(self, entry: dict[str, Any], issues: list[dict[str, Any]]) -> None:
         """Run rubric checks on a single entry."""
@@ -1685,6 +1731,7 @@ class QAService:
             try:
                 issue = fn(enriched, kb_schema, params)
                 if issue is not None:
+                    issue["rubric_action"] = self._get_rubric_action(kb_name, item)
                     issues.append(issue)
             except Exception as exc:
                 # The item was not checked: report it, like an unknown checker

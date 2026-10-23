@@ -11,7 +11,7 @@ sync. Where REST and MCP used to disagree (``NOT_FOUND`` vs
 ``ENTRY_NOT_FOUND``/``KB_NOT_FOUND``, ``READ_ONLY`` vs ``KB_READ_ONLY``,
 ``CONFIG_ERROR`` vs ``CONFIG_CONFLICT``), the maintainer's decision
 (2026-09-25) is that REST's more specific code is the one on the class; MCP
-keeps emitting its old code for one release in a transitional
+keeps emitting its old code until 0.27 in a transitional
 ``legacy_error_code`` field it builds itself (see
 ``server/mcp_server._refusal``), never on the class.
 

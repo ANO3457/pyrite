@@ -49,7 +49,12 @@ from ..schemas import (
     WantedPage,
     WantedPagesResponse,
 )
-from .write_refusal import refusal_http, refuses_truncated_body, refuses_unknown_create_keys
+from .write_refusal import (
+    refusal_http,
+    refuses_truncated_body,
+    refuses_unknown_create_keys,
+    refuses_unknown_patch_keys,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -939,7 +944,11 @@ def update_entry(
 @router.patch(
     "/entries/{entry_id}",
     response_model=UpdateResponse,
-    dependencies=[Depends(requires_kb_tier("write")), Depends(refuses_truncated_body)],
+    dependencies=[
+        Depends(requires_kb_tier("write")),
+        Depends(refuses_truncated_body),
+        Depends(refuses_unknown_patch_keys),
+    ],
 )
 @limiter.limit("30/minute")
 def patch_entry_field(

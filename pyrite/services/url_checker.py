@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..exceptions import StorageError
-from .search_service import storage_error_from
+from ..storage.errors import storage_error_from
 
 logger = logging.getLogger(__name__)
 
