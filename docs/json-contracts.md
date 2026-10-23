@@ -1355,6 +1355,24 @@ migrates; until then `kb validate` drift exits `2` and `ids missing` `3`.
   is recorded on #526. `tests/test_requested_effect_exit_code.py` classifies
   every command that can do part of its job.
 
+
+### CLI root boundaries (ADR-0046, slice 1)
+
+Shared-format commands require a `PyriteCLIGroup` root; invoking a sub-app
+under an ordinary Typer root refuses before its body. The guard drains root
+close callbacks before publishing the answer. Cleanup that prints or exits
+is `NO_OUTCOME`, rather than a second document or a replacement exit code.
+When the body printed and then raised a refusal, stdout remains the one
+`NO_OUTCOME` document and stderr retains both the printed text and the refusal.
+
+Legacy plugin commands that return `Outcome` without `OUTPUT_FORMAT` remain
+outside the shared-format guarantee: their private `--format` does not select
+the renderer, and unsupported `PYRITE_FORMAT` falls back to JSON. A shared
+option instead rejects unsupported values as usage errors (exit 2). Plugins
+that need the guarantee declare the shared option and mount under the Pyrite
+root. See the root's docstring for the other process-level limits.
+
+
 ## `--format` defaults
 
 The rule (#303, decided 2026-10-02) is one shared `--format` option
