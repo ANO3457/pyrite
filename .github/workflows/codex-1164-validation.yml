@@ -22,6 +22,12 @@ jobs:
           for ext in extensions/*/; do
             if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
           done
+      - name: Cache the real local embedding model needed by existing tests
+        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', trust_remote_code=False)"
+      - name: Recheck the previously missing model test
+        run: pytest tests/test_semantic_search_warns_when_nothing_is_embedded.py -q
+        env:
+          HF_HUB_OFFLINE: '1'
       - name: Focused real command regressions
         run: pytest tests/test_usage_error_stream_edges.py tests/test_cli_usage_error_plain.py tests/test_cli_errors.py -q
       - name: Required affected tests
