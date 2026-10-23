@@ -31,7 +31,7 @@ jobs:
       - name: Focused real command regressions
         run: pytest tests/test_cli_import_performance.py tests/test_import_cycles.py tests/test_extension_cli_import_order.py -q
       - name: Required affected tests
-        run: python scripts/test-affected --run --files pyrite/cli/__init__.py pyrite/cli/context.py pyrite/services/__init__.py pyrite/services/search_service.py tests/test_cli_import_performance.py
+        run: python scripts/test-affected --run --files pyrite/cli/__init__.py pyrite/cli/context.py pyrite/services/__init__.py pyrite/services/search_service.py pyrite/storage/__init__.py tests/test_cli_import_performance.py
         env:
           HF_HUB_OFFLINE: '1'
       - name: Source checks
