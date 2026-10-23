@@ -1,8 +1,10 @@
 """Zettelkasten CLI commands."""
 
+from __future__ import annotations
+
 import logging
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -10,8 +12,9 @@ from rich.table import Table
 
 from pyrite.cli.context import require_kb
 from pyrite.config import load_config
-from pyrite.services.access_policy import UNSCOPED
-from pyrite.storage.database import PyriteDB
+
+if TYPE_CHECKING:
+    from pyrite.storage.database import PyriteDB
 
 zettel_app = typer.Typer(help="Zettelkasten knowledge management")
 console = Console()
@@ -117,6 +120,8 @@ def zettel_inbox(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB to search"),
 ):
     """List fleeting notes not yet fully processed (not at 'connect' stage)."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format="rich")
     db = PyriteDB(config.settings.index_path)
@@ -166,6 +171,9 @@ def zettel_orphans(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB to search"),
 ):
     """Find notes with no incoming or outgoing links."""
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format="rich")
     db = PyriteDB(config.settings.index_path)
@@ -202,6 +210,8 @@ def zettel_maturity(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB to search"),
 ):
     """Show maturity distribution of zettels."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format="rich")
     db = PyriteDB(config.settings.index_path)

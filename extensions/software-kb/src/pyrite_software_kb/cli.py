@@ -1,8 +1,10 @@
 """Software KB CLI commands."""
 
+from __future__ import annotations
+
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.console import Console
@@ -11,8 +13,6 @@ from rich.table import Table
 from pyrite.cli.context import require_entry_kb, require_kb
 from pyrite.cli.output import output_format_choice
 from pyrite.config import load_config
-from pyrite.services.access_policy import UNSCOPED
-from pyrite.storage.database import PyriteDB
 
 from .adr_listing import (
     adr_relations,
@@ -21,6 +21,9 @@ from .adr_listing import (
     next_adr_number,
     resolve_adr_kb,
 )
+
+if TYPE_CHECKING:
+    from pyrite.storage.database import PyriteDB
 
 sw_app = typer.Typer(help="Software KB commands (ADRs, backlog, standards, components)")
 console = Console()
@@ -101,6 +104,8 @@ def sw_adrs(
     Bounded by default like `sw backlog`: 50 ADRs, with --limit/--offset to
     page through the rest and --limit 0 for the full, unbounded list.
     """
+    from pyrite.storage.database import PyriteDB
+
     from .plugin import DEFAULT_LIST_LIMIT
 
     effective_limit = DEFAULT_LIST_LIMIT if limit is None else (None if limit <= 0 else limit)
@@ -197,7 +202,9 @@ def sw_new_adr(
     from datetime import date
 
     from pyrite.exceptions import PyriteError
+    from pyrite.services.access_policy import UNSCOPED
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
     from pyrite.utils.errors import cli_error
 
     config = load_config()
@@ -541,6 +548,8 @@ def sw_standards(
     ),
 ):
     """List all standards (standard + programmatic_validation + development_convention). [deprecated: use validations/conventions]"""
+    from pyrite.storage.database import PyriteDB
+
     from .plugin import DEFAULT_LIST_LIMIT
 
     effective_limit = DEFAULT_LIST_LIMIT if limit is None else (None if limit <= 0 else limit)
@@ -609,6 +618,8 @@ def sw_validations(
     ),
 ):
     """List programmatic validations (automated checks)."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -667,6 +678,8 @@ def sw_conventions(
     ),
 ):
     """List development conventions (judgment-based guidance)."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -725,6 +738,7 @@ def sw_migrate_standards(
     """Migrate type:standard entries to programmatic_validation or development_convention."""
     from pathlib import Path
 
+    from pyrite.storage.database import PyriteDB
     from pyrite.storage.entry_writer import FileChanged, move_entry_text, publish_entry_text
     from pyrite.storage.file_operations import FrontmatterSpan, Set, Unset, apply
     from pyrite.utils.atomic_write import HardLinked
@@ -873,6 +887,9 @@ def sw_milestones(
     ),
 ):
     """List milestones with completion progress."""
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -955,6 +972,8 @@ def sw_board_cmd(
 ):
     """View kanban board with backlog items grouped by lane."""
     from pathlib import Path
+
+    from pyrite.storage.database import PyriteDB
 
     from .board import load_board_config
 
@@ -1039,6 +1058,8 @@ def sw_review_queue(
     ),
 ):
     """View items in review status, sorted by wait time."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -1104,6 +1125,7 @@ def sw_claim(
 ):
     """Claim a backlog item: transition to in_progress and set assignee."""
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .workflows import BACKLOG_WORKFLOW, can_transition, get_allowed_transitions
 
@@ -1160,6 +1182,7 @@ def sw_submit(
 ):
     """Submit an in-progress item for review."""
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .workflows import BACKLOG_WORKFLOW, can_transition
 
@@ -1218,6 +1241,7 @@ def sw_transition(
 ):
     """Transition a backlog item to a new status (validates workflow rules)."""
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .workflows import (
         BACKLOG_WORKFLOW,
@@ -1417,6 +1441,8 @@ def sw_components(
     Bounded by default like `sw backlog`: 50 components, with --limit/--offset
     to page and --limit 0 for the full list.
     """
+    from pyrite.storage.database import PyriteDB
+
     from .plugin import DEFAULT_LIST_LIMIT
 
     effective_limit = DEFAULT_LIST_LIMIT if limit is None else (None if limit <= 0 else limit)

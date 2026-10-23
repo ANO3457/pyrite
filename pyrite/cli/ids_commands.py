@@ -34,7 +34,7 @@ from .context import cli_context
 from .output import output_format_choice
 
 if TYPE_CHECKING:
-    pass
+    from ..services.id_pin_service import IdScan
 
 OUTSIDE_CONTRACT = 3
 
@@ -57,7 +57,7 @@ def _find_kb(kb_name: str, output_format: str):
         cli_error_from(e, _err_format(output_format))
 
 
-def _scan(kb_config, kb_name: str, output_format: str):
+def _scan(kb_config, kb_name: str, output_format: str) -> IdScan:
     from ..services import id_pin_service
 
     if kb_config is None:
