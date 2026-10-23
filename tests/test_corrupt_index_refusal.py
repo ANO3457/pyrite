@@ -312,6 +312,81 @@ class TestSearchCatchAllDoesNotSwallowStorageError:
         assert "results" not in payload
 
 
+class TestInteriorPageCorruptionRefusal:
+    """Interior page corruption passes the open-time header probe; any mid-command
+    sqlite3.DatabaseError must refuse with STORAGE_ERROR (#1182)."""
+
+    def test_non_corruption_query_errors_keep_their_sqlite_identity(self, tmp_path):
+        from sqlalchemy.exc import OperationalError
+
+        with PyriteDB(tmp_path / "index.db") as db:
+            with pytest.raises(OperationalError) as caught:
+                db.execute_sql("SELECT nonexistent_column FROM entry")
+            assert caught.value.orig.sqlite_errorcode == sqlite3.SQLITE_ERROR
+            with pytest.raises(sqlite3.OperationalError) as raw:
+                with db._raw_cursor() as cursor:
+                    cursor.execute("SELECT nonexistent_column FROM entry")
+            assert raw.value.sqlite_errorcode == sqlite3.SQLITE_ERROR
+
+    @pytest.fixture
+    def corrupt_interior_page_index(self, scratch_home: dict[str, Path]) -> dict[str, Path]:
+        for i in range(10):
+            p = scratch_home["kb_path"] / f"entry{i}.md"
+            p.write_text(
+                f"---\nid: entry{i}\ntype: note\ntitle: Entry {i}\ntags: [tagA, tagB]\n---\n"
+                + ("Content " * 100)
+                + "\n",
+                encoding="utf-8",
+            )
+        build_res = runner.invoke(app, ["index", "build", "--no-embed"])
+        assert build_res.exit_code == 0, build_res.output
+
+        index_db = scratch_home["index_db"]
+        conn = sqlite3.connect(index_db)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        rootpages = [
+            row[0]
+            for row in conn.execute(
+                "SELECT rootpage FROM sqlite_schema WHERE type='table' AND name IN ('entry', 'tag', 'entry_tag', 'link')"
+            ).fetchall()
+        ]
+        conn.close()
+
+        # Flip bytes inside interior table pages
+        for rootpage in rootpages:
+            offset = (rootpage - 1) * 4096
+            with index_db.open("r+b") as fh:
+                fh.seek(offset)
+                raw = fh.read(4)
+                fh.seek(offset)
+                fh.write(bytes([b ^ 0xFF for b in raw]))
+
+        from pyrite.storage.connection import index_file_problem
+
+        assert index_file_problem(index_db) is None
+
+        return scratch_home
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["get", "entry1", "-k", "t"],
+            ["list-entries", "-k", "t"],
+            ["recent", "-k", "t"],
+            ["tags", "-k", "t"],
+            ["backlinks", "entry1", "-k", "t"],
+            ["orient", "-k", "t"],
+            ["batch-read", "t:entry1"],
+        ],
+        ids=" ".join,
+    )
+    def test_non_search_commands_exit_1_with_storage_error_on_interior_corruption(
+        self, corrupt_interior_page_index: dict[str, Path], argv: list[str]
+    ):
+        result = runner.invoke(app, argv)
+        _assert_clean_storage_refusal(result)
+
+
 # ---------------------------------------------------------------------------
 # Structural guard: ConnectionMixin._init_connection is the one index opener
 # ---------------------------------------------------------------------------

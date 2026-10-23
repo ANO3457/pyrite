@@ -13,13 +13,16 @@ import warnings
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
+from typing import TypeGuard
 
 from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..exceptions import StorageError
 from .backends.sqlite_backend import SQLiteBackend
+from .errors import storage_error_from
 from .models import Base
 from .virtual_tables import create_fts_tables, create_vec_table
 
@@ -67,6 +70,15 @@ CORRUPT_INDEX_SUGGESTION = (
     "Remove or move the unreadable index file and run `pyrite index build` "
     "to rebuild the index from markdown files."
 )
+
+
+def is_index_corruption(exc: BaseException) -> TypeGuard[sqlite3.DatabaseError]:
+    """Distinguish a broken index from query syntax, locks and other SQL errors."""
+    code = getattr(exc, "sqlite_errorcode", 0)
+    return isinstance(exc, sqlite3.DatabaseError) and (code & 0xFF) in (
+        sqlite3.SQLITE_CORRUPT,
+        sqlite3.SQLITE_NOTADB,
+    )
 
 
 def index_file_problem(db_path: Path) -> str | None:
@@ -151,6 +163,19 @@ class ConnectionMixin:
                 cursor.execute("PRAGMA synchronous = NORMAL")
                 cursor.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
                 cursor.close()
+
+            # Translate actual corruption, preserving query and lock errors.
+            # Keep the listener free of an owner reference (engine -> self
+            # would retain every request's database through an event cycle).
+            index_path_for_errors = str(self.db_path)
+
+            @event.listens_for(self.engine, "handle_error")
+            def handle_db_error(exception_context: ExceptionContext) -> None:
+                orig = exception_context.original_exception
+                if is_index_corruption(orig):
+                    err = storage_error_from(orig, f"Database error at {index_path_for_errors}")
+                    err.suggestion = CORRUPT_INDEX_SUGGESTION
+                    raise err from orig
 
             # Create ORM tables
             Base.metadata.create_all(self.engine)
@@ -353,6 +378,12 @@ class ConnectionMixin:
             cursor = (conn if conn is not None else self._raw_conn).cursor()
             try:
                 yield cursor
+            except sqlite3.DatabaseError as exc:
+                if not is_index_corruption(exc):
+                    raise
+                err = storage_error_from(exc, f"Database error at {self.db_path}")
+                err.suggestion = CORRUPT_INDEX_SUGGESTION
+                raise err from exc
             finally:
                 cursor.close()
 
