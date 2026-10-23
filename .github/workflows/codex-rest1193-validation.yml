@@ -1,0 +1,41 @@
+name: Validate PUT refusal branch maintenance
+on:
+  push:
+    branches: ['validation/codex23-rest1193']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          pip install setuptools wheel
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[all,postgres]'
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Cache the real local embedding model needed by existing tests
+        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', trust_remote_code=False)"
+      - name: Recheck the previously missing model test
+        run: pytest tests/test_semantic_search_warns_when_nothing_is_embedded.py -q
+        env:
+          HF_HUB_OFFLINE: '1'
+      - name: Focused real command regressions
+        run: pytest tests/test_rest_update_unknown_fields.py tests/test_rest_patch_unknown_keys.py tests/test_websocket_delivery.py -q
+      - name: Required affected tests
+        run: python scripts/test-affected --run --files pyrite/server/endpoints/entries.py pyrite/server/schemas.py tests/test_rest_update_unknown_fields.py tests/test_websocket_delivery.py docs/json-contracts.md
+        env:
+          HF_HUB_OFFLINE: '1'
+      - name: Source checks
+        if: always()
+        run: |
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
