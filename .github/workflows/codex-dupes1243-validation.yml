@@ -1,0 +1,46 @@
+name: Validate duplicate finder review follow-up
+on:
+  push:
+    branches: ['validation/codex24-dupes1243']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install complete test environment
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[all]' setuptools wheel uv
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Restore exact product and check source
+        run: |
+          git checkout 7d3e5714558f219e211d2a2d78ca01303d1a5135
+          python scripts/check_checkout_imports.py
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          python scripts/check_fix_commit_has_tests.py --range 9b78049d1b3541729e9e49d542f4e025766663b5 HEAD
+      - name: Duplicate clusters, performance bound and effective status
+        run: pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_changelog_fragments.py -q -n 4 --durations=10 --junitxml=focused.xml
+      - name: Required affected selection
+        run: python scripts/test-affected --run --base 2ebd38b83a392fbf11f61bfb3642ac10232ba4d9 -n 4 -- --junitxml=affected.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dupes1243-results
+          path: |
+            focused.xml
+            affected.xml
