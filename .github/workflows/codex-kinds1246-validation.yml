@@ -7,7 +7,10 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 15
+    env:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,16 +20,47 @@ jobs:
           python-version: '3.12'
       - name: Install test environment
         run: |
-          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[all]' setuptools wheel uv
           for ext in extensions/*/; do
             if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
           done
-      - name: Test exact product tree
+      - name: Restore product and regenerate only MCP schemas
         run: |
+          git show "$GITHUB_SHA:.github/validation/kinds1246-rerun.json" > "$RUNNER_TEMP/rerun.json"
           git checkout 8c0bd3197691274fedfdf8f35c030e92fab3ec10
           python scripts/check_checkout_imports.py
-          pytest extensions/software-kb/tests/test_software_kb.py tests/test_enum_enforcement.py tests/test_software_template_fields.py tests/test_changelog_fragments.py -q -n 4 --junitxml=focused.xml
-          python scripts/test-affected --run --base c1c641eb6daccc4814e4863f77cf63373c4f021f -n 4 -- --junitxml=affected.xml
+          PYRITE_CHARACTERIZATION_REGENERATE=1 pytest tests/test_mcp_schema_snapshots.py::test_regenerate_goldens -q
+          python - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          from pyrite_software_kb.entry_types import BACKLOG_KINDS
+          p = Path('tests/characterization/goldens/mcp-input-schemas.in-tree.json')
+          expected = json.loads(subprocess.check_output(['git', 'show', f'HEAD:{p.as_posix()}']))
+          actual = json.loads(p.read_text())
+          changes = 0
+          for tier in ('read', 'write', 'admin'):
+              for tool in ('sw_backlog', 'sw_create_backlog_item'):
+                  if tool in expected[tier]:
+                      expected[tier][tool]['inputSchema']['properties']['kind']['enum'] = list(BACKLOG_KINDS)
+                      changes += 1
+          assert changes == 5, changes
+          assert actual == expected, 'Unexpected schema or example changes'
+          core = 'tests/characterization/goldens/mcp-input-schemas.core.json'
+          assert Path(core).read_bytes() == subprocess.check_output(['git','show',f'HEAD:{core}'])
+          patch = subprocess.check_output(['git','diff','--binary','--',p.as_posix()])
+          Path('schema.patch').write_bytes(patch)
+          print('Reviewed delta: exactly five published kind enums; core and examples unchanged.')
+          PY
+      - name: Recheck schema and all previous failures or skips
+        run: |
+          pytest tests/test_mcp_schema_snapshots.py -q --junitxml=schemas.xml
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          nodes = json.loads((Path(os.environ['RUNNER_TEMP']) / 'rerun.json').read_text())
+          raise SystemExit(subprocess.run(['pytest', *nodes, '-q', '-n', '4', '--junitxml=recovery.xml']).returncode)
+          PY
       - name: Source checks
         if: always()
         run: |
@@ -37,7 +71,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: kinds1246-results
+          name: kinds1246-recovery
           path: |
-            focused.xml
-            affected.xml
+            schema.patch
+            tests/characterization/goldens/mcp-input-schemas.in-tree.json
+            schemas.xml
+            recovery.xml
