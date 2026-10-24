@@ -1601,10 +1601,6 @@ HANDLERS: dict[tuple[str, str], tuple[str, str]] = {
         "safe",
         "bad metadata reads as empty",
     ),
-    ("extensions/software-kb/src/pyrite_software_kb/cli.py", "_resolve_adr_kb"): (
-        "safe",
-        "tries the next KB",
-    ),
     ("extensions/software-kb/src/pyrite_software_kb/cli.py", "sw_milestones"): (
         "safe",
         "bad metadata reads as empty",

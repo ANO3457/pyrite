@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -87,7 +88,7 @@ class Entry(Base):
     # Timestamps
     created_at = Column(String)
     updated_at = Column(String)
-    indexed_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    indexed_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
     # SHA-256 of the on-disk file content at index time. Lets check_staleness
     # catch same-second content edits that mtime comparison alone misses.
@@ -163,7 +164,7 @@ class Link(Base):
     relation = Column(String, nullable=False)
     inverse_relation = Column(String, nullable=False)
     note = Column(Text)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -213,7 +214,7 @@ class EdgeEndpoint(Base):
     endpoint_id = Column(String, nullable=False)  # the referenced entry ID
     endpoint_kb = Column(String, nullable=False)
     edge_type = Column(String, nullable=False)  # e.g. 'ownership'
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -266,7 +267,7 @@ class User(Base):
     display_name = Column(String)
     avatar_url = Column(String)
     email = Column(String)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
     last_seen = Column(String)
 
     workspace_repos = relationship(
@@ -290,7 +291,7 @@ class LocalUser(Base):
     # insert that forgets the column grants nothing; migration v26 set it to
     # 1 for the users that existed before it.
     global_access = Column(Integer, nullable=False, server_default="0")
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = Column(String)
     auth_provider = Column(String, server_default="local")
     provider_id = Column(String, nullable=True)
@@ -318,7 +319,7 @@ class AuthSession(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     token_hash = Column(String, unique=True, nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("local_user.id", ondelete="CASCADE"), nullable=False)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
     expires_at = Column(String, nullable=False)
     last_used = Column(String)
 
@@ -335,7 +336,7 @@ class KBPermission(Base):
     kb_name = Column(String, nullable=False)
     role = Column(String, nullable=False)
     granted_by = Column(Integer, ForeignKey("local_user.id"), nullable=True)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
     __table_args__ = (
         UniqueConstraint("user_id", "kb_name", name="uq_kb_permission_user_kb"),
@@ -360,7 +361,7 @@ class Repo(Base):
     is_fork = Column(Integer, default=0)
     last_synced_commit = Column(String)
     last_synced = Column(String)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
     upstream = relationship("Repo", remote_side=[id], backref="forks")
     knowledge_bases = relationship("KB", back_populates="repo_rel")
@@ -378,7 +379,7 @@ class WorkspaceRepo(Base):
     repo_id = Column(
         Integer, ForeignKey("repo.id", ondelete="CASCADE"), primary_key=True, nullable=False
     )
-    added_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    added_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
     role = Column(String, default="subscriber")
     auto_sync = Column(Integer, default=1)
     sync_interval = Column(Integer, default=3600)
@@ -492,7 +493,7 @@ class Review(Base):
     reviewer_type = Column(String, nullable=False)
     result = Column(String, nullable=False)
     details = Column(Text)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -519,7 +520,7 @@ class Setting(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     key = Column(String, unique=True, nullable=False, index=True)
     value = Column(Text)
-    updated_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    updated_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
 
 
 class Worktree(Base):
@@ -538,5 +539,5 @@ class Worktree(Base):
     merged_at = Column(String)
     rejected_at = Column(String)
     feedback = Column(Text)
-    created_at = Column(String, server_default="CURRENT_TIMESTAMP")
-    updated_at = Column(String, server_default="CURRENT_TIMESTAMP")
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))

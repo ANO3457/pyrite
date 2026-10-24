@@ -1,53 +1,32 @@
 """Software KB CLI commands."""
 
+from __future__ import annotations
+
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
-from pyrite.cli.context import require_kb
-from pyrite.cli.output import output_format_choice
+from pyrite.cli.context import require_entry_kb, require_kb
+from pyrite.cli.output import cli_console, output_format_choice, path_line
 from pyrite.config import load_config
-from pyrite.services.access_policy import UNSCOPED
-from pyrite.storage.database import PyriteDB
 
-from .adr_listing import adr_relations, adr_sort_key, format_adr_relations
+from .adr_listing import (
+    adr_relations,
+    adr_sort_key,
+    format_adr_relations,
+    next_adr_number,
+    resolve_adr_kb,
+)
+
+if TYPE_CHECKING:
+    from pyrite.storage.database import PyriteDB
 
 sw_app = typer.Typer(help="Software KB commands (ADRs, backlog, standards, components)")
-console = Console()
+console = cli_console()
 logger = logging.getLogger(__name__)
-
-
-def _resolve_adr_kb(config: Any, kb_name: str | None):
-    """Resolve which KB an ADR should be written to.
-
-    With an explicit ``kb_name`` this is just ``config.get_kb``. Without one,
-    fall back to the configured KBs rather than the cwd: prefer the single
-    configured KB, otherwise the (single) KB whose schema declares the ``adr``
-    type. Returns ``None`` only when the choice is genuinely ambiguous or there
-    are no KBs — the caller then warns instead of writing silently to cwd.
-    """
-    if kb_name:
-        return config.get_kb(kb_name)
-
-    kbs = list(getattr(config, "knowledge_bases", []) or [])
-    if len(kbs) == 1:
-        return kbs[0]
-    if not kbs:
-        return None
-
-    # Multiple KBs: disambiguate to the one that actually declares ADRs.
-    adr_kbs = []
-    for kb in kbs:
-        try:
-            if kb.kb_schema and kb.kb_schema.get_type_schema("adr"):
-                adr_kbs.append(kb)
-        except Exception:
-            continue
-    return adr_kbs[0] if len(adr_kbs) == 1 else None
 
 
 def _query_entries(db: PyriteDB, entry_type: str, kb_name: str | None = None) -> list[dict]:
@@ -74,6 +53,32 @@ def _query_entries(db: PyriteDB, entry_type: str, kb_name: str | None = None) ->
     return results
 
 
+def _items_kb(item_ids: list[str], anchors, kb_name: str | None) -> str:
+    """The KB that several backlog ids name, for a command whose -k is optional.
+
+    With -k, that KB. Without, each id (and anchor) is found through the core
+    resolver (``require_entry_kb``: AMBIGUOUS or NOT_FOUND refused) and all must
+    be in one KB: one ranking cannot span KBs. No ids: ``""``, for the caller's
+    own "provide item IDs" refusal.
+    """
+    if kb_name and kb_name.strip():
+        return kb_name
+    ids = [*item_ids, *(a for a in anchors if a)]
+    homes = {
+        i: require_entry_kb(i, None, entry_type="backlog_item", output_format="rich") for i in ids
+    }
+    if len(set(homes.values())) > 1:
+        from pyrite.utils.errors import cli_error
+
+        where = ", ".join(f"{i} ({kb})" for i, kb in homes.items())
+        cli_error(
+            f"The items are in more than one KB: {where}",
+            error_code="AMBIGUOUS",
+            suggestion="Name the KB with -k; one ranking orders one KB's items.",
+        )
+    return next(iter(homes.values()), "")
+
+
 def _json_output(items: list[dict]) -> None:
     """Print items as compact JSON to stdout."""
     print(json.dumps(items, separators=(",", ":"), default=str))
@@ -98,6 +103,8 @@ def sw_adrs(
     Bounded by default like `sw backlog`: 50 ADRs, with --limit/--offset to
     page through the rest and --limit 0 for the full, unbounded list.
     """
+    from pyrite.storage.database import PyriteDB
+
     from .plugin import DEFAULT_LIST_LIMIT
 
     effective_limit = DEFAULT_LIST_LIMIT if limit is None else (None if limit <= 0 else limit)
@@ -180,21 +187,21 @@ def sw_new_adr(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB name"),
 ):
     """Create a new ADR with the next sequential number, through the write
-    pipeline (#391).
-
-    Was: query the next number, then `file_path.write_text` the ADR directly
-    -- no exists check (an existing ADR number or id was silently
-    overwritten), no validators, no before/after-save hooks, nothing indexed
-    until a separate `pyrite index sync`, and no KB resolved fell back to
-    writing `./adrs` under the cwd. Now goes through `KBService.create_entry`;
-    the software-kb `adr` type's `file_pattern`
-    (``{adr_number:04d}-{title}.md``) keeps the `NNNN-slug.md` filename and
-    `adr-NNNN` id this command has always produced.
-    """
+    pipeline."""
+    # (#391) Was: query the next number, then `file_path.write_text` the ADR directly
+    # -- no exists check (an existing ADR number or id was silently
+    # overwritten), no validators, no before/after-save hooks, nothing indexed
+    # until a separate `pyrite index sync`, and no KB resolved fell back to
+    # writing `./adrs` under the cwd. Now goes through `KBService.create_entry`;
+    # the software-kb `adr` type's `file_pattern`
+    # (``{adr_number:04d}-{title}.md``) keeps the `NNNN-slug.md` filename and
+    # `adr-NNNN` id this command has always produced.
     from datetime import date
 
     from pyrite.exceptions import PyriteError
+    from pyrite.services.access_policy import UNSCOPED
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
     from pyrite.utils.errors import cli_error
 
     config = load_config()
@@ -203,7 +210,7 @@ def sw_new_adr(
     # Resolve the KB up front: with none resolved, refuse -- do NOT fall back
     # to writing into the cwd, where the ADR is never indexed and the
     # numbering query (scoped to KBs) would never see it again.
-    kb_conf = _resolve_adr_kb(config, kb_name)
+    kb_conf = resolve_adr_kb(config, kb_name, readable_kbs=UNSCOPED)
     if kb_conf is None:
         cli_error(
             "No KB resolved for the ADR (pass --kb).",
@@ -212,13 +219,7 @@ def sw_new_adr(
 
     db = PyriteDB(config.settings.index_path)
     try:
-        rows = _query_entries(db, "adr", kb_conf.name)
-        max_num = 0
-        for row in rows:
-            num = row["_meta"].get("adr_number", 0)
-            if isinstance(num, int) and num > max_num:
-                max_num = num
-        next_num = max_num + 1
+        next_num = next_adr_number(kb_conf)
         today = date.today().isoformat()
 
         body = (
@@ -265,7 +266,7 @@ def sw_new_adr(
         file_path = repo._resolve_file_path(entry, repo._infer_subdir(entry))
 
         console.print(f"[green]Created ADR-{next_num:04d}:[/green] {title}")
-        console.print(f"  File: [cyan]{file_path}[/cyan]")
+        console.print(path_line("  File: ", file_path, path_style="cyan"))
         console.print(f"  Status: [yellow]{status}[/yellow]")
     finally:
         db.close()
@@ -457,7 +458,8 @@ def sw_epic_detail(
     from .plugin import SoftwareKBPlugin
 
     plugin = SoftwareKBPlugin()
-    result = plugin._mcp_epic_detail({"epic_id": epic_id, "kb_name": kb_name or ""})
+    home = require_entry_kb(epic_id, kb_name, entry_type="backlog_item", output_format=fmt)
+    result = plugin._mcp_epic_detail({"epic_id": epic_id, "kb_name": home})
 
     if "error" in result:
         console.print(f"[red]Error: {result['error']}[/red]")
@@ -498,7 +500,7 @@ def sw_prioritize(
 
     plugin = SoftwareKBPlugin()
 
-    args: dict[str, Any] = {"kb_name": kb_name or ""}
+    args: dict[str, Any] = {"kb_name": _items_kb(item_ids or [], (after, before), kb_name)}
     if not item_ids:
         console.print("[red]Provide item IDs to prioritize[/red]")
         raise typer.Exit(1)
@@ -543,6 +545,8 @@ def sw_standards(
     ),
 ):
     """List all standards (standard + programmatic_validation + development_convention). [deprecated: use validations/conventions]"""
+    from pyrite.storage.database import PyriteDB
+
     from .plugin import DEFAULT_LIST_LIMIT
 
     effective_limit = DEFAULT_LIST_LIMIT if limit is None else (None if limit <= 0 else limit)
@@ -611,6 +615,8 @@ def sw_validations(
     ),
 ):
     """List programmatic validations (automated checks)."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -669,6 +675,8 @@ def sw_conventions(
     ),
 ):
     """List development conventions (judgment-based guidance)."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -711,6 +719,14 @@ def sw_conventions(
         db.close()
 
 
+def _link_reason(e: Exception) -> str:
+    """Why a standard was not migrated, without a path."""
+    links = getattr(e, "links", None)
+    if links is not None:
+        return f"its file has {links} hard links; break the link, then run again"
+    return str(e)
+
+
 @sw_app.command("migrate-standards")
 def sw_migrate_standards(
     apply: bool = typer.Option(False, "--apply", help="Actually apply changes (default: dry run)"),
@@ -719,9 +735,12 @@ def sw_migrate_standards(
     """Migrate type:standard entries to programmatic_validation or development_convention."""
     from pathlib import Path
 
+    from pyrite.storage.database import PyriteDB
     from pyrite.storage.entry_writer import FileChanged, move_entry_text, publish_entry_text
     from pyrite.storage.file_operations import FrontmatterSpan, Set, Unset, apply
+    from pyrite.utils.atomic_write import HardLinked
     from pyrite.utils.frontmatter import Frontmatter, describe, split_frontmatter
+    from pyrite.utils.kb_files import KBFileIsLinkError, KBFileOutsideRootError
     from pyrite.utils.yaml import load_yaml
 
     config = load_config()
@@ -765,8 +784,16 @@ def sw_migrate_standards(
                 continue
 
             path = Path(file_path)
+            row_kb = config.get_kb(row.get("kb_name") or "")
+            if row_kb is None:
+                console.print(f"  [red]Skip[/red] {row['title']}: its KB is not registered")
+                skipped += 1
+                continue
+            root = row_kb.path
             if not path.exists():
-                console.print(f"  [red]Skip[/red] {row['title']}: file not found at {path}")
+                console.print(
+                    path_line(f"  [red]Skip[/red] {row['title']}: file not found at ", path)
+                )
                 skipped += 1
                 continue
 
@@ -804,24 +831,45 @@ def sw_migrate_standards(
             # 3); otherwise replaced in place, against those bytes.
             if path.parent.name == "standards":
                 new_dir = path.parent.parent / new_dir_name
-                new_dir.mkdir(parents=True, exist_ok=True)
                 new_path = new_dir / path.name
                 try:
-                    move_entry_text(path, raw, new_path, new_text)
+                    # The folder is made by the move, after its checks: a
+                    # refused move leaves the KB as it was.
+                    move_entry_text(path, raw, new_path, new_text, root=root)
+                except (KBFileOutsideRootError, KBFileIsLinkError, HardLinked) as e:
+                    console.print(f"  [red]Skip[/red] {row['title']}: {_link_reason(e)}")
+                    skipped += 1
+                    continue
                 except FileExistsError:
-                    console.print(f"  [red]Skip[/red] {row['title']}: {new_path} already exists")
+                    console.print(
+                        path_line(
+                            f"  [red]Skip[/red] {row['title']}: ", new_path, " already exists"
+                        )
+                    )
                     skipped += 1
                     continue
                 except FileChanged:
-                    console.print(f"  [red]Skip[/red] {row['title']}: {path} changed; run again")
+                    console.print(
+                        path_line(
+                            f"  [red]Skip[/red] {row['title']}: ", path, " changed; run again"
+                        )
+                    )
                     skipped += 1
                     continue
-                console.print(f"  [green]Migrated[/green] {row['title']} -> {new_path}")
+                console.print(path_line(f"  [green]Migrated[/green] {row['title']} -> ", new_path))
             else:
                 try:
-                    publish_entry_text(path, new_text, expect=raw)
+                    publish_entry_text(path, new_text, expect=raw, root=root)
+                except (KBFileOutsideRootError, HardLinked) as e:
+                    console.print(f"  [red]Skip[/red] {row['title']}: {_link_reason(e)}")
+                    skipped += 1
+                    continue
                 except FileChanged:
-                    console.print(f"  [red]Skip[/red] {row['title']}: {path} changed; run again")
+                    console.print(
+                        path_line(
+                            f"  [red]Skip[/red] {row['title']}: ", path, " changed; run again"
+                        )
+                    )
                     skipped += 1
                     continue
                 console.print(f"  [green]Migrated[/green] {row['title']} (type updated in place)")
@@ -850,6 +898,9 @@ def sw_milestones(
     ),
 ):
     """List milestones with completion progress."""
+    from pyrite.services.access_policy import UNSCOPED
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -932,6 +983,8 @@ def sw_board_cmd(
 ):
     """View kanban board with backlog items grouped by lane."""
     from pathlib import Path
+
+    from pyrite.storage.database import PyriteDB
 
     from .board import load_board_config
 
@@ -1016,6 +1069,8 @@ def sw_review_queue(
     ),
 ):
     """View items in review status, sorted by wait time."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format=fmt)
     db = PyriteDB(config.settings.index_path)
@@ -1081,12 +1136,14 @@ def sw_claim(
 ):
     """Claim a backlog item: transition to in_progress and set assignee."""
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .workflows import BACKLOG_WORKFLOW, can_transition, get_allowed_transitions
 
     config = load_config()
 
     require_kb(config, kb_name, output_format="rich")
+    kb_name = require_entry_kb(item_id, kb_name, entry_type="backlog_item", output_format="rich")
     db = PyriteDB(config.settings.index_path)
 
     try:
@@ -1136,12 +1193,14 @@ def sw_submit(
 ):
     """Submit an in-progress item for review."""
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .workflows import BACKLOG_WORKFLOW, can_transition
 
     config = load_config()
 
     require_kb(config, kb_name, output_format="rich")
+    kb_name = require_entry_kb(item_id, kb_name, entry_type="backlog_item", output_format="rich")
     db = PyriteDB(config.settings.index_path)
 
     try:
@@ -1193,6 +1252,7 @@ def sw_transition(
 ):
     """Transition a backlog item to a new status (validates workflow rules)."""
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .workflows import (
         BACKLOG_WORKFLOW,
@@ -1204,6 +1264,7 @@ def sw_transition(
     config = load_config()
 
     require_kb(config, kb_name, output_format="rich")
+    kb_name = require_entry_kb(item_id, kb_name, entry_type="backlog_item", output_format="rich")
     db = PyriteDB(config.settings.index_path)
 
     try:
@@ -1303,13 +1364,20 @@ def sw_pull_next(
 def sw_review_cmd(
     item_id: str = typer.Argument(..., help="Backlog item ID"),
     outcome: str = typer.Option(
-        ..., "--outcome", "-o", help="Review outcome: approved or changes_requested"
+        ...,
+        "--outcome",
+        "-o",
+        help="Review outcome: approved (moves item to done) or changes_requested (moves item back to in_progress)",
     ),
     reviewer: str = typer.Option(..., "--reviewer", help="Who is reviewing"),
     feedback: str | None = typer.Option(None, "--feedback", help="Review notes/feedback"),
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB name"),
 ):
-    """Record a review outcome for an item in review status."""
+    """Record a review outcome for an item in review status.
+
+    Outcome 'approved' moves the item to 'done'. Outcome 'changes_requested'
+    moves the item back to 'in_progress' and requires feedback.
+    """
     require_kb(load_config(), kb_name, output_format="rich")
     from .plugin import SoftwareKBPlugin
 
@@ -1317,7 +1385,9 @@ def sw_review_cmd(
     result = plugin._mcp_review(
         {
             "item_id": item_id,
-            "kb_name": kb_name or "",
+            "kb_name": require_entry_kb(
+                item_id, kb_name, entry_type="backlog_item", output_format="rich"
+            ),
             "outcome": outcome,
             "reviewer": reviewer,
             "feedback": feedback,
@@ -1350,7 +1420,9 @@ def sw_log_cmd(
     result = plugin._mcp_log(
         {
             "item_id": item_id,
-            "kb_name": kb_name or "",
+            "kb_name": require_entry_kb(
+                item_id, kb_name, entry_type="backlog_item", output_format="rich"
+            ),
             "summary": summary,
             "decisions": decisions or "",
             "rejected": rejected or "",
@@ -1362,7 +1434,7 @@ def sw_log_cmd(
         console.print(f"[green]Logged:[/green] {result['id']}")
         console.print(f"  Item: {item_id}")
         console.print(f"  Date: {result.get('date', '')}")
-        console.print(f"  File: [cyan]{result.get('filename', '')}[/cyan]")
+        console.print(path_line("  File: ", result.get("filename", ""), path_style="cyan"))
     else:
         console.print(f"[red]Error:[/red] {result.get('error', 'Unknown error')}")
         raise typer.Exit(1)
@@ -1387,6 +1459,8 @@ def sw_components(
     Bounded by default like `sw backlog`: 50 components, with --limit/--offset
     to page and --limit 0 for the full list.
     """
+    from pyrite.storage.database import PyriteDB
+
     from .plugin import DEFAULT_LIST_LIMIT
 
     effective_limit = DEFAULT_LIST_LIMIT if limit is None else (None if limit <= 0 else limit)
@@ -1461,7 +1535,8 @@ def sw_check_ready(
     from .plugin import SoftwareKBPlugin
 
     plugin = SoftwareKBPlugin()
-    result = plugin._mcp_check_ready({"item_id": item_id, "kb_name": kb_name or ""})
+    home = require_entry_kb(item_id, kb_name, entry_type="backlog_item", output_format=fmt)
+    result = plugin._mcp_check_ready({"item_id": item_id, "kb_name": home})
 
     if "error" in result:
         console.print(f"[red]Error:[/red] {result['error']}")

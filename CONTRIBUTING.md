@@ -236,8 +236,14 @@ Tests carry no size marker yet.
 
 **Everything**
 
+Measured gate snapshots are recorded in [#1045](https://github.com/pyrite-wiki/pyrite/issues/1045)
+and the CI `shard-report` job. The #1045 groom records about 19,800 collected
+ids at `3e350972`; its earlier 16,583-id gate recorded 1,240 seconds of
+4-vCPU shard time. Use the shard report to refresh counts and timings as the
+suite changes.
+
 ```bash
-scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4   # backend, ~16,500 tests, ~20 min on a busy laptop (1,240 s shard time across 4 vCPUs)
+scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4   # backend
 cd web && npm ci && npm run check && npm run test:unit && npm run build   # frontend
 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/e2e -m e2e -n 4 --dist loadfile   # large: real server and MCP processes
 PATH="$PWD/.venv/bin:$PATH" bash scripts/run_tutorial.sh                  # large: docs/getting-started.md as a test
@@ -289,18 +295,6 @@ scripts/test-affected --list          # what your branch affects, against origin
 scripts/test-affected --explain       # ... and why each test was chosen
 scripts/test-affected --run           # run it: core + affected, -n 4 (-n N or -n auto)
 ```
-
-### Regenerating goldens
-
-Characterization goldens (`tests/characterization/goldens/`) pin the response contracts for REST, MCP, and error bodies across all principals. Gating tests compare against these files; they are never regenerated in CI.
-
-A migration PR may not change a golden (ADR-0037). When an intentional behavior change updates responses:
-
-```bash
-PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/
-```
-
-Run the regenerate serially without `-n`. `golden_io.py` refuses regeneration under pytest-xdist because each worker records only the goldens its own tests observed (#712, fixed by #1225). The per-principal file lock does not make parallel regeneration supported. Review `git diff tests/characterization/goldens/` carefully before committing.
 
 `test-affected` diffs your working tree, uncommitted and untracked files
 included, against the merge base with `--base` (default `origin/dev`;
@@ -500,6 +494,17 @@ you before CI does. A source-only change selects none of them. See why with
 Adding a guard: mark each scanning function `@pytest.mark.guard`, add its row
 here, and keep it cheap (these run on every push that touches a test).
 
+### Regenerating goldens
+
+Characterization goldens (`tests/characterization/goldens/`) pin the response contracts for REST, MCP, and error bodies across all principals. Gating tests compare against these files; they are never regenerated in CI.
+
+A migration PR may not change a golden (ADR-0037). When an intentional behavior change updates responses:
+
+```bash
+PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/
+```
+
+Run the regenerate serially without `-n`. `golden_io.py` refuses regeneration under pytest-xdist because each worker records only the goldens its own tests observed (#712, fixed by #1225). The per-principal file lock does not make parallel regeneration supported. Review `git diff tests/characterization/goldens/` carefully before committing.
 
 ## Branches, hooks and pull requests
 

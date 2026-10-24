@@ -1,0 +1,1 @@
+- Reading a collection's declared fields no longer inserts them into the entry's undeclared metadata dictionary or changes an earlier projection during a later read (#1220).
