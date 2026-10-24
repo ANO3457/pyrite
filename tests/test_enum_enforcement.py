@@ -525,7 +525,7 @@ def _payload(output: str) -> dict:
 
 class TestIssue47:
     @pytest.mark.control(
-        reason="guards the fixture: the live #47 entry must still be off-list for the other tests to mean anything"
+        reason="guards the fixture replacement: the live #47 entry must still use kind chore"
     )
     def test_the_fixture_still_carries_the_live_drift(self, software_kb):
         assert _fm(LIVE_ENTRY)["kind"] == "chore"
