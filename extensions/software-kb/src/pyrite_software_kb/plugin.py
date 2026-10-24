@@ -2332,6 +2332,63 @@ class SoftwareKBPlugin:
             if should_close:
                 db.close()
 
+    @staticmethod
+    def _context_buckets(
+        db,
+        item_id: str,
+        kb_name: str,
+        dep_status: dict[str, Any],
+        *,
+        readable_kbs: set[str] | None,
+    ) -> dict[str, list]:
+        """Group context for both the full bundle and pull-next's preview.
+
+        Keep both link directions and duplicate links, excluding the ids
+        already classified as dependencies by the existing dependency rules.
+        """
+        outlinks = db.get_outlinks(item_id, kb_name, readable_kbs=readable_kbs)
+        backlinks = db.get_backlinks(item_id, kb_name, readable_kbs=readable_kbs)
+        dep_link_ids = {d["id"] for d in dep_status["blocked_by"]} | {
+            d["id"] for d in dep_status["blocks"]
+        }
+
+        # Categorize by entry_type
+        buckets: dict[str, list] = {
+            "adrs": [],
+            "components": [],
+            "validations": [],
+            "conventions": [],
+            "milestones": [],
+            "work_logs": [],
+            "related": [],
+        }
+        type_to_bucket = {
+            "adr": "adrs",
+            "component": "components",
+            "programmatic_validation": "validations",
+            "development_convention": "conventions",
+            "milestone": "milestones",
+            "work_log": "work_logs",
+        }
+
+        for link in outlinks + backlinks:
+            # Skip dependency links — they go in the dependencies bucket
+            if link.get("id", "") in dep_link_ids:
+                continue
+            entry_type = link.get("entry_type", "")
+            bucket = type_to_bucket.get(entry_type, "related")
+            body = link.get("body", "") or ""
+            buckets[bucket].append(
+                {
+                    "id": link.get("id", ""),
+                    "title": link.get("title", ""),
+                    "entry_type": entry_type,
+                    "relation": link.get("relation", ""),
+                    "body_preview": body[:200] if body else "",
+                }
+            )
+        return buckets
+
     def _mcp_context_for_item(
         self, args: dict[str, Any], *, readable_kbs: set[str] | None = None
     ) -> dict[str, Any]:
@@ -2372,53 +2429,12 @@ class SoftwareKBPlugin:
                 "body": entry.get("body", ""),
             }
 
-            # Get linked entries (both directions)
-            outlinks = db.get_outlinks(item_id, kb_name, readable_kbs=readable_kbs)
-            backlinks = db.get_backlinks(item_id, kb_name, readable_kbs=readable_kbs)
-
-            # Build dependency info from blocks/blocked_by links
             dep_status = self._get_dependency_status(
                 db, item_id, kb_name, readable_kbs=readable_kbs
             )
-            dep_link_ids = {d["id"] for d in dep_status["blocked_by"]} | {
-                d["id"] for d in dep_status["blocks"]
-            }
-
-            # Categorize by entry_type
-            buckets: dict[str, list] = {
-                "adrs": [],
-                "components": [],
-                "validations": [],
-                "conventions": [],
-                "milestones": [],
-                "work_logs": [],
-                "related": [],
-            }
-            type_to_bucket = {
-                "adr": "adrs",
-                "component": "components",
-                "programmatic_validation": "validations",
-                "development_convention": "conventions",
-                "milestone": "milestones",
-                "work_log": "work_logs",
-            }
-
-            for link in outlinks + backlinks:
-                # Skip dependency links — they go in the dependencies bucket
-                if link.get("id", "") in dep_link_ids:
-                    continue
-                entry_type = link.get("entry_type", "")
-                bucket = type_to_bucket.get(entry_type, "related")
-                body = link.get("body", "") or ""
-                buckets[bucket].append(
-                    {
-                        "id": link.get("id", ""),
-                        "title": link.get("title", ""),
-                        "entry_type": entry_type,
-                        "relation": link.get("relation", ""),
-                        "body_preview": body[:200] if body else "",
-                    }
-                )
+            buckets = self._context_buckets(
+                db, item_id, kb_name, dep_status, readable_kbs=readable_kbs
+            )
 
             dependencies = {
                 "blocked_by": dep_status["blocked_by"],
@@ -2572,6 +2588,7 @@ class SoftwareKBPlugin:
                     )
                 elif top is None:
                     top = candidate
+                    top_dependencies = dep
 
             if top is None:
                 return {
@@ -2581,12 +2598,8 @@ class SoftwareKBPlugin:
                     "wip_status": wip_status,
                 }
 
-            # Get context preview counts
-            outlinks = db.get_outlinks(top["id"], kb_name or "", readable_kbs=readable_kbs)
-            adr_count = sum(1 for l in outlinks if l.get("entry_type") == "adr")
-            component_count = sum(1 for l in outlinks if l.get("entry_type") == "component")
-            validation_count = sum(
-                1 for l in outlinks if l.get("entry_type") == "programmatic_validation"
+            buckets = self._context_buckets(
+                db, top["id"], kb_name or "", top_dependencies, readable_kbs=readable_kbs
             )
 
             result = {
@@ -2598,9 +2611,9 @@ class SoftwareKBPlugin:
                     "effort": top["effort"],
                 },
                 "context_preview": {
-                    "adr_count": adr_count,
-                    "component_count": component_count,
-                    "validation_count": validation_count,
+                    "adr_count": len(buckets["adrs"]),
+                    "component_count": len(buckets["components"]),
+                    "validation_count": len(buckets["validations"]),
                 },
                 "wip_status": wip_status,
             }

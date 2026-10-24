@@ -2573,6 +2573,190 @@ class TestBacklogDependencies:
 
 
 # =========================================================================
+# TestContextPreviewParity — full context and preview agree
+# =========================================================================
+
+
+class TestContextPreviewParity:
+    """The preview counts the context a caller can actually open (#1280)."""
+
+    @pytest.fixture
+    def world(self, tmp_path):
+        from pyrite.config import KBConfig
+        from tests._world import build_world
+
+        world = build_world(
+            tmp_path,
+            kbs=[KBConfig(name="proj", path=tmp_path / "kb", kb_type="software")],
+            rest=False,
+        )
+        try:
+            yield world
+        finally:
+            world.close()
+
+    @staticmethod
+    def _entry(world, entry_id, entry_type, **fields):
+        import yaml
+
+        front = {"id": entry_id, "type": entry_type, "title": entry_id, **fields}
+        world.add_entry("proj", "---\n" + yaml.safe_dump(front) + "---\nContext body.\n")
+
+    @staticmethod
+    def _read(world, surface):
+        before = {p: p.read_bytes() for p in world.kb_path("proj").rglob("*.md")}
+        if surface == "cli":
+
+            def call(*args):
+                result = world.cli(*args)
+                assert result.exit_code == 0, result.output
+                return json.loads(result.stdout)
+
+            call("orient", "-k", "proj", "--format", "json")
+            pull = call("sw", "pull-next", "-k", "proj")
+            context = call("sw", "context-for-item", "item", "-k", "proj")
+        else:
+            server = world.mcp("read")
+            server._dispatch_tool("kb_orient", {"kb_name": "proj"})
+            pull = server._dispatch_tool("sw_pull_next", {"kb_name": "proj"})
+            context = server._dispatch_tool(
+                "sw_context_for_item", {"item_id": "item", "kb_name": "proj"}
+            )
+        assert {p: p.read_bytes() for p in world.kb_path("proj").rglob("*.md")} == before
+        return pull, context
+
+    @pytest.mark.parametrize("surface", ["cli", "mcp"])
+    @pytest.mark.parametrize(
+        "direction",
+        [
+            pytest.param(
+                "outgoing",
+                marks=pytest.mark.control(reason="outgoing context was already counted"),
+            ),
+            "incoming",
+        ],
+    )
+    @pytest.mark.parametrize("relation", ["related_to", "affects", "explains"])
+    @pytest.mark.parametrize(
+        "entry_type,bucket,expected",
+        [
+            ("adr", "adrs", {"adr_count": 1, "component_count": 0, "validation_count": 0}),
+            (
+                "component",
+                "components",
+                {"adr_count": 0, "component_count": 1, "validation_count": 0},
+            ),
+            (
+                "programmatic_validation",
+                "validations",
+                {"adr_count": 0, "component_count": 0, "validation_count": 1},
+            ),
+        ],
+    )
+    def test_counts_both_link_directions(
+        self, world, surface, direction, relation, entry_type, bucket, expected
+    ):
+        item_links = (
+            [{"target": "context", "relation": relation}] if direction == "outgoing" else []
+        )
+        context_links = (
+            [{"target": "item", "relation": relation}] if direction == "incoming" else []
+        )
+        self._entry(
+            world, "item", "backlog_item", kind="feature", status="accepted", links=item_links
+        )
+        self._entry(world, "context", entry_type, links=context_links)
+
+        pull, context = self._read(world, surface)
+
+        assert pull["recommendation"]["id"] == "item"
+        assert [entry["id"] for entry in context[bucket]] == ["context"]
+        assert pull["context_preview"] == expected
+        assert pull["context_preview"] == {
+            "adr_count": len(context["adrs"]),
+            "component_count": len(context["components"]),
+            "validation_count": len(context["validations"]),
+        }
+
+    @pytest.mark.parametrize("surface", ["cli", "mcp"])
+    def test_keeps_two_links_to_the_same_adr(self, world, surface):
+        self._entry(
+            world,
+            "item",
+            "backlog_item",
+            kind="feature",
+            status="accepted",
+            links=[{"target": "adr", "relation": "related_to"}],
+        )
+        self._entry(world, "adr", "adr", links=[{"target": "item", "relation": "related_to"}])
+
+        pull, context = self._read(world, surface)
+
+        assert [entry["id"] for entry in context["adrs"]] == ["adr", "adr"]
+        assert pull["context_preview"] == {
+            "adr_count": 2,
+            "component_count": 0,
+            "validation_count": 0,
+        }
+
+    @pytest.mark.parametrize("surface", ["cli", "mcp"])
+    def test_dependency_ids_are_excluded_even_with_another_context_link(self, world, surface):
+        self._entry(
+            world,
+            "item",
+            "backlog_item",
+            kind="feature",
+            status="accepted",
+            links=[
+                {"target": "finished", "relation": "related_to"},
+                {"target": "finished", "relation": "blocked_by"},
+            ],
+        )
+        self._entry(world, "finished", "backlog_item", kind="feature", status="done")
+        self._entry(world, "adr", "adr", links=[{"target": "item", "relation": "related_to"}])
+
+        pull, context = self._read(world, surface)
+
+        assert pull["recommendation"]["id"] == "item"
+        assert [d["id"] for d in context["dependencies"]["blocked_by"]] == ["finished"]
+        assert context["dependencies"]["blocks"] == []
+        # A second, ordinary link does not turn a dependency into context.
+        assert context["related"] == []
+        assert [entry["id"] for entry in context["adrs"]] == ["adr"]
+        assert pull["context_preview"] == {
+            "adr_count": 1,
+            "component_count": 0,
+            "validation_count": 0,
+        }
+
+    @pytest.mark.control(reason="no recommendation already omits the preview")
+    @pytest.mark.parametrize("surface", ["cli", "mcp"])
+    @pytest.mark.parametrize(
+        "status,reason",
+        [
+            ("proposed", "No accepted items available"),
+            ("accepted", "All accepted items are blocked by dependencies"),
+        ],
+    )
+    def test_no_recommendation_has_no_preview(self, world, surface, status, reason):
+        self._entry(
+            world,
+            "item",
+            "backlog_item",
+            kind="feature",
+            status=status,
+            links=[{"target": "unfinished", "relation": "blocked_by"}],
+        )
+        self._entry(world, "unfinished", "backlog_item", kind="feature", status="proposed")
+
+        pull, _ = self._read(world, surface)
+
+        assert pull["recommendation"] is None
+        assert pull["reason"] == reason
+        assert "context_preview" not in pull
+
+
+# =========================================================================
 # TestReview — sw_review tool
 # =========================================================================
 
