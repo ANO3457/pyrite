@@ -1081,3 +1081,19 @@ def test_a_good_limit_is_honoured(svc, mode):
     """Guard against over-validation: a normal limit still works everywhere."""
     results = svc.search("detention", kb_name="test-kb", mode=mode, limit=2)
     assert 0 < len(results) <= 2
+
+
+@pytest.mark.parametrize("mode", ["semantic", "hybrid"])
+def test_type_filter_paging_past_the_real_vector_cap_returns_an_empty_page(svc, mode):
+    from pyrite.storage.backends.sqlite_backend import _SQLITE_VEC_MAX_K
+
+    rows = svc.search(
+        "detention",
+        kb_name="test-kb",
+        mode=mode,
+        entry_types=["mechanism", "theme"],
+        exclude_types=["task"],
+        limit=1,
+        offset=_SQLITE_VEC_MAX_K + 1,
+    )
+    assert rows == []
