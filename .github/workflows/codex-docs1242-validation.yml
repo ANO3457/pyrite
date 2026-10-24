@@ -1,0 +1,40 @@
+name: Validate contributor documentation review
+on:
+  push:
+    branches: ['validation/codex24-docs1242']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install selected-test environment
+        run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel uv
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Test exact product and source gates
+        run: |
+          git checkout 0062afffd94bd140094d2b5c2f232e5fd802684a
+          python scripts/check_checkout_imports.py
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          pytest tests/test_dev_process_config.py::TestRunningTheTestsDoc tests/test_changelog_fragments.py -q --junitxml=focused.xml
+      - name: Required affected selection
+        run: python scripts/test-affected --run --base c30b1c120fb8db798f2331472ff79bb28af44684 -n 4 -- --junitxml=affected.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: docs1242-results
+          path: |
+            focused.xml
+            affected.xml
