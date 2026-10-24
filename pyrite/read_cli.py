@@ -9,17 +9,14 @@ For admin operations: pyrite-admin
 """
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from .cli.context import open_index_db, require_kb
-from .cli.output import validate_output_format
+from .cli.output import cli_console, path_line, validate_output_format
 from .cli.search_commands import register_search_command
-from .config import CONFIG_FILE, load_config
+from .config import current_config_file, load_config
 from .exceptions import PyriteError, refusal_fields
 from .logging import configure_entry_point_logging, logging_epilog
-from .services.access_policy import UNSCOPED
-from .services.kb_service import KBService
 from .utils.errors import PyriteCLIGroup
 
 # The same root as `pyrite` and `pyrite-admin`: the one point a command's
@@ -31,9 +28,9 @@ app = typer.Typer(
     no_args_is_help=True,
     epilog=logging_epilog("pyrite-read"),
 )
-console = Console()
+console = cli_console()
 # Errors/status print here so machine formats keep stdout clean and parseable.
-err_console = Console(stderr=True)
+err_console = cli_console(stderr=True)
 
 
 def _emit_error(
@@ -74,6 +71,8 @@ def _get_svc(*kbs: object, output_format: str = "rich"):
     one resolver (#952, #924): an unknown name or a shortname is refused
     before anything is read, rendered in ``output_format``; None names no KB.
     """
+    from .services.kb_service import KBService
+
     config = load_config()
     db = open_index_db(config)
     try:
@@ -112,6 +111,8 @@ def get_entry(
     ),
 ):
     """Get a specific entry by ID."""
+    from .services.access_policy import UNSCOPED
+
     svc, db = _get_svc(kb_name, output_format=output_format)
     try:
         result = svc.get_entry(entry_id, kb_name=kb_name, readable_kbs=UNSCOPED)
@@ -339,6 +340,8 @@ def backlinks_cmd(
     ),
 ):
     """Find entries that link to a given entry."""
+    from .services.access_policy import UNSCOPED
+
     svc, db = _get_svc(kb_name, output_format=output_format)
     try:
         from .services.graph_service import GraphService
@@ -378,10 +381,11 @@ def backlinks_cmd(
 @app.command("config")
 def show_config():
     """Show current configuration (read-only)."""
-    console.print(f"[bold]Config file:[/bold] {CONFIG_FILE}")
-    console.print(f"[bold]Exists:[/bold] {CONFIG_FILE.exists()}")
+    config_file = current_config_file()
+    console.print(path_line("[bold]Config file:[/bold] ", config_file))
+    console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         config = load_config()
         console.print(f"\n[bold]Knowledge Bases:[/bold] {len(config.knowledge_bases)}")
         console.print(f"[bold]Subscriptions:[/bold] {len(config.subscriptions)}")

@@ -109,6 +109,29 @@
       "status": 500
     }
   },
+  "ChangeSetRecordRefusedError": {
+    "cli": {
+      "error": "characterization message for ChangeSetRecordRefusedError",
+      "error_code": "LANDING_REFUSED",
+      "outcome": "error",
+      "retryable": false
+    },
+    "mcp": {
+      "error": "characterization message for ChangeSetRecordRefusedError",
+      "error_code": "LANDING_REFUSED",
+      "retryable": false
+    },
+    "rest": {
+      "body": {
+        "detail": {
+          "code": "LANDING_REFUSED",
+          "message": "characterization message for ChangeSetRecordRefusedError",
+          "retryable": false
+        }
+      },
+      "status": 422
+    }
+  },
   "ClipperBlockedHostError": {
     "cli": {
       "error": "characterization message for ClipperBlockedHostError",
@@ -369,6 +392,30 @@
       "status": 422
     }
   },
+  "IndexSchemaRefusedError": {
+    "cli": {
+      "error": "characterization message for IndexSchemaRefusedError",
+      "error_code": "STORAGE_ERROR",
+      "outcome": "error",
+      "retryable": false
+    },
+    "mcp": {
+      "error": "characterization message for IndexSchemaRefusedError",
+      "error_code": "STORAGE_ERROR",
+      "legacy_error_code": "REQUEST_REFUSED",
+      "retryable": false
+    },
+    "rest": {
+      "body": {
+        "detail": {
+          "code": "STORAGE_ERROR",
+          "message": "characterization message for IndexSchemaRefusedError",
+          "retryable": false
+        }
+      },
+      "status": 500
+    }
+  },
   "IndexSyncRecoveryHintError": {
     "cli": {
       "error": "characterization message for IndexSyncRecoveryHintError",
@@ -579,6 +626,29 @@
         }
       },
       "status": 500
+    }
+  },
+  "LandingRefusedError": {
+    "cli": {
+      "error": "characterization message for LandingRefusedError",
+      "error_code": "LANDING_REFUSED",
+      "outcome": "error",
+      "retryable": false
+    },
+    "mcp": {
+      "error": "characterization message for LandingRefusedError",
+      "error_code": "LANDING_REFUSED",
+      "retryable": false
+    },
+    "rest": {
+      "body": {
+        "detail": {
+          "code": "LANDING_REFUSED",
+          "message": "characterization message for LandingRefusedError",
+          "retryable": false
+        }
+      },
+      "status": 422
     }
   },
   "LastAdminError": {

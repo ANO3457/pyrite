@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pyrite.utils.yaml import load_yaml
+from pyrite.utils.yaml import load_yaml_document
 
 
 def import_yaml(data: str | bytes) -> list[dict[str, Any]]:
@@ -14,7 +14,9 @@ def import_yaml(data: str | bytes) -> list[dict[str, Any]]:
     if isinstance(data, bytes):
         data = data.decode("utf-8")
 
-    parsed = load_yaml(data)
+    parsed = load_yaml_document(data)
+    if parsed is None:
+        return []
 
     if isinstance(parsed, dict):
         if "entries" in parsed:

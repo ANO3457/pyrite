@@ -441,7 +441,7 @@ class CreateEntryRequest(BaseModel):
 
     ``extra="forbid"``: the model has no free top-level fields, so a key it
     does not declare is never silently dropped. The create route also reads
-    the raw body (`refuses_unknown_create_keys`) to answer such a key with
+    the raw body (`refuses_undeclared_keys`) to answer such a key with
     the service's own refusal -- 400 ``VALIDATION_FAILED`` naming it -- while
     the ``metadata`` envelope spelling reaches the service and is refused
     there (#1010, #1090).
@@ -466,6 +466,8 @@ class CreateEntryRequest(BaseModel):
 class UpdateEntryRequest(BaseModel):
     """JSON body for updating an entry."""
 
+    model_config = ConfigDict(extra="forbid")
+
     kb: str
     title: str | None = None
     body: str | None = None
@@ -482,6 +484,8 @@ class PatchEntryRequest(BaseModel):
     ``field``, or a list of items), or ``unset`` (the key is removed with its
     own lines; ``value`` is ignored). ADR-0042 decision 1; #955, B6 P3b.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     kb: str
     field: str
