@@ -202,22 +202,24 @@ stands, pending the maintainer's explicit OK: `pyrite add FILE` adopts a
 hand-written file's own values (an ADR keeps its `adr_number`, a task its audit
 trail), which are not a request (#1010).
 
-REST `POST /api/entries` refuses both spellings. The `metadata` envelope
-spelling of a managed field is refused by the service, as on every surface. A
-managed field sent as a top-level key, or any other top-level key the body
-model does not declare, is refused before the service with 400
-`VALIDATION_FAILED` naming the key(s) and listing what a create accepts; it is
-no longer dropped with `created: true` (#1090). A field the model has no
-top-level key for, such as the web New Entry form's Status, travels in
-`metadata`.
+REST entry writes share one top-level request-model rule: `POST /api/entries`,
+`PUT /api/entries/{id}` and `PATCH /api/entries/{id}` refuse an undeclared key
+with HTTP 400 `VALIDATION_FAILED`, naming all unknown keys before validating
+other values or writing the file or index. Each route uses the same dependency,
+`refuses_undeclared_keys(Model, verb)`, followed by its model's `extra="forbid"`
+guard. The `metadata` envelope spelling of a managed field is refused by the
+service, as on every surface (#1010, #1090).
 
-REST `PATCH /api/entries/{id}` also refuses any top-level key its body model
-does not declare: 400 `VALIDATION_FAILED`, naming the unknown key(s), before
-writing the file or index (#1221). It accepts `kb`, `field`, `value` and `op`.
-ADR-0034 read transport markers (`body_truncated`, `body_length`, `body_offset`,
-`body_chunk_size`) remain accepted and are never stored as entry fields. A
-truthy truncation marker still refuses a body write; it is inert for a patch
-of a non-body field.
+Send only the fields declared by the route's request model. Type-specific
+fields, such as the web New Entry form's Status, travel in `metadata`. A whole
+GET response is not a PUT body: read-only keys such as `id` and `file_path`
+must be omitted. PATCH accepts `kb`, `field`, `value` and `op` (#1221).
+
+All three verbs accept the ADR-0034 transport markers (`body_truncated`,
+`body_length`, `body_offset`, `body_chunk_size`) from `body_bounds.MARKER_KEYS`.
+They are checked on the raw JSON and removed before model validation, never
+stored as entry fields. A truthy truncation marker still refuses a body write;
+it is inert for a PATCH of a non-body field.
 
 A misspelt `vaule` is not an instruction to clear the field. Explicit `value:
 null` remains a valid set; `append`, `remove` and `unset` keep their existing
@@ -794,7 +796,7 @@ they are **not run** (a server would be needed).
 |---|---|---|
 | CLI | `pyrite update <id> -k <kb> --title <t>`; one item: `--append tags=gamma`, `--remove tags=alpha`, a key: `--unset extra` | **`--format` defaults to `json`:** `{"updated": true, "entry_id": "<id>", "outcome": "done"}`. With `--format rich`: `Updated: <id>`. |
 | MCP | `kb_update`; one item: `"append": {"tags": "gamma"}` or `{"links": {"target": "b", "relation": "related_to"}}`, `"remove": {"tags": "alpha"}`; keys: `"unset": ["extra"]` (a list value under `append`/`remove` means each of its items) | the block below, plus `"warnings"` when any, `"ignored"` listing keys no update writes, and `"unchanged"` listing fields an echoed read result carried at the value the read returned (not written). |
-| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`: it fills `ignored` (keys an update may never set) and `unchanged` (keys sent at their current value) as MCP `kb_update` does (#561). `PATCH` returns the same shape with both always `[]`, and refuses unknown body keys with HTTP 400 `VALIDATION_FAILED` (#1221). |
+| REST (not run) | `PUT /api/entries/{id}` (body carries `kb`) or `PATCH /api/entries/{id}` (body: `kb`, `field`, `value`, and `op`: `set` (default), `append`, `remove` or `unset`; one field per call; `value` is the field's value, or the item for `append`/`remove`) | `PUT` returns `{"updated": true, "id": "<id>", "warnings": [], "ignored": [], "unchanged": [], "changed": true, "locked": true, "not_moved": null}`. `ignored` is always `[]`: unknown top-level keys are refused with HTTP 400 `VALIDATION_FAILED` before the echo comparison. ADR-0034 transport keys `body_truncated`, `body_length`, `body_offset` and `body_chunk_size` are accepted and never persisted; a truthy truncation marker on a body write is still refused. Accepted fields sent at their current read value can appear in `unchanged` (#561). `PATCH` returns the same shape with both lists always `[]`, and also refuses unknown body keys with HTTP 400 `VALIDATION_FAILED` (#1221). |
 
 <!-- mcp-output: kb_update -->
 ```json

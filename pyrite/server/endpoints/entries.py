@@ -52,8 +52,7 @@ from ..schemas import (
 from .write_refusal import (
     refusal_http,
     refuses_truncated_body,
-    refuses_unknown_create_keys,
-    refuses_unknown_patch_keys,
+    refuses_undeclared_keys,
 )
 
 logger = logging.getLogger(__name__)
@@ -791,7 +790,7 @@ _CREATE_DEFAULTED = frozenset({"participants", "tags", "metadata"})
     dependencies=[
         Depends(requires_kb_tier("write")),
         Depends(refuses_truncated_body),
-        Depends(refuses_unknown_create_keys),
+        Depends(refuses_undeclared_keys(CreateEntryRequest, "create")),
     ],
 )
 @limiter.limit("30/minute")
@@ -858,7 +857,11 @@ def create_entry(
 @router.put(
     "/entries/{entry_id}",
     response_model=UpdateResponse,
-    dependencies=[Depends(requires_kb_tier("write")), Depends(refuses_truncated_body)],
+    dependencies=[
+        Depends(requires_kb_tier("write")),
+        Depends(refuses_truncated_body),
+        Depends(refuses_undeclared_keys(UpdateEntryRequest, "update")),
+    ],
 )
 @limiter.limit("30/minute")
 def update_entry(
@@ -868,13 +871,9 @@ def update_entry(
     svc: KBService = Depends(get_kb_service),
 ):
     """Update an existing entry."""
-    # `id` is not a field `UpdateEntryRequest` can carry (FastAPI drops an
-    # unknown key before this handler sees it, Pydantic's default
-    # extra="ignore"), so a client that reads an entry and PUTs it straight
-    # back cannot trip `split_echoed_update`'s own "this looks like an
-    # echoed read" heuristic (`id`/`file_path`/index-only keys) the way MCP
-    # `kb_update` does. A REST PUT to `/entries/{id}` is always that
-    # caller's current view of the resource, so `id` is added here to put
+    # A whole GET response is not a valid PUT body: read-only `id`,
+    # `file_path` and other unknown request keys are refused above. Clients
+    # must select accepted fields. Add the path id internally to put
     # every PUT through the same reading-comparison MCP gets for an echo:
     # `importance`/`tags` sent back unchanged from a GET are left alone
     # instead of rewriting `importance: high` as `5` or `tags: Foo` as
@@ -947,7 +946,7 @@ def update_entry(
     dependencies=[
         Depends(requires_kb_tier("write")),
         Depends(refuses_truncated_body),
-        Depends(refuses_unknown_patch_keys),
+        Depends(refuses_undeclared_keys(PatchEntryRequest, "patch")),
     ],
 )
 @limiter.limit("30/minute")
