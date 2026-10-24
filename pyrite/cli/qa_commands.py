@@ -66,8 +66,14 @@ def qa_validate(
             ]
 
         formatted = _format_output({"issues": issues, "count": len(issues)}, output_format)
+        # ADR-0046: a check command exits 1 when it found an error, in every
+        # format. The formatted branch used to return before the verdict, so
+        # `--format json` (the default) hid a failing check behind exit 0.
+        error_count = sum(1 for i in issues if i.get("severity") == "error")
         if formatted is not None:
             typer.echo(formatted)
+            if error_count > 0:
+                raise typer.Exit(1)
             return
 
         # Rich output
