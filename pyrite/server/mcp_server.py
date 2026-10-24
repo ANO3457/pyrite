@@ -59,6 +59,12 @@ _CREATE_CONTROL_KEYS = frozenset({"kb_name", "validate", "allow_undeclared"})
 #: Arguments of kb_update that name the entry or steer the tool.
 _UPDATE_CONTROL_KEYS = frozenset({"entry_id", "kb_name", "validate", "append", "remove", "unset"})
 
+MCP_SERVER_INSTRUCTIONS = (
+    "Call kb_orient first: with no arguments it lists readable knowledge bases and operational contracts; "
+    "with kb_name it describes one KB. This server runs at tier '{tier}'; tools of a higher tier are not listed. "
+    "Errors return as a result containing error, error_code, and retryable (see kb_orient)."
+)
+
 
 # Identity fields every `fields` projection keeps. Agents key on these to
 # re-fetch, link or report an entry afterwards, and `_kb_batch_read` reads
@@ -2909,7 +2915,10 @@ class PyriteMCPServer:
             Tool,
         )
 
-        sdk = Server(f"pyrite-{self.tier}")
+        sdk = Server(
+            f"pyrite-{self.tier}",
+            instructions=MCP_SERVER_INSTRUCTIONS.format(tier=self.tier),
+        )
 
         mcp_server = self  # capture for closures
         _client_id = client_id  # capture for closures

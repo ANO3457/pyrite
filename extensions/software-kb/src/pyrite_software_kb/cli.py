@@ -187,17 +187,15 @@ def sw_new_adr(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB name"),
 ):
     """Create a new ADR with the next sequential number, through the write
-    pipeline (#391).
-
-    Was: query the next number, then `file_path.write_text` the ADR directly
-    -- no exists check (an existing ADR number or id was silently
-    overwritten), no validators, no before/after-save hooks, nothing indexed
-    until a separate `pyrite index sync`, and no KB resolved fell back to
-    writing `./adrs` under the cwd. Now goes through `KBService.create_entry`;
-    the software-kb `adr` type's `file_pattern`
-    (``{adr_number:04d}-{title}.md``) keeps the `NNNN-slug.md` filename and
-    `adr-NNNN` id this command has always produced.
-    """
+    pipeline."""
+    # (#391) Was: query the next number, then `file_path.write_text` the ADR directly
+    # -- no exists check (an existing ADR number or id was silently
+    # overwritten), no validators, no before/after-save hooks, nothing indexed
+    # until a separate `pyrite index sync`, and no KB resolved fell back to
+    # writing `./adrs` under the cwd. Now goes through `KBService.create_entry`;
+    # the software-kb `adr` type's `file_pattern`
+    # (``{adr_number:04d}-{title}.md``) keeps the `NNNN-slug.md` filename and
+    # `adr-NNNN` id this command has always produced.
     from datetime import date
 
     from pyrite.exceptions import PyriteError
@@ -1366,13 +1364,20 @@ def sw_pull_next(
 def sw_review_cmd(
     item_id: str = typer.Argument(..., help="Backlog item ID"),
     outcome: str = typer.Option(
-        ..., "--outcome", "-o", help="Review outcome: approved or changes_requested"
+        ...,
+        "--outcome",
+        "-o",
+        help="Review outcome: approved (moves item to done) or changes_requested (moves item back to in_progress)",
     ),
     reviewer: str = typer.Option(..., "--reviewer", help="Who is reviewing"),
     feedback: str | None = typer.Option(None, "--feedback", help="Review notes/feedback"),
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="KB name"),
 ):
-    """Record a review outcome for an item in review status."""
+    """Record a review outcome for an item in review status.
+
+    Outcome 'approved' moves the item to 'done'. Outcome 'changes_requested'
+    moves the item back to 'in_progress' and requires feedback.
+    """
     require_kb(load_config(), kb_name, output_format="rich")
     from .plugin import SoftwareKBPlugin
 

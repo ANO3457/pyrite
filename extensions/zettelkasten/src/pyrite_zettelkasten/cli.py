@@ -44,14 +44,12 @@ def zettel_new(
     kb_name: str | None = typer.Option(None, "--kb", "-k", help="Target KB"),
     source: str = typer.Option("", "--source", "-s", help="Source reference"),
 ):
-    """Create a new zettel through the KBService write pipeline (#391).
-
-    Was: build the entry, `repo.save(entry)` directly (no exists check -- an
-    existing id was silently overwritten -- no validators, no before/after-save
-    hooks, and nothing indexed until a separate `pyrite index sync`). Now goes
-    through `KBService.create_entry`, same as `software-kb`'s backlog_item
-    creation.
-    """
+    """Create a new zettel through the KBService write pipeline."""
+    # (#391) Was: build the entry, `repo.save(entry)` directly (no exists check -- an
+    # existing id was silently overwritten -- no validators, no before/after-save
+    # hooks, and nothing indexed until a separate `pyrite index sync`). Now goes
+    # through `KBService.create_entry`, same as `software-kb`'s backlog_item
+    # creation.
     from pyrite.exceptions import PyriteError
     from pyrite.services.kb_service import KBService
     from pyrite.storage.database import PyriteDB

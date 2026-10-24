@@ -297,7 +297,9 @@ def register_entry_commands(app: typer.Typer) -> None:
 
     @app.command("create")
     def create_entry(
-        kb_name: str = typer.Option(None, "--kb", "-k", help="Target knowledge base"),
+        kb_name: str = typer.Option(
+            None, "--kb", "-k", help="Target knowledge base (required unless --template)"
+        ),
         entry_type: str = typer.Option("note", "--type", "-t", help="Entry type"),
         title: str = typer.Option(None, "--title", help="Entry title"),
         body: str = typer.Option("", "--body", "-b", help="Entry body text"),
@@ -698,7 +700,7 @@ def register_entry_commands(app: typer.Typer) -> None:
         update_links: bool = typer.Option(
             True,
             "--update-links/--no-update-links",
-            help="Rewrite [[old_id]] / [[old_id|alias]] wikilinks in this KB",
+            help=r"Rewrite \[\[old_id]] / \[\[old_id|alias]] wikilinks in this KB",
         ),
         dry_run: bool = typer.Option(
             False,
