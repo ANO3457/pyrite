@@ -189,6 +189,7 @@ def cli_task_list(cfg, s):
 
 
 def cli_qa_duplicates(cfg, s):
+    # Each status fixture has a pair: this surface only returns paired entries.
     out = _cli(
         cfg,
         ["qa", "duplicates", "-t", "task", "--status", s, "--threshold", "0", "--format", "json"],

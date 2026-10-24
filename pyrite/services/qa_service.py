@@ -14,6 +14,7 @@ import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -279,12 +280,13 @@ class QAService:
         Tasks completed by their children use the shared derived-status rule;
         reading duplicate candidates never rewrites their files.
 
-        Candidate pairs come from an inverted token index, and a token shared
-        by more than ``max(64, entries // 25)`` entries is not expanded: a
-        pair whose only shared token is that common would score far below the
-        default threshold, and expanding it would make a common word
-        quadratic on a 2,000-entry KB. The returned ``pairs`` are sorted by
-        score and then by identity, so two runs agree.
+        Candidate pairs come from an inverted token index. Tokens shared by
+        more than ``max(64, entries // 25)`` entries are not broadly expanded;
+        ``skipped_tokens`` reports their count, so callers know that near-match
+        coverage is incomplete. Exact nonempty id/title token sets always pair,
+        including large duplicate clusters. Those clusters necessarily produce
+        quadratic output; a common word alone does not expand every pair.
+        Returned pairs are sorted by score and identity, so two runs agree.
         """
         params: dict[str, Any] = {"entry_type": entry_type}
         scope = kb_names_clause("kb_name", readable_kbs, params)
@@ -328,12 +330,21 @@ class QAService:
 
         max_shared = max(64, len(entries) // 25)
         candidates: set[tuple[int, int]] = set()
+        skipped_tokens = 0
         for shared in positions.values():
-            if len(shared) < 2 or len(shared) > max_shared:
+            if len(shared) > max_shared:
+                skipped_tokens += 1
                 continue
-            for left in range(len(shared)):
-                for right in range(left + 1, len(shared)):
-                    candidates.add((shared[left], shared[right]))
+            candidates.update(combinations(shared, 2))
+
+        exact_groups: dict[tuple[str, frozenset[str]], list[int]] = {}
+        for position, entry in enumerate(entries):
+            for signal in ("id_tokens", "title_tokens"):
+                tokens = frozenset(entry[signal])
+                if tokens:
+                    exact_groups.setdefault((signal, tokens), []).append(position)
+        for group in exact_groups.values():
+            candidates.update(combinations(group, 2))
 
         pairs: list[dict[str, Any]] = []
         for left, right in candidates:
@@ -377,6 +388,7 @@ class QAService:
         return {
             "entry_type": entry_type,
             "threshold": threshold,
+            "skipped_tokens": skipped_tokens,
             "count": len(pairs),
             "pairs": pairs,
         }

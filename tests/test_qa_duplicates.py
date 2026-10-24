@@ -155,3 +155,75 @@ class TestDuplicates:
         # Measured locally at ~0.2 s for 2,000 rows; the bound is deliberately
         # loose so a slow CI runner does not turn the guard into a flake.
         assert elapsed < 10.0, f"2,000 entries took {elapsed:.2f}s"
+
+
+class TestCommonTokens:
+    def _seed(self, setup, rows):
+        db = setup["db"]
+        kb = setup["config"].knowledge_bases[0]
+        db.register_kb(kb.name, "generic", str(kb.path))
+        db._raw_conn.executemany(
+            "INSERT INTO entry (id, kb_name, entry_type, title, status, lifecycle) "
+            "VALUES (?, 'dups', 'task', ?, 'open', 'active')",
+            rows,
+        )
+        db._raw_conn.commit()
+
+    def test_one_hundred_identical_titles_keep_every_pair(self, dup_setup):
+        self._seed(dup_setup, [(f"item{i}", "Weekly report") for i in range(100)])
+
+        result = dup_setup["qa"].find_duplicates("task", readable_kbs=UNSCOPED)
+
+        assert result["count"] == 100 * 99 // 2
+        assert all(p["score"] == 1.0 and p["signal"] == "title" for p in result["pairs"])
+        assert result["skipped_tokens"] == 2
+
+    def test_exact_id_tokens_survive_two_thousand_common_word_rows(self, dup_setup):
+        rows = [(f"fix-bug-{i}", f"Noise {i}") for i in range(1998)]
+        rows += [("fix-bug", "Different alpha"), ("bug-fix", "Other beta")]
+        self._seed(dup_setup, rows)
+
+        started = time.perf_counter()
+        result = dup_setup["qa"].find_duplicates("task", readable_kbs=UNSCOPED)
+        elapsed = time.perf_counter() - started
+
+        assert result["count"] == 1
+        pair = result["pairs"][0]
+        assert (pair["a"]["id"], pair["b"]["id"]) == ("bug-fix", "fix-bug")
+        assert pair["signal"] == "id"
+        assert result["skipped_tokens"] == 3
+        assert elapsed < 10.0, f"2,000 entries took {elapsed:.2f}s"
+
+    def test_a_skipped_near_match_path_is_disclosed(self, dup_setup):
+        self._seed(dup_setup, [(f"item{i}", f"Weekly report {i}") for i in range(100)])
+
+        result = dup_setup["qa"].find_duplicates("task", readable_kbs=UNSCOPED, threshold=0.5)
+
+        # These non-identical sets would meet the threshold; their common-token
+        # expansion is bounded, so the report must disclose that incomplete path.
+        assert result["pairs"] == []
+        assert result["skipped_tokens"] == 2
+
+
+@pytest.mark.parametrize("option", ["--type", "--status"])
+def test_an_empty_required_filter_is_a_usage_error(cli_world, option):
+    world = cli_world()
+    result = world.cli("qa", "duplicates", "-t", "task", option, " ")
+    assert result.exit_code == 2, result.output
+
+
+def test_rich_output_discloses_the_common_token_cutoff(cli_world):
+    world = cli_world()
+    folder = world.kb_path("test-kb")
+    for i in range(100):
+        (folder / f"item{i}.md").write_text(
+            f"---\nid: item{i}\ntype: task\ntitle: Weekly report {i}\nstatus: open\n---\nBody.\n",
+            encoding="utf-8",
+        )
+    world.index()
+
+    result = world.cli("qa", "duplicates", "-t", "task", "--format", "rich")
+
+    assert result.exit_code == 0, result.output
+    assert "Common-token expansion skipped for 2 tokens" in result.stdout
+    assert "near-match coverage is incomplete" in result.stdout

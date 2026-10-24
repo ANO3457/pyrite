@@ -163,6 +163,11 @@ def qa_duplicates(
         )
 
     def render(console: Console, data: dict) -> None:
+        if data["skipped_tokens"]:
+            console.print(
+                f"Common-token expansion skipped for {data['skipped_tokens']} tokens; "
+                "near-match coverage is incomplete. Exact token-set matches are included."
+            )
         if not data["pairs"]:
             console.print(f"No candidate duplicates of type {data['entry_type']!r}.")
             return
