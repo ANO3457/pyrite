@@ -7,7 +7,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -15,80 +15,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: |
-          pip install setuptools wheel
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e '.[all,postgres]'
+      - name: Install CLI test environment and all five extensions
+        run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel
           for ext in extensions/*/; do
             if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
           done
-      - name: Cache the real local embedding model needed by existing tests
-        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2', trust_remote_code=False)"
-      - name: Recheck the previously missing model test
-        run: pytest tests/test_semantic_search_warns_when_nothing_is_embedded.py -q
-        env:
-          HF_HUB_OFFLINE: '1'
-      - name: Prove public help regression on the previous feature head
-        if: false # Same product 123b1eb already verified in run 40015540756.
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess
-          import xml.etree.ElementTree as ET
-          paths = subprocess.check_output(['git', 'diff', '--name-only', 'ad347fe28bc2d6be5aad55483038ad5acb9f7dcc', '123b1eb073cf79d4e84d497527773241f861ae1d', '--', 'pyrite', 'extensions'], text=True).splitlines()
-          fixed = {path: Path(path).read_bytes() for path in paths}
-          try:
-              for path in paths:
-                  Path(path).write_bytes(subprocess.check_output(['git', 'show', 'ad347fe28bc2d6be5aad55483038ad5acb9f7dcc:' + path]))
-              result = subprocess.run(['pytest', 'tests/test_cli_import_performance.py', '-k', 'entry_points', '-q', '--junitxml=red-help.xml'])
-              tree = ET.parse('red-help.xml')
-              assert result.returncode == 1
-              assert len(tree.findall('.//testcase/failure')) == 4
-              assert not tree.findall('.//testcase/error')
-          finally:
-              for path, source in fixed.items(): Path(path).write_bytes(source)
-          PY
-      - name: Same-runner wall time before and after the whole PR
-        if: false # Same product 123b1eb already verified in run 40015540756.
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import os, subprocess, sys
-          base = '3b37fc271acb8aef94c01fd90e36eee8ab44e469'
-          paths = subprocess.check_output(['git', 'diff', '--name-only', base, '123b1eb073cf79d4e84d497527773241f861ae1d', '--', 'pyrite', 'extensions'], text=True).splitlines()
-          fixed = {path: Path(path).read_bytes() for path in paths}
-          root = str(Path(os.environ['RUNNER_TEMP']) / 'startup-bench-world')
-          def bench(phase):
-              result = subprocess.run([sys.executable, '.github/codex/startup_bench.py', phase, root], capture_output=True, text=True, check=True)
-              print(result.stdout, flush=True)
-              Path('bench-' + phase + '.json').write_text(result.stdout)
-          try:
-              for path in paths:
-                  Path(path).write_bytes(subprocess.check_output(['git', 'show', base + ':' + path]))
-              bench('before')
-          finally:
-              for path, source in fixed.items(): Path(path).write_bytes(source)
-          bench('after')
-          PY
-      - name: Focused real command regressions
-        if: false # Same product 123b1eb already verified in run 40015540756.
-        run: pytest tests/test_cli_import_performance.py tests/test_import_cycles.py tests/test_extension_cli_import_order.py -q
-      - name: Affected core and every extension test file, without duplicate runs
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess, sys
-          files = subprocess.check_output(['git', 'diff', '--name-only', 'ad347fe28bc2d6be5aad55483038ad5acb9f7dcc', '123b1eb073cf79d4e84d497527773241f861ae1d', '--', 'pyrite', 'extensions', 'tests'], text=True).splitlines()
-          selected = subprocess.check_output([sys.executable, 'scripts/test-affected', '--list', '--files', *files], text=True).splitlines()
-          extensions = {str(p) for root in Path('extensions').glob('*/tests') for p in root.rglob('test_*.py')}
-          paths = sorted({item for item in selected if item.split("::", 1)[0] not in extensions} | extensions)
-          assert all(Path(path.split("::", 1)[0]).is_file() for path in paths)
-          print(f'Running {len(paths)} test files, including all {len(extensions)} files across the five extensions', flush=True)
-          Path('selected-tests.txt').write_text('\n'.join(paths))
-          subprocess.run([sys.executable, 'scripts/heavy_lock.py', '--', sys.executable, '-m', 'pytest', '-n', '4', '-q', '--junitxml=affected.xml', *paths], check=True)
-          PY
-        env:
-          HF_HUB_OFFLINE: '1'
+      - name: Prove production code matches the previous broad Linux run
+        run: git diff --exit-code 123b1eb073cf79d4e84d497527773241f861ae1d 225194f075c5847a87f2d217117448ae498600a4 -- pyrite/ ':(glob)extensions/*/src/**'
+      - name: Recheck real ADR index reads and public entry points
+        run: pytest extensions/software-kb/tests/test_adr_listing.py tests/test_cli_import_performance.py -q --junitxml=final-focused.xml
       - name: Source checks
         if: always()
         run: |
