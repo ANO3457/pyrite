@@ -1,20 +1,50 @@
 """Shared CLI context — eliminates duplicated PyriteDB + service construction."""
 
+from __future__ import annotations
+
+import importlib
 import logging
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
-
-from sqlalchemy.exc import SQLAlchemyError
+from typing import TYPE_CHECKING, Any
 
 from ..config import PyriteConfig, load_config
 from ..exceptions import PyriteError, StorageError
-from ..services.kb_registry_service import KBRegistryService
-from ..services.kb_service import KBService
-from ..storage.database import PyriteDB
-from ..storage.index import IndexManager
+
+if TYPE_CHECKING:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from ..services.kb_registry_service import KBRegistryService
+    from ..services.kb_service import KBService
+    from ..storage.database import PyriteDB
+    from ..storage.index import IndexManager
+
+_LAZY_ATTRS = {
+    "PyriteDB": "..storage.database",
+    "IndexManager": "..storage.index",
+    "KBService": "..services.kb_service",
+    "KBRegistryService": "..services.kb_registry_service",
+    "SQLAlchemyError": "sqlalchemy.exc",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_ATTRS:
+        mod = importlib.import_module(_LAZY_ATTRS[name], __package__)
+        val = getattr(mod, name)
+        globals()[name] = val
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _ensure_lazy(*names: str) -> None:
+    g = globals()
+    for name in names:
+        if name not in g:
+            __getattr__(name)
+
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +135,7 @@ def _init_base(
     kbs: tuple[object, ...], output_format: str | None
 ) -> tuple[PyriteConfig, PyriteDB, KBService]:
     """Shared construction for all CLI context managers."""
+    _ensure_lazy("KBService")
     config, db = get_config_and_db()
     try:
         _require_kbs(config, db, kbs, output_format)
@@ -147,6 +178,7 @@ def cli_registry_context(
     *, kbs: tuple[object, ...] = (), output_format: str | None = None
 ) -> Generator[tuple[PyriteConfig, PyriteDB, KBService, KBRegistryService], None, None]:
     """Provide config, db, service, and registry for CLI commands that need KB management."""
+    _ensure_lazy("IndexManager", "KBRegistryService")
     config, db, svc = _init_base(kbs, output_format)
     index_mgr = IndexManager(db, config)
     registry = KBRegistryService(config, db, index_mgr)
@@ -179,6 +211,7 @@ def open_index_db(config: PyriteConfig) -> PyriteDB:
     which #380 moved here unchanged so that opening the index happens in one
     module. The caller closes it.
     """
+    _ensure_lazy("PyriteDB")
     return PyriteDB(config.settings.index_path)
 
 
@@ -198,6 +231,7 @@ def get_config_and_db(config: PyriteConfig | None = None) -> tuple[PyriteConfig,
     Pass an already-loaded config when a command owns config loading; otherwise
     this helper loads it. Callers are responsible for calling db.close().
     """
+    _ensure_lazy("PyriteDB")
     config = config or load_config()
     db = PyriteDB(config.settings.index_path)
     try:
@@ -223,6 +257,7 @@ def open_index_for_validation(
     caller is a check command, and a check that cannot be made is a refusal
     (exit 1, ``STORAGE_ERROR``), not a clean verdict from the YAML alone.
     """
+    _ensure_lazy("SQLAlchemyError", "IndexManager")
     try:
         config, db = get_config_and_db(config)
     except (OSError, sqlite3.Error, SQLAlchemyError) as exc:
@@ -265,6 +300,7 @@ def get_config_with_registered_kbs(
     if config.get_kb(name) is not None:
         return config
 
+    _ensure_lazy("PyriteDB", "SQLAlchemyError")
     try:
         db = PyriteDB(config.settings.index_path)
         try:

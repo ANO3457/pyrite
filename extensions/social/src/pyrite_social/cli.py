@@ -8,7 +8,6 @@ from rich.table import Table
 from pyrite.cli.context import require_entry_kb, require_kb
 from pyrite.cli.output import cli_console
 from pyrite.config import load_config
-from pyrite.storage.database import PyriteDB
 
 social_app = typer.Typer(help="Social knowledge base commands")
 console = cli_console()
@@ -22,6 +21,8 @@ def social_vote(
     user: str = typer.Option("local", "--user", "-u", help="Voter user ID"),
 ):
     """Cast a vote on a writeup."""
+    from pyrite.storage.database import PyriteDB
+
     if direction not in ("up", "down"):
         console.print("[red]Error:[/red] Direction must be 'up' or 'down'")
         raise typer.Exit(1)
@@ -57,6 +58,8 @@ def social_reputation(
     user_id: str = typer.Argument("local", help="User ID to check"),
 ):
     """Show a user's reputation."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     db = PyriteDB(config.settings.index_path)
 
@@ -97,6 +100,8 @@ def social_newest(
     limit: int = typer.Option(10, "--limit", "-n", help="Number of results"),
 ):
     """List most recent writeups."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format="rich")
     db = PyriteDB(config.settings.index_path)
@@ -152,6 +157,8 @@ def social_top(
     limit: int = typer.Option(10, "--limit", "-n", help="Number of results"),
 ):
     """Show highest-voted writeups."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     require_kb(config, kb_name, output_format="rich")
     db = PyriteDB(config.settings.index_path)
