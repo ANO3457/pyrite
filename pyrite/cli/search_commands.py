@@ -161,6 +161,10 @@ def register_search_command(app: typer.Typer):
         whatever the verdict. The contract is stated once, in the docstring of
         SearchService.search.
         """
+        for flag, values in (("--type", entry_types), ("--exclude-type", exclude_types)):
+            if any(not value.strip() for value in (values or [])):
+                raise typer.BadParameter("value must not be blank", param_hint=flag)
+
         asked = bool(
             parse_fields_param(fields) or parse_fields_param(os.environ.get(SEARCH_FIELDS_ENV))
         )
