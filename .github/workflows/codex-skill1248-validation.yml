@@ -1,0 +1,40 @@
+name: Validate skill symbol review follow-up
+on:
+  push:
+    branches: ['validation/codex24-skill1248']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test environment
+        run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Test exact product tree
+        run: |
+          git checkout 0f4241498092f70e07441b1c97c431013f1a4db4
+          python scripts/check_checkout_imports.py
+          python scripts/test-affected --run --base 2ebd38b83a392fbf11f61bfb3642ac10232ba4d9 -n 4 -- --junitxml=affected.xml
+      - name: Source checks
+        if: always()
+        run: |
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          python scripts/check_fix_commit_has_tests.py --range HEAD^1 HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skill1248-results
+          path: affected.xml
