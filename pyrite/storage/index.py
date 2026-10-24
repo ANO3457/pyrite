@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import stat as stat_module
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -17,7 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import exc as sa_exc
+
 from ..config import KBConfig, PyriteConfig, load_config
+from ..exceptions import StorageError
 from ..models import Entry
 from ..models.core_types import as_stored_text, id_text
 from ..models.protocols import (
@@ -31,9 +35,47 @@ from ..models.protocols import (
 from ..schema.field_aliases import lift_declared_fields, read_metadata, read_view
 from ..utils.metadata import parse_metadata
 from .database import PyriteDB
+from .errors import DISK_SUGGESTION, driver_error, is_disk_fault, storage_error_from
 from .repository import KBRepository
 
 logger = logging.getLogger(__name__)
+
+# Errors from writing a row that are the database's, not the file's (#1260):
+# ``OperationalError`` is SQLite's class for a missing column or table, a
+# read-only or full file, and a lock; a ``StorageError`` is one already
+# translated (corruption, busy). Data a file supplies that SQLite cannot store
+# raises another class and stays a per-file problem.
+_DATABASE_FAULTS = (sqlite3.OperationalError, sa_exc.OperationalError, StorageError)
+
+WRITE_RETRY_SUGGESTION = (
+    "Run the command again: opening the index repairs its schema. If the same row "
+    "fails again, the log names the error and `pyrite index health` shows the "
+    "index's state."
+)
+
+
+def _storage_error_for_write(exc: BaseException, rel: str, db: PyriteDB) -> StorageError:
+    """The error ``reconcile_kb`` raises when the database refuses a row.
+
+    Classified by ``storage_error_from``: a lock is retryable and says to wait;
+    a disk fault says so; anything else (a column lost after the open) says to
+    run the command again, since the next open repairs the schema. None of
+    them is told to rebuild: the file is intact.
+    """
+    try:
+        db.session.rollback()
+    except Exception:  # pragma: no cover - defensive: the session may be gone
+        logger.debug("Rollback after a failed index write failed", exc_info=True)
+    if isinstance(exc, StorageError):
+        err = exc
+    else:
+        # The first line only: a driver error carries the SQL and every bound value.
+        err = storage_error_from(driver_error(exc), f"The index refused the row for {rel}")
+        err.args = ((str(err).splitlines() or [type(exc).__name__])[0],)
+    if not err.suggestion:
+        err.suggestion = DISK_SUGGESTION if is_disk_fault(exc) else WRITE_RETRY_SUGGESTION
+    return err
+
 
 # Matches wikilinks: [[target]], [[kb:target]], [[target#heading]], [[target^block-id]], [[target|display]]
 # Groups: (1) kb prefix, (2) target, (3) heading, (4) block-id, (5) display text
@@ -1070,6 +1112,14 @@ class IndexManager:
                     self._write_claim(
                         kb_config.name, claim, indexed.get(entry_id), force, enrich, results
                     )
+                except _DATABASE_FAULTS as e:
+                    # The database refused the write: a column the schema
+                    # lacks, a read-only or full disk, a lock. That is not the
+                    # file's fault, and filing it under "could not be parsed"
+                    # emptied the index and blamed every file, exit 0 (#1260).
+                    # Stop before the removal pass below, so the rows already
+                    # there are kept.
+                    raise _storage_error_for_write(e, claim.rel, self.db) from e
                 except Exception as e:
                     # The file parsed but its row cannot be written (a
                     # `title:` that is a YAML list, found on the pyrite KB).

@@ -34,7 +34,7 @@ from ..exceptions import (
     public_text,
     refusal_fields,
 )
-from ..services.access_policy import ROLES, named_kb
+from ..services.access_policy import ROLES, Principal, named_kb
 from ..services.body_bounds import (
     MARKER_KEYS,
     BodyBounds,
@@ -45,6 +45,7 @@ from ..services.export_service import ExportService
 from ..services.graph_service import GraphService
 from ..services.kb_service import KBService, check_link_spec
 from ..services.read_shaping import project_fields
+from ..services.write_target import binding, current_target
 from ..storage.database import PyriteDB
 from ..storage.index import IndexManager
 from .mcp_rate_limiter import MCPRateLimiter
@@ -57,6 +58,12 @@ MAX_BATCH_READ_ENTRIES = 50
 _CREATE_CONTROL_KEYS = frozenset({"kb_name", "validate", "allow_undeclared"})
 #: Arguments of kb_update that name the entry or steer the tool.
 _UPDATE_CONTROL_KEYS = frozenset({"entry_id", "kb_name", "validate", "append", "remove", "unset"})
+
+MCP_SERVER_INSTRUCTIONS = (
+    "Call kb_orient first: with no arguments it lists readable knowledge bases and operational contracts; "
+    "with kb_name it describes one KB. This server runs at tier '{tier}'; tools of a higher tier are not listed. "
+    "Errors return as a result containing error, error_code, and retryable (see kb_orient)."
+)
 
 
 # Identity fields every `fields` projection keeps. Agents key on these to
@@ -87,8 +94,8 @@ def _project_fields(entry: dict, fields: list[str] | None) -> dict:
 
 # ADR-0037 theme 2 (maintainer decision, 2026-09-25): "one code per
 # exception, and REST's code wins. For one release, MCP keeps emitting its
-# current code in a legacy_error_code field, then switches." Codes now live
-# on the exception classes (``pyrite.exceptions``) -- REST's spelling, since
+# current code in a legacy_error_code field, then switches." (Removal: 0.27.)
+# Codes now live on the exception classes (``pyrite.exceptions``) -- REST's spelling, since
 # REST's is the more specific one where the two transports used to disagree.
 #
 # This table and _legacy_mcp_code() below reproduce *exactly* what this
@@ -96,7 +103,7 @@ def _project_fields(entry: dict, fields: list[str] | None) -> dict:
 # most-specific-first via isinstance, falling back to the class's own old
 # error_code attribute, and finally to "REQUEST_REFUSED") -- kept only to
 # detect where that disagrees with the class's new code and populate
-# ``legacy_error_code`` for one release. It is not consulted for the code
+# ``legacy_error_code`` until 0.27. It is not consulted for the code
 # MCP reports going forward (``exc.error_code`` is). A hand-picked list of
 # "the codes that changed" was tried first and missed cases (FrontmatterError,
 # TruncatedBodyError, PluginError, StorageError -- anything that used to fall
@@ -146,6 +153,8 @@ _NEW_IN_THIS_THEME = frozenset(
         "AINotConfiguredError",
         "EvaluationFailedError",
         "KBUnreadableError",
+        # ADR-0044 §1 (2026-10-20): a refusal no surface raised before.
+        "LandingRefusedError",
     }
 )
 
@@ -226,7 +235,7 @@ def _error(
 def _with_old_kb_update_code(refusal: dict) -> dict:
     """``kb_update``'s ``legacy_error_code`` for a class its old handler never
     named: ``UPDATE_FAILED``, the one code it answered every such failure
-    with (its ``except PyriteError`` catch-all), kept one release (ADR-0037
+    with (its ``except PyriteError`` catch-all), kept until 0.27 (ADR-0037
     theme 2). ``_refusal`` alone would carry the module-wide fallback
     ``REQUEST_REFUSED``, a code ``kb_update`` never gave (#990)."""
     refusal["legacy_error_code"] = "UPDATE_FAILED"
@@ -246,7 +255,7 @@ def _refusal(exc: PyriteError, *, already_logged: bool = False) -> dict:
     ``VALIDATION_ERROR``). Where the class's code differs from what MCP used
     to report for this class (``_legacy_mcp_code``, replaying the old
     ``_LEGACY_DOMAIN_ERROR_CODES``/``_LEGACY_OWN_ERROR_CODE`` lookup), the old
-    code is carried one more release in ``legacy_error_code`` so an existing
+    code is carried until 0.27 in ``legacy_error_code`` so an existing
     MCP caller matching on the old string is not broken outright (ADR-0037
     theme 2, maintainer decision 2026-09-25). A class MCP and REST already
     agreed on gets no ``legacy_error_code`` key at all -- there is nothing
@@ -319,6 +328,16 @@ MAX_RESOURCE_LIST_ENTRIES = 200
 #: dispatcher's gate skips them so that decision is made once, in the service
 #: (#378); it still covers every other write tool -- task tools and any plugin
 #: tool registered into the write or admin tier -- by construction.
+
+#: Write tools that make a database-only record beside their file write (a
+#: review verdict). A change set's index is discarded when it merges, so the
+#: record would be lost; and the file write comes first, so refusing when the
+#: record is reached would leave half a write. They are refused up front on a
+#: change-set landing (decided 2026-10-20). The change-set index refuses the
+#: same records (`overlay_backend._RECORDS_REFUSED`) for any tool not listed.
+_CHANGE_SET_UNSUPPORTED_TOOLS: dict[str, str] = {
+    "sw_review": "records a review verdict in the database",
+}
 _PIPELINE_WRITE_TOOLS = frozenset({"kb_create", "kb_update", "kb_bulk_create"})
 
 
@@ -376,6 +395,21 @@ NON_KB_CONTENT_TOOLS = frozenset(
 )
 
 
+def _located_ids(spec: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
+    """The entry ids a `locates_entry` call names: each `id_args` value, a
+    string or a list of strings, with blanks and non-strings dropped."""
+    ids: list[str] = []
+    for arg in spec["id_args"]:
+        value = arguments.get(arg)
+        values = value if isinstance(value, list | tuple) else [value]
+        ids.extend(v for v in values if isinstance(v, str) and v.strip())
+    return ids
+
+
+def _no_id_message(spec: dict[str, Any]) -> str:
+    return f"Name an entry id in {' or '.join(spec['id_args'])}"
+
+
 def _kbs_named_in(arguments: dict[str, Any]) -> list[str]:
     """Every KB name the call names, under any of `KB_ARGUMENT_NAMES`.
 
@@ -425,7 +459,7 @@ def _kb_refusal(svc: KBService, kb_name: object, readable_kbs: set[str] | None) 
     existence is itself private, so a caller cannot tell "you may not read
     this" from "there is no such KB". The envelope is `_refusal`'s: the class
     code `KB_NOT_FOUND`, the resolver's suggestion, `did_you_mean` and the
-    old `NOT_FOUND` in `legacy_error_code` for one release (#66, ADR-0037
+    old `NOT_FOUND` in `legacy_error_code` until 0.27 (#66, ADR-0037
     theme 2). A handler's own not-found answer is only ever reached for a
     name the caller may read.
     """
@@ -491,6 +525,55 @@ class PyriteMCPServer:
         self.resource_templates = self._build_resource_templates()
 
     # =========================================================================
+    # Where this call writes (ADR-0044 §1)
+    # =========================================================================
+    #
+    # This instance is shared by every caller at its tier, so it holds the
+    # canonical config, index and services. While `_dispatch_tool` runs a
+    # write whose landing is a change set, the call's target is bound
+    # (`services.write_target.binding`) and these read it: a handler that
+    # writes with `self.svc` or `self.db` writes where the rule says.
+
+    @property
+    def config(self) -> PyriteConfig:
+        bound = current_target()
+        return bound.config if bound is not None else self._config
+
+    @config.setter
+    def config(self, value: PyriteConfig) -> None:
+        self._config = value
+
+    @property
+    def db(self) -> PyriteDB:
+        bound = current_target()
+        return bound.db if bound is not None else self._db
+
+    @db.setter
+    def db(self, value: PyriteDB) -> None:
+        self._db = value
+
+    @property
+    def svc(self) -> KBService:
+        bound = current_target()
+        if bound is None:
+            return self._svc
+        return bound.service("kb", KBService)
+
+    @svc.setter
+    def svc(self, value: KBService) -> None:
+        self._svc = value
+
+    def _per_target(self, name: str, build):
+        """A lazily built service: the instance's own, or the bound call's."""
+        bound = current_target()
+        if bound is not None:
+            return bound.service(name, build)
+        cache = self.__dict__.setdefault("_service_cache", {})
+        if name not in cache:
+            cache[name] = build(self._config, self._db)
+        return cache[name]
+
+    # =========================================================================
     # Tool registration by tier
     # =========================================================================
 
@@ -511,8 +594,18 @@ class PyriteMCPServer:
         )
 
     def _register_tool(self, name: str, schema: dict[str, Any], tier: str) -> None:
-        """Label a copy at registration, keeping shared schemas unmodified."""
+        """Label a copy at registration, keeping shared schemas unmodified.
+
+        A tool that declares `locates_entry` takes `kb_name` as optional,
+        whatever its plugin's schema says (#1310): the SDK validates a call
+        against `inputSchema` before `_dispatch_tool` runs, so a required
+        `kb_name` would refuse the call the lookup exists to answer. Derived
+        here from the declaration, so no plugin can get it wrong."""
         self._tool_tiers[name] = tier
+        if schema.get("locates_entry"):
+            input_schema = schema.get("inputSchema") or {}
+            required = [r for r in input_schema.get("required", []) if r != "kb_name"]
+            schema = {**schema, "inputSchema": {**input_schema, "required": required}}
         self.tools[name] = {
             **schema,
             "description": f"[{tier}] {schema.get('description') or ''}",
@@ -573,7 +666,7 @@ class PyriteMCPServer:
 
     @property
     def qa_svc(self):
-        if not hasattr(self, "_qa_svc_cache"):
+        def build(config, db):
             from ..services.llm_service import LLMService
             from ..services.llm_usage_service import LLMUsageService
             from ..services.qa_service import QAService
@@ -582,34 +675,30 @@ class PyriteMCPServer:
             # identity today (server-wide tier, not per-user auth), so
             # usage is recorded with user_id=None -- still gives platform-
             # key cost visibility even without per-user attribution.
-            usage_service = LLMUsageService(self.db)
-            llm_service = LLMService(self.config.settings, usage_service=usage_service)
-            self._qa_svc_cache = QAService(self.config, self.db, llm_service=llm_service)
-        return self._qa_svc_cache
+            # Usage is the instance's accounting, never a change set's row.
+            usage_service = LLMUsageService(self._db)
+            llm_service = LLMService(config.settings, usage_service=usage_service)
+            return QAService(config, db, llm_service=llm_service)
+
+        return self._per_target("qa", build)
 
     @property
     def task_svc(self):
-        if not hasattr(self, "_task_svc_cache"):
-            from ..services.task_service import TaskService
+        from ..services.task_service import TaskService
 
-            self._task_svc_cache = TaskService(self.config, self.db)
-        return self._task_svc_cache
+        return self._per_target("task", TaskService)
 
     @property
     def link_svc(self):
-        if not hasattr(self, "_link_svc_cache"):
-            from ..services.link_discovery_service import LinkDiscoveryService
+        from ..services.link_discovery_service import LinkDiscoveryService
 
-            self._link_svc_cache = LinkDiscoveryService(self.config, self.db)
-        return self._link_svc_cache
+        return self._per_target("link", LinkDiscoveryService)
 
     @property
     def search_svc(self):
-        if not hasattr(self, "_search_svc_cache"):
-            from ..services.search_service import SearchService
+        from ..services.search_service import SearchService
 
-            self._search_svc_cache = SearchService(self.db, settings=self.config.settings)
-        return self._search_svc_cache
+        return self._per_target("search", lambda c, d: SearchService(d, settings=c.settings))
 
     # =========================================================================
     # Read handlers
@@ -1448,7 +1537,7 @@ class PyriteMCPServer:
         except ConflictError as e:
             # A write that lost the race for its file (#955): the class's
             # own code, with the old code this handler gave everything it
-            # did not name (ADR-0037, one release).
+            # did not name (ADR-0037, removal in 0.27).
             return _with_old_kb_update_code(_refusal(e))
         except StorageError as e:
             # A storage fault on the write (a hard-linked file, the lock
@@ -1457,7 +1546,7 @@ class PyriteMCPServer:
             logger.error("Tool kb_update failed: %s", e, exc_info=e)
             return _with_old_kb_update_code(_refusal(e, already_logged=True))
         except (EntryNotFoundError, KBNotFoundError) as e:
-            # Keep the old handler-level spelling for one release while the
+            # Keep the old handler-level spelling until 0.27 while the
             # class code becomes the primary contract (ADR-0037).
             refusal = _refusal(e)
             refusal["legacy_error_code"] = "UPDATE_FAILED"
@@ -2503,6 +2592,80 @@ class PyriteMCPServer:
             return _refusal(e)
         return None
 
+    def _landing_target(
+        self, tool: str, named_kbs: list[str], principal: Principal | None
+    ) -> tuple[tuple | None, dict | None]:
+        """Where a write tool's call lands: `(target, None)` -- the target to
+        bind, None for canonical -- or `(None, refusal)`.
+
+        `principal` None is the local operator (stdio). One call lands in one
+        place: a call naming several KBs, one of which lands in a change set,
+        is refused. A change set that cannot be made is refused; nothing
+        falls back to the canonical files (ADR-0044 §1, L2).
+        """
+        from ..services.access_policy import Landing
+        from ..services.write_target import LandingRefusedError, write_target
+
+        who = principal if principal is not None else Principal.local()
+        landings = {kb: self._svc.lands_in(who, kb) for kb in named_kbs}
+        if any(landing is Landing.DENY for landing in landings.values()):
+            return None, _refusal(LandingRefusedError("This write has no place to land"))
+        moved = sorted(kb for kb, landing in landings.items() if landing is Landing.CHANGE_SET)
+        if not moved:
+            return None, None
+        if len(landings) > 1:
+            return None, _refusal(
+                LandingRefusedError(
+                    "This write names several knowledge bases and one of them lands in a "
+                    "change set; write to one knowledge base at a time"
+                )
+            )
+        if tool in _CHANGE_SET_UNSUPPORTED_TOOLS:
+            from ..exceptions import ChangeSetRecordRefusedError
+
+            return None, _refusal(
+                ChangeSetRecordRefusedError(
+                    f"{tool} {_CHANGE_SET_UNSUPPORTED_TOOLS[tool]}, which a change set "
+                    f"cannot carry through its merge, and KB '{moved[0]}' lands your writes "
+                    "in a change set. It is available to the operator, or after the change "
+                    "set merges."
+                )
+            )
+        try:
+            cache = self.__dict__.setdefault("_diff_cache", {})
+            return write_target(self._config, self._db, who, moved[0], diff_cache=cache), None
+        except LandingRefusedError as e:
+            return None, _refusal(e)
+
+    def _locate_entry_ids(
+        self, spec: dict[str, Any], arguments: dict[str, Any], readable_kbs: set[str] | None
+    ) -> dict[str, Any]:
+        """``arguments`` with ``kb_name`` set to the KB that holds the entry ids.
+
+        The plugin tools' door to ``KBService.locate`` (#1310, the MCP half of
+        #911), the rule the CLI's ``require_entry_kb`` applies: a ``kb_name``
+        absent or blank names no KB, and the id is then found in the one
+        readable KB that holds it, refused ``AMBIGUOUS`` (with
+        ``candidate_kbs``) when several do, ``ENTRY_NOT_FOUND`` when none does.
+        A named KB must hold the id. ``spec`` is the tool's ``locates_entry``:
+        ``id_args`` (the arguments that carry entry ids, each a string or a
+        list of strings) and ``entry_type`` (the one type the tool acts on, or
+        absent for a tool that takes any). Every id must be in the one KB.
+        Raises ``PyriteError``; the caller renders the refusal.
+        """
+        ids = _located_ids(spec, arguments)
+        if not ids:
+            # `_dispatch_tool` refuses this before any check; kept here so no
+            # caller of this method hands a handler an id it did not resolve.
+            raise ValidationError(_no_id_message(spec))
+        kb = named_kb(arguments.get("kb_name"))
+        for entry_id in ids:
+            found = self.svc.locate(
+                entry_id, kb, readable_kbs=readable_kbs, entry_type=spec.get("entry_type")
+            )
+            kb = kb or found
+        return {**arguments, "kb_name": kb}
+
     def _dispatch_tool(
         self,
         name: str,
@@ -2512,6 +2675,7 @@ class PyriteMCPServer:
         client_kind: str | None = None,
         readable_kbs: set[str] | None = None,
         writable_kbs: set[str] | None = None,
+        principal: Principal | None = None,
     ) -> dict[str, Any]:
         """Execute a tool and return result.
 
@@ -2539,6 +2703,12 @@ class PyriteMCPServer:
         no writable set resolved is treated as able to write nowhere. A tool
         registered above the read tier runs only when every KB it names is
         writable, and never when it names none.
+
+        `principal` is who is calling, for the landing rule
+        (`AccessPolicy.lands_in`, ADR-0044 §1): a write tool runs only when
+        every KB it names lands canonical for this principal. None is the
+        local operator (stdio). A write that lands in a change set runs with
+        that target bound for this call (`services.write_target.binding`).
         """
         if name not in self.tools:
             return _error(
@@ -2558,6 +2728,31 @@ class PyriteMCPServer:
                     suggestion=f"Wait {info['retry_after']} seconds",
                     retryable=True,
                 )
+
+        # A tool that takes an entry id declares `locates_entry` (#1310). The
+        # KB its handler works in is `kb_name`, so with `kb_name` not named
+        # the id is resolved to the KB that holds it HERE, before `named_kbs`
+        # is computed: the found KB is then a named KB like any other, and
+        # every check below (read, write, landing) runs on it by
+        # construction. Keyed on `kb_name` alone, never on `named_kbs`: a KB
+        # named under another argument does not choose the handler's KB, so
+        # it must not skip the lookup either. With `kb_name` named, the checks
+        # run first (a caller who may not write there is told so, not "not
+        # found") and the id is verified in that KB just before the handler.
+        #
+        # No handler is called with an id the dispatcher has not resolved: a
+        # call whose id arguments are all blank (missing, empty, whitespace)
+        # is refused here, before any check, whatever KB it names -- else the
+        # handler would choose a KB itself (a default KB, or '').
+        spec = self.tools[name].get("locates_entry")
+        if spec and not _located_ids(spec, arguments):
+            return _refusal(ValidationError(_no_id_message(spec)))
+        kb_name_named = named_kb(arguments.get("kb_name")) is not None
+        if spec and not kb_name_named:
+            try:
+                arguments = self._locate_entry_ids(spec, arguments, readable_kbs)
+            except PyriteError as e:
+                return _refusal(e)
 
         # Every KB the call names goes through the one resolver (#952),
         # for every caller: an unknown name, a KB outside a scoped caller's
@@ -2619,6 +2814,16 @@ class PyriteMCPServer:
                         f"Insufficient permissions on KB '{kb_name}': requires 'write' tier",
                     )
 
+        # Where the write lands: asked of the one rule, for every write tool --
+        # core or plugin -- by its registered tier. A change-set landing is
+        # bound for this call only (`binding`, below): the handler's
+        # `self.svc`/`self.db`/`self.config` and the plugin context read it.
+        target = None
+        if self._tool_tiers.get(name, "read") != "read" and named_kbs:
+            target, refusal = self._landing_target(name, named_kbs, principal)
+            if refusal is not None:
+                return refusal
+
         # ADR-0034 rule 2: a truncated body is never valid input to a write.
         # kb_create, kb_update and kb_bulk_create get it from KBService's
         # write pipeline. For every other write tool -- task_create and any
@@ -2631,12 +2836,17 @@ class PyriteMCPServer:
 
         try:
             handler = self.tools[name]["handler"]
-            if takes_readable:
-                # A cross-KB handler: nothing was named to refuse, so it must
-                # filter instead. Only handlers that declare the keyword get
-                # it, so plugin handlers are called exactly as before.
-                return handler(arguments, readable_kbs=readable_kbs)
-            return handler(arguments)
+            with binding(target):
+                if spec and kb_name_named:
+                    # Verifies each id in the `kb_name` the caller named (the
+                    # checks above ran on it); raises the refusal.
+                    arguments = self._locate_entry_ids(spec, arguments, readable_kbs)
+                if takes_readable:
+                    # A cross-KB handler: nothing was named to refuse, so it
+                    # must filter instead. Only handlers that declare the
+                    # keyword get it, so plugin handlers are called as before.
+                    return handler(arguments, readable_kbs=readable_kbs)
+                return handler(arguments)
         except PyriteError as e:
             # A refused request, not a crash: the service said no for a reason
             # the caller can act on, and it is not logged as an exception --
@@ -2658,6 +2868,7 @@ class PyriteMCPServer:
         client_kind: str | None = None,
         readable_kbs: set[str] | None = None,
         writable_kbs: set[str] | None = None,
+        principal: Principal | None = None,
     ):
         """Build an mcp.server.Server wired to this instance's business logic.
 
@@ -2704,13 +2915,17 @@ class PyriteMCPServer:
             Tool,
         )
 
-        sdk = Server(f"pyrite-{self.tier}")
+        sdk = Server(
+            f"pyrite-{self.tier}",
+            instructions=MCP_SERVER_INSTRUCTIONS.format(tier=self.tier),
+        )
 
         mcp_server = self  # capture for closures
         _client_id = client_id  # capture for closures
         _client_kind = client_kind
         _readable_kbs = readable_kbs  # capture for closures -- per connection, never on self
         _writable_kbs = writable_kbs
+        _principal = principal
 
         @sdk.list_tools()
         async def _list_tools():
@@ -2732,6 +2947,7 @@ class PyriteMCPServer:
                 client_kind=_client_kind,
                 readable_kbs=_readable_kbs,
                 writable_kbs=_writable_kbs,
+                principal=_principal,
             )
             return [
                 TextContent(

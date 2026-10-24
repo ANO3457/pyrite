@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import TypedDict
 from urllib.parse import urlparse
 
 from ..exceptions import InvalidGitRefError
@@ -156,6 +157,15 @@ UNKNOWN = "unknown"
 # exit code is the fact; stderr is never classified, because git words
 # "path absent from a readable commit" and "commit unreadable" alike (#453).
 READ_BLOB_ARGV = ("git", "cat-file", "blob", "--end-of-options")
+
+
+class GitWorkingTreeStatus(TypedDict):
+    """Git working tree status shape returned by GitService.get_status (#1047)."""
+
+    clean: bool
+    staged: list[str]
+    unstaged: list[str]
+    untracked: list[str]
 
 
 class GitService:
@@ -1266,15 +1276,24 @@ class GitService:
             return False, f"Push failed: {GitService.sanitize_error(str(e), token)}"
 
     @staticmethod
-    def get_status(local_path: Path) -> dict:
+    def get_status(local_path: Path) -> GitWorkingTreeStatus:
         """
         Get git working tree status.
 
         Returns dict with: clean (bool), staged (list), unstaged (list), untracked (list)
         """
-        result = {"clean": True, "staged": [], "unstaged": [], "untracked": []}
+        result: GitWorkingTreeStatus = {
+            "clean": True,
+            "staged": [],
+            "unstaged": [],
+            "untracked": [],
+        }
 
         if not GitService.is_git_repo(local_path):
+            return result
+
+        kb_prefix = GitService.get_kb_prefix(local_path)
+        if kb_prefix is None:
             return result
 
         try:
@@ -1293,17 +1312,21 @@ class GitService:
                     continue
                 if len(line) < 4:
                     continue
-                result["clean"] = False
                 index_status = line[0]
                 work_status = line[1]
                 filename = line[3:]
 
+                rel_name = GitService._kb_relative_path(filename, kb_prefix)
+                if not rel_name:
+                    continue
+
+                result["clean"] = False
                 if index_status == "?":
-                    result["untracked"].append(filename)
+                    result["untracked"].append(rel_name)
                 elif index_status != " ":
-                    result["staged"].append(filename)
+                    result["staged"].append(rel_name)
                 if work_status not in (" ", "?"):
-                    result["unstaged"].append(filename)
+                    result["unstaged"].append(rel_name)
 
             return result
         except (subprocess.SubprocessError, OSError):

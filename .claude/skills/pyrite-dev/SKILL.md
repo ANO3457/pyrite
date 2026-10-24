@@ -194,7 +194,12 @@ Done means the whole theme, with evidence for every claim. Then, in order:
    origin/dev`). `git diff <noted-head> HEAD` must be empty: the rewrite
    changes history, never content. Then `git push --force-with-lease`. Only your own branch, and only before the PR
    is marked ready.
-3. **Push** (CONTRIBUTING, "Branches, hooks and pull requests"). A red
+3. **Push**: in a cloud container, first read
+   `scripts/known-cloud-failures.json` or run
+   `python3 scripts/known_cloud_failures.py`. Compare exact test nodes; do not
+   spend a task rediscovering a recorded cloud-only failure. Do not waive a
+   changed test or CI. Keep newly observed failures distinct.
+   (CONTRIBUTING, "Branches, hooks and pull requests"). A red
    pre-push in a test your change touches is yours to fix. If you push past an
    unrelated flake as that section allows, name the test in the report.
 4. **Report with the pushed SHA.** The PR stays a draft.

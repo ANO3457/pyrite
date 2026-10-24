@@ -1,20 +1,25 @@
 """Journalism Investigation CLI commands."""
 
+from __future__ import annotations
+
 import json as json_mod
+from typing import TYPE_CHECKING
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from pyrite.cli.context import require_kb
+from pyrite.cli.output import cli_console, path_line
 from pyrite.config import load_config
 from pyrite.exceptions import QueryTooLongError
-from pyrite.storage.database import PyriteDB
 
 from .plugin import _EXPERIMENTAL_NOTICE, JournalismInvestigationPlugin
 
+if TYPE_CHECKING:
+    from pyrite.storage.database import PyriteDB
+
 investigation_app = typer.Typer(help=f"{_EXPERIMENTAL_NOTICE}\n\nJournalism investigation commands")
-console = Console()
+console = cli_console()
 
 
 def _emit_json_result(result: dict) -> None:
@@ -29,6 +34,8 @@ def _get_plugin_with_db(*kbs: object, output_format: str = "rich"):
 
     Every KB the command named (``kbs``) is resolved first (#952, #924),
     and a refusal is rendered in ``output_format``."""
+    from pyrite.storage.database import PyriteDB
+
     config = load_config()
     db = PyriteDB(config.settings.index_path)
     try:
@@ -364,6 +371,8 @@ def qa_report(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show investigation quality metrics and warnings."""
+    from pyrite.storage.database import PyriteDB
+
     from .qa import compute_qa_metrics
 
     config = load_config()
@@ -440,6 +449,8 @@ def search_all(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Search across all KBs with optional entity correlation."""
+    from pyrite.storage.database import PyriteDB
+
     from .cross_kb_search import correlate_results, cross_kb_search
 
     config = load_config()
@@ -535,6 +546,8 @@ def start_investigation(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Create a new investigation with guided setup."""
+    from pyrite.storage.database import PyriteDB
+
     from .investigation_setup import create_investigation
 
     config = load_config()
@@ -574,6 +587,8 @@ def investigation_status(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show investigation status — entity/event/claim counts and unverified claims."""
+    from pyrite.storage.database import PyriteDB
+
     from .investigation_setup import build_investigation_status
 
     config = load_config()
@@ -619,6 +634,8 @@ def ownership_chain(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Trace ownership chains to find beneficial owners and shell companies."""
+    from pyrite.storage.database import PyriteDB
+
     from .ownership import trace_ownership_chain
 
     config = load_config()
@@ -645,7 +662,8 @@ def ownership_chain(
             path_str = " -> ".join(
                 f"{n['title']} ({n['percentage']}%)" for n in reversed(chain["path"])
             )
-            console.print(f"  {i}. {path_str} -> {entity['title']}")
+            # Keep the entity-title chain literal, just like a filesystem path.
+            console.print(path_line(f"  {i}. ", path_str, f" -> {entity['title']}"))
             console.print(f"     Effective ownership: {chain['effective_percentage']:.1f}%")
         console.print()
 
@@ -676,6 +694,8 @@ def money_flow(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Trace money flows for an entity through transaction chains."""
+    from pyrite.storage.database import PyriteDB
+
     from .money_flow import aggregate_flows, trace_money_flow
 
     config = load_config()
@@ -767,6 +787,8 @@ def export_pack(
     ),
 ):
     """Export investigation as a self-contained pack."""
+    from pyrite.storage.database import PyriteDB
+
     from .export import build_investigation_pack, export_as_json, export_as_markdown
 
     config = load_config()
@@ -789,7 +811,7 @@ def export_pack(
         if output:
             with open(output, "w") as f:
                 f.write(content)
-            console.print(f"[green]Exported to {output}[/green]")
+            console.print(path_line("Exported to ", output, style="green"))
         else:
             console.print(content)
     finally:
@@ -807,6 +829,7 @@ def bulk_edges(
     import sys
 
     from pyrite.cli.context import input_file_or_exit
+    from pyrite.storage.database import PyriteDB
 
     from .bulk import create_edge_batch
 
@@ -898,6 +921,7 @@ def ftm_import(
 ):
     """Import FollowTheMoney (FtM) entities from a JSON file."""
     from pyrite.cli.context import input_file_or_exit
+    from pyrite.storage.database import PyriteDB
 
     from .ftm import import_ftm
 
@@ -993,6 +1017,8 @@ def ftm_export(
     """Export KB entries as FollowTheMoney (FtM) JSON."""
     import sys
 
+    from pyrite.storage.database import PyriteDB
+
     from .ftm import export_ftm
 
     config = load_config()
@@ -1009,7 +1035,7 @@ def ftm_export(
             with open(output, "w") as f:
                 f.write(json_output)
                 f.write("\n")
-            console.print(f"[green]Exported {len(result)} entities to {output}[/green]")
+            console.print(path_line(f"Exported {len(result)} entities to ", output, style="green"))
         else:
             sys.stdout.write(json_output)
             sys.stdout.write("\n")
@@ -1042,6 +1068,7 @@ def promote_claim(
     entry the plugin validator would refuse (#424).
     """
     from pyrite.services.kb_service import KBService
+    from pyrite.storage.database import PyriteDB
 
     from .promote import promote_claim_to_edge
 
@@ -1112,6 +1139,8 @@ def dedup(
     output_json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Find and review duplicate entities across KBs."""
+    from pyrite.storage.database import PyriteDB
+
     from .dedup import find_duplicates
 
     config = load_config()
