@@ -46,10 +46,10 @@ from ..utils.frontmatter import (
 )
 from .context import cli_context, read_input_file, require_input_file
 from .outcome import Outcome
-from .output import OUTPUT_FORMAT, validate_output_format
+from .output import OUTPUT_FORMAT, cli_console, validate_output_format
 
 logger = logging.getLogger(__name__)
-console = Console()
+console = cli_console()
 
 
 def _format_output(data: dict, fmt: str, **kwargs) -> str | None:
@@ -264,7 +264,10 @@ def register_entry_commands(app: typer.Typer) -> None:
 
             formatted = _format_output(result, output_format, fields=fields_list, single_entry=True)
             if formatted is not None:
-                typer.echo(formatted)
+                # CSV already ends with a line terminator; a second newline from
+                # echo would leave a trailing blank record on stdout, which
+                # streaming CSV parsers read as an empty row (#1234).
+                typer.echo(formatted, nl=not formatted.endswith("\n"))
                 return
 
             if fields_list:
@@ -297,7 +300,9 @@ def register_entry_commands(app: typer.Typer) -> None:
 
     @app.command("create")
     def create_entry(
-        kb_name: str = typer.Option(None, "--kb", "-k", help="Target knowledge base"),
+        kb_name: str = typer.Option(
+            None, "--kb", "-k", help="Target knowledge base (required unless --template)"
+        ),
         entry_type: str = typer.Option("note", "--type", "-t", help="Entry type"),
         title: str = typer.Option(None, "--title", help="Entry title"),
         body: str = typer.Option("", "--body", "-b", help="Entry body text"),
@@ -698,7 +703,7 @@ def register_entry_commands(app: typer.Typer) -> None:
         update_links: bool = typer.Option(
             True,
             "--update-links/--no-update-links",
-            help="Rewrite [[old_id]] / [[old_id|alias]] wikilinks in this KB",
+            help=r"Rewrite \[\[old_id]] / \[\[old_id|alias]] wikilinks in this KB",
         ),
         dry_run: bool = typer.Option(
             False,
@@ -809,7 +814,7 @@ def register_entry_commands(app: typer.Typer) -> None:
                     notice = escape(
                         f"No inverse is known for '{relation}'; writing '{inverse}' on {target}."
                     )
-                    Console(stderr=True).print(f"[dim]{notice}[/dim]", soft_wrap=True)
+                    cli_console(stderr=True).print(f"[dim]{notice}[/dim]")
                 try:
                     inv_result = svc.add_link(
                         target, tkb, source, inverse, target_kb=kb_name, note=note

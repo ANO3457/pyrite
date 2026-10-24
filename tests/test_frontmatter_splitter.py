@@ -1172,7 +1172,7 @@ def test_markdown_stream_does_not_split_after_a_blank_line():
 ROOT = Path(__file__).resolve().parent.parent
 ONE_MODULE = ROOT / "pyrite" / "utils" / "frontmatter.py"
 WRITERS = {
-    "pyrite/formats/markdown_fmt.py": (2, "writes a fence"),
+    "pyrite/formats/markdown_fmt.py": (1, "writes a fence"),
     "pyrite/formats/importers/markdown_importer.py": (
         1,
         "re-adds an opening fence to a stream segment",

@@ -1,0 +1,1 @@
+- Populate MCP server initialize instructions directing connecting clients to call `kb_orient` first (#1292).

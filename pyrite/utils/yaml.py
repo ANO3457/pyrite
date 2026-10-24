@@ -246,6 +246,18 @@ def _dumper_for(data: Any) -> YAML:
     return y
 
 
+def load_yaml_document(text: str) -> Any:
+    """Parse a YAML document, including bulk-import sequences and empty input.
+
+    Entry frontmatter callers must use ``load_yaml`` for its mapping contract.
+    Both paths use the same parser, scalar rules and public parse error.
+    """
+    try:
+        return _get_yaml().load(text)
+    except YAMLError as e:
+        raise FrontmatterError(f"Invalid YAML frontmatter: {e}") from e
+
+
 def load_yaml(text: str) -> dict[str, Any]:
     """Load YAML from a string.
 
@@ -257,11 +269,7 @@ def load_yaml(text: str) -> dict[str, Any]:
     parse to a mapping, so a single malformed entry surfaces a clear error
     instead of leaking a raw ruamel traceback to callers.
     """
-    y = _get_yaml()
-    try:
-        result = y.load(text)
-    except YAMLError as e:
-        raise FrontmatterError(f"Invalid YAML frontmatter: {e}") from e
+    result = load_yaml_document(text)
     if result is None:
         return {}
     if not isinstance(result, Mapping):
@@ -297,6 +305,15 @@ def load_yaml_file(path: str | Path) -> dict[str, Any]:
     with open(p) as f:
         result = y.load(f)
     return result if result is not None else {}
+
+
+def dump_yaml_text(data: Any) -> str:
+    """The text ``dump_yaml_file`` writes for ``data``, for a caller that
+    publishes it itself (a KB's kb.yaml goes through ``KBFiles``)."""
+    _quote_yaml11_ambiguous_strings(data)
+    stream = StringIO()
+    _dumper_for(data).dump(data, stream)
+    return stream.getvalue()
 
 
 def dump_yaml_file(data: Any, path: str | Path, *, atomic: bool = False) -> None:

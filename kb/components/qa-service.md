@@ -37,6 +37,7 @@ Structural validation and assessment service for knowledge bases. Validates KB i
 | `invalid_date` | error | Date field not in YYYY-MM-DD format |
 | `importance_range` | warning | Importance outside 1-10 range |
 | `broken_link` | warning | Wikilink target doesn't exist |
+| `task_references` | error/warning | An open task's `dependencies` or deliverable (`produces`/`deliverable`, a string or list) resolves to no entry (error) or its deliverable already exists as a non-task entry (warning); `kb:id` resolves like a wikilink (#935) |
 | `orphan` | info | Entry has no incoming links |
 | `schema_violation` | error/warning | Field violates kb.yaml type schema |
 | `frontmatter_line_in_body` | warning | First body line repeats a scalar frontmatter field; may be a migration leak |
