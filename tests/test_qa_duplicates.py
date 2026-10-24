@@ -205,10 +205,12 @@ class TestCommonTokens:
         assert result["skipped_tokens"] == 2
 
 
-@pytest.mark.parametrize("option", ["--type", "--status"])
-def test_an_empty_required_filter_is_a_usage_error(cli_world, option):
+@pytest.mark.parametrize(
+    ("option", "value"), [("--type", " "), ("--status", " "), ("--status", ",, ")]
+)
+def test_an_empty_required_filter_is_a_usage_error(cli_world, option, value):
     world = cli_world()
-    result = world.cli("qa", "duplicates", "-t", "task", option, " ")
+    result = world.cli("qa", "duplicates", "-t", "task", option, value)
     assert result.exit_code == 2, result.output
 
 

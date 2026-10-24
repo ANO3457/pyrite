@@ -113,12 +113,27 @@ def qa_validate(
             raise typer.Exit(1)
 
 
+def _duplicate_entry_type(value: str) -> str:
+    if not value.strip():
+        raise typer.BadParameter("must name an entry type")
+    return value
+
+
+def _duplicate_status(value: str | None) -> str | None:
+    if value is not None and not any(part.strip() for part in value.split(",")):
+        raise typer.BadParameter("must name at least one status")
+    return value
+
+
 @qa_app.command("duplicates")
 def qa_duplicates(
-    entry_type: str = typer.Option(..., "--type", "-t", help="Entry type to compare"),
+    entry_type: str = typer.Option(
+        ..., "--type", "-t", callback=_duplicate_entry_type, help="Entry type to compare"
+    ),
     status: str | None = typer.Option(
         None,
         "--status",
+        callback=_duplicate_status,
         help="Comma-separated statuses to keep; default: live entries only",
     ),
     threshold: float = typer.Option(
@@ -142,13 +157,9 @@ def qa_duplicates(
     """
     from ..services.qa_service import QAService
 
-    if not entry_type.strip():
-        raise typer.BadParameter("--type must name an entry type")
     statuses = None
     if status is not None:
         statuses = {part.strip().lower() for part in status.split(",") if part.strip()}
-        if not statuses:
-            raise typer.BadParameter("--status must name at least one status")
     prefixes = tuple(
         part.strip() for value in (strip_prefix or []) for part in value.split(",") if part.strip()
     )
