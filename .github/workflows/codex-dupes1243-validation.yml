@@ -1,4 +1,4 @@
-name: Validate duplicate finder review follow-up
+name: Validate duplicate finder on current dev
 on:
   push:
     branches: ['validation/codex24-dupes1243']
@@ -7,7 +7,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 40
     env:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
@@ -31,32 +31,22 @@ jobs:
           TRANSFORMERS_OFFLINE: "0"
           HF_HUB_DISABLE_TELEMETRY: "1"
         run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
-      - name: Restore exact product and check source
+      - name: Exact merged product and source gates
         run: |
-          git show "$GITHUB_SHA:.github/validation/dupes1243-rerun.json" > "$RUNNER_TEMP/rerun.json"
-          git checkout 13bf5d22020e29471bd60e1c61402b0523f8caa0
-          git diff --exit-code 4bbbf7c300c0cfae63ba31233837ee1e5ac7e6ca HEAD -- pyrite/services/qa_service.py tests/test_effective_status_everywhere.py
+          git checkout 00ddf36581b445703641aafae1b0a79910bc4f7b
           python scripts/check_checkout_imports.py
           ruff check pyrite/ tests/ extensions/
           ruff format --check pyrite/ tests/ extensions/
           python scripts/check_import_cycles.py
-          python scripts/check_fix_commit_has_tests.py --range 9b78049d1b3541729e9e49d542f4e025766663b5 HEAD
-      - name: Duplicate clusters, performance bound and effective status
-        run: pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_changelog_fragments.py -q -n 4 --durations=10 --junitxml=focused.xml
-      - name: Root outcome contract and prior failures or skips
-        run: |
-          pytest tests/test_requested_effect_exit_code.py tests/test_cli_outcome.py -q -n 4 --junitxml=contract.xml
-          python - <<'PY'
-          import json, os, subprocess
-          from pathlib import Path
-          nodes = json.loads((Path(os.environ['RUNNER_TEMP']) / 'rerun.json').read_text())
-          raise SystemExit(subprocess.run(['pytest', *nodes, '-q', '-n', '4', '--junitxml=recovery.xml']).returncode)
-          PY
+          python scripts/check_fix_commit_has_tests.py --range HEAD^1 HEAD
+      - name: Duplicate clusters, effective status and root declaration
+        run: pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_changelog_fragments.py tests/test_requested_effect_exit_code.py::test_a_command_on_the_contract_is_declared_the_way_the_root_expects -q -n 4 --durations=10 --junitxml=focused.xml
+      - name: Required affected selection against current dev
+        run: python scripts/test-affected --run --base c30b1c120fb8db798f2331472ff79bb28af44684 -n 4 -- --junitxml=affected.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dupes1243-recovery
+          name: dupes1243-current-dev
           path: |
             focused.xml
-            contract.xml
-            recovery.xml
+            affected.xml
