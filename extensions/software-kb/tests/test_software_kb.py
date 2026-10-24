@@ -153,7 +153,7 @@ class TestPluginRegistration:
 
 
 # =========================================================================
-# Entry types â€” ADR
+# Entry types — ADR
 # =========================================================================
 
 
@@ -249,7 +249,7 @@ class TestADREntry:
 
 
 # =========================================================================
-# Entry types â€” DesignDoc
+# Entry types — DesignDoc
 # =========================================================================
 
 
@@ -304,7 +304,7 @@ class TestDesignDocEntry:
 
 
 # =========================================================================
-# Entry types â€” Standard
+# Entry types — Standard
 # =========================================================================
 
 
@@ -344,7 +344,7 @@ class TestStandardEntry:
 
 
 # =========================================================================
-# Entry types â€” ProgrammaticValidation
+# Entry types — ProgrammaticValidation
 # =========================================================================
 
 
@@ -423,7 +423,7 @@ class TestProgrammaticValidationEntry:
 
 
 # =========================================================================
-# Entry types â€” DevelopmentConvention
+# Entry types — DevelopmentConvention
 # =========================================================================
 
 
@@ -575,7 +575,7 @@ class TestStandardsMigration:
 
 
 # =========================================================================
-# Entry types â€” Component
+# Entry types — Component
 # =========================================================================
 
 
@@ -620,7 +620,7 @@ class TestComponentEntry:
 
 
 # =========================================================================
-# Entry types â€” BacklogItem
+# Entry types — BacklogItem
 # =========================================================================
 
 
@@ -680,7 +680,7 @@ class TestBacklogItemEntry:
 
 
 # =========================================================================
-# Entry types â€” Runbook
+# Entry types — Runbook
 # =========================================================================
 
 
@@ -1480,7 +1480,7 @@ class TestMilestonePluginRegistration:
 
 
 # =========================================================================
-# Kanban Flow Tools â€” helpers
+# Kanban Flow Tools — helpers
 # =========================================================================
 
 
@@ -2475,7 +2475,7 @@ class TestBacklogDependencies:
             )
             try:
                 plugin = _make_plugin_with_db(db)
-                # claim_entry needs KBService â€” mock it
+                # claim_entry needs KBService — mock it
                 from unittest.mock import MagicMock, patch
 
                 mock_svc = MagicMock()
@@ -2498,7 +2498,7 @@ class TestBacklogDependencies:
 
 
 # =========================================================================
-# TestReview â€” sw_review tool
+# TestReview — sw_review tool
 # =========================================================================
 
 
@@ -2512,7 +2512,7 @@ class TestReview:
         assert "sw_review" not in read_tools
 
     def test_review_approved_transitions_to_done(self):
-        """Item in review â†’ approved â†’ status becomes done."""
+        """Item in review → approved → status becomes done."""
         from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2553,7 +2553,7 @@ class TestReview:
                 assert result["outcome"] == "approved"
                 assert result["new_status"] == "done"
                 assert "review_id" in result
-                # CAS was called with review â†’ done
+                # CAS was called with review → done
                 mock_svc.claim_entry.assert_called_once_with(
                     "item-1",
                     "test",
@@ -2565,7 +2565,7 @@ class TestReview:
                 db.close()
 
     def test_review_changes_requested_transitions_to_in_progress(self):
-        """Item in review â†’ changes_requested â†’ status becomes in_progress."""
+        """Item in review → changes_requested → status becomes in_progress."""
         from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2617,7 +2617,7 @@ class TestReview:
                 db.close()
 
     def test_review_changes_requested_requires_feedback(self):
-        """changes_requested without feedback â†’ error."""
+        """changes_requested without feedback → error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2646,7 +2646,7 @@ class TestReview:
                 db.close()
 
     def test_review_not_in_review_status_fails(self):
-        """Item in accepted â†’ review â†’ error."""
+        """Item in accepted → review → error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2675,7 +2675,7 @@ class TestReview:
                 db.close()
 
     def test_review_not_found_fails(self):
-        """Nonexistent item â†’ error."""
+        """Nonexistent item → error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(tmpdir)
             try:
@@ -2742,7 +2742,7 @@ class TestReview:
                 db.close()
 
     def test_context_for_item_shows_reviews(self):
-        """Item with prior review â†’ reviews in context response."""
+        """Item with prior review → reviews in context response."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2778,7 +2778,7 @@ class TestReview:
 
 
 # =========================================================================
-# TestSubmit â€” sw_submit tool
+# TestSubmit — sw_submit tool
 # =========================================================================
 
 
@@ -2792,7 +2792,7 @@ class TestSubmit:
         assert "sw_submit" not in read_tools
 
     def test_submit_transitions_to_review(self):
-        """Item in in_progress â†’ submit â†’ status becomes review."""
+        """Item in in_progress → submit → status becomes review."""
         from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2835,7 +2835,7 @@ class TestSubmit:
                 db.close()
 
     def test_submit_not_in_progress_fails(self):
-        """Item in accepted â†’ submit â†’ error."""
+        """Item in accepted → submit → error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(
                 tmpdir,
@@ -2858,7 +2858,7 @@ class TestSubmit:
                 db.close()
 
     def test_submit_not_found_fails(self):
-        """Nonexistent item â†’ error."""
+        """Nonexistent item → error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(tmpdir)
             try:
@@ -3022,7 +3022,7 @@ class TestSwLog:
                 db.close()
 
     def test_sw_log_item_not_found(self):
-        """Nonexistent item â†’ error."""
+        """Nonexistent item → error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             db = _make_test_db(tmpdir)
             try:
@@ -3230,7 +3230,7 @@ class TestColumnFirstStatusFallback:
     def test_board_lane_items_bounded_by_default(self):
         """A lane with many items does not return every one unbounded (#233).
 
-        `sw_board` grows with the project the same way `sw_backlog` does â€”
+        `sw_board` grows with the project the same way `sw_backlog` does —
         it embeds a full item list per lane. Counts stay exact; only the
         embedded item list per lane is bounded.
         """
@@ -4526,7 +4526,7 @@ class TestOrphanBacklogItemChecker:
 
 
 # =========================================================================
-# TestPrioritizeAfterAnchor â€” Tier A 1050
+# TestPrioritizeAfterAnchor — Tier A 1050
 # =========================================================================
 
 
@@ -4810,11 +4810,6 @@ class TestSwListCommandsAreBounded:
                 db.close()
 
 
-# =========================================================================
-# #669 - the maintainer's three backlog kinds work through the CLI
-# =========================================================================
-
-
 NEW_BACKLOG_KINDS = ("refactor", "chore", "process")
 
 
@@ -4899,3 +4894,12 @@ class TestNewBacklogKindsThroughTheCli:
 
         assert result.exit_code == 0, result.output
         assert self._kind_on_disk(world, entry_id) == kind
+
+
+class TestBacklogKindToolSchemas:
+    @pytest.mark.parametrize("tool_name", ["sw_backlog", "sw_create_backlog_item"])
+    def test_kind_enum_matches_the_shared_vocabulary(self, tool_name):
+        registry = PluginRegistry()
+        registry.register(SoftwareKBPlugin())
+        schema = registry.get_all_mcp_tools("write")[tool_name]["inputSchema"]
+        assert schema["properties"]["kind"]["enum"] == list(BACKLOG_KINDS)

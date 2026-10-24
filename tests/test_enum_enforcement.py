@@ -528,6 +528,7 @@ class TestIssue47:
         reason="guards the fixture: the live #47 entry must still be off-list for the other tests to mean anything"
     )
     def test_the_fixture_still_carries_the_live_drift(self, software_kb):
+        assert _fm(LIVE_ENTRY)["kind"] == "chore"
         _, kb = software_kb
         assert "kind: not-a-kind" in (kb / "backlog" / LIVE_ENTRY.name).read_text()
 
