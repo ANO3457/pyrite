@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from pyrite.services.search_service import SearchService
 
 
@@ -124,3 +126,20 @@ def test_the_service_legs_typed_filter_together(cli_world):
 
     legacy = svc.search("widget", kb_name="test-kb", entry_type="note")
     assert {r["entry_type"] for r in legacy} == {"note"}, legacy
+
+
+@pytest.mark.control(reason="control: keyword search without -k already spans readable KBs")
+def test_keyword_search_without_a_kb_keeps_both_types(cli_world):
+    world = cli_world()
+    _seed(world)
+    result = world.cli("search", "widget", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert {r["entry_type"] for r in json.loads(result.stdout)["results"]} == {"note", "event"}
+
+
+def test_an_unknown_excluded_type_without_a_kb_changes_nothing(cli_world):
+    world = cli_world()
+    _seed(world)
+    result = world.cli("search", "widget", "--exclude-type", "nosuchtype", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert {r["entry_type"] for r in json.loads(result.stdout)["results"]} == {"note", "event"}

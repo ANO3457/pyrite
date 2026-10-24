@@ -613,11 +613,10 @@ class SearchService:
             query: Search query
             kb_name: Filter to specific KB (None for all)
             entry_type: Filter by type (event, actor, etc.)
-            entry_types: Filter by several types at once (all listed types are
-                KEPT, an OR over the type names); the new flag `--type` is
-                repeatable on every surface, so this is what a repeat arrives
-                as. Together with a single `entry_type`, the two spellings are
-                one set.
+            entry_types: Filter by several types at once (an OR over the names).
+                The CLI's repeated `--type` arrives as this list; REST and MCP
+                still take the single `entry_type`. A supplied `entry_type` and
+                this list are combined into one filter set.
             exclude_types: Remove these entry types from the results, whatever
                 the include side says (`--exclude-type`, repeatable).
             tags: Filter by tags (AND logic)
