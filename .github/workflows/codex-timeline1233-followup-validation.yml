@@ -1,0 +1,72 @@
+name: Validate timeline KB shape follow-up with real Postgres
+on:
+  push:
+    branches: ['validation/codex24-timeline1233-followup']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pyrite_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      PYRITE_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/pyrite_test
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install full test and database dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[all,postgres]' setuptools wheel uv
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Prepare local CPU model cache
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+      - name: Exact product and source gates
+        run: |
+          git checkout 6955986475af313856f49ca6ce1cb238bd7b6fff
+          python scripts/check_checkout_imports.py
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          python scripts/check_fix_commit_has_tests.py --range HEAD^1 HEAD
+      - name: Timeline SDK, status inventory, and real backend conformance
+        run: |
+          pytest tests/test_mcp_timeline_filters.py tests/test_effective_status_everywhere.py tests/test_mcp_schema_snapshots.py tests/test_mcp_tool_registry_is_scoped.py tests/backends/test_backend_conformance.py::TestTimeline -q -n 4 --junitxml=focused.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          cases = [c for c in ET.parse('focused.xml').getroot().iter('testcase') if c.attrib['classname'].endswith('.TestTimeline')]
+          assert len(cases) == 12, len(cases)
+          assert all(not list(c) for c in cases), 'Backend timeline case skipped or failed'
+          assert sum('postgres' in c.attrib['name'] for c in cases) == 6
+          print('All 12 SQLite/Postgres timeline cases passed; no skips.')
+          PY
+      - name: Required affected selection
+        run: python scripts/test-affected --run --base 49bfa74dc7166e487bfd3459854a27f850bca010 -n 4 -- --junitxml=affected.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: timeline1233-results
+          path: |
+            focused.xml
+            affected.xml
