@@ -10,19 +10,22 @@ when it ran (``tests/test_cli_outcome.py`` plants each such way out in every
 one of them). Notices go to stderr, which the root leaves open.
 """
 
+from __future__ import annotations
+
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from ..exceptions import EntryNotFoundError, ValidationError
 from ..services.access_policy import UNSCOPED
-from ..services.task_service import TaskService
-from ..storage.database import PyriteDB
 from .outcome import Outcome
-from .output import LEGACY_FORMAT_SHORT, OUTPUT_FORMAT
+from .output import LEGACY_FORMAT_SHORT, OUTPUT_FORMAT, cli_console
+
+if TYPE_CHECKING:
+    from ..services.task_service import TaskService
+    from ..storage.database import PyriteDB
 
 task_app = typer.Typer(help="Task management commands")
 
@@ -37,6 +40,7 @@ def _get_service(*kbs: object) -> tuple[TaskService, PyriteDB]:
     the command named (``kbs``) is resolved here, before the body runs
     (#952, #924); None names no KB.
     """
+    from ..services.task_service import TaskService
     from .context import get_config_and_db, require_kb
 
     config, db = get_config_and_db()
@@ -307,9 +311,9 @@ def task_status(
 ) -> Outcome:
     """[Deprecated] Alias for `task get`. Use `task get` instead."""
     # Deprecation notice goes to stderr so it never corrupts JSON on stdout.
-    Console(stderr=True).print(
+    cli_console(stderr=True).print(
         "[yellow]Warning:[/yellow] `task status` is deprecated and will be "
-        "removed in a future release; use `task get` instead.",
+        "removed in 0.27; use `task get` instead.",
         style="dim",
     )
     return _task_get_impl(task_id, kb_name)

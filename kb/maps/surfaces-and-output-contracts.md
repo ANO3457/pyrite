@@ -63,7 +63,9 @@ under [[design]] (P8, P9).
 - A `body_truncated` input to `update` or `create` is refused on every surface
   ([[adr-0034]] decision 2).
 - The same exception maps to the same code on REST, MCP and CLI, and a
-  transport emits only `public_message` ([[adr-0037]] section 3).
+  transport uses `public_text` for its public text and cause logging; see the
+  [API error-handling standard](../standards/api-design.md#error-handling)
+  ([[adr-0037]] section 3).
 - Concealment answers are byte-identical to not-found on every surface
   ([[adr-0037]] section 4).
 

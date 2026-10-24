@@ -1,1 +1,0 @@
-- **`pyrite-admin repo fork` works again (#785).** It called a service method that no longer exists. It now forks and subscribes through the fork-and-subscribe service, names the forked repository, and exits 1 with `FORK_FAILED` when the fork fails.

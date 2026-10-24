@@ -11,7 +11,7 @@ sync. Where REST and MCP used to disagree (``NOT_FOUND`` vs
 ``ENTRY_NOT_FOUND``/``KB_NOT_FOUND``, ``READ_ONLY`` vs ``KB_READ_ONLY``,
 ``CONFIG_ERROR`` vs ``CONFIG_CONFLICT``), the maintainer's decision
 (2026-09-25) is that REST's more specific code is the one on the class; MCP
-keeps emitting its old code for one release in a transitional
+keeps emitting its old code until 0.27 in a transitional
 ``legacy_error_code`` field it builds itself (see
 ``server/mcp_server._refusal``), never on the class.
 
@@ -270,6 +270,19 @@ class InvalidGitRefError(ValidationError):
     error_code = "INVALID_REF"
 
 
+class LandingRefusedError(ValidationError):
+    """A write with no place to land under its KB's `landing` (ADR-0044 §1):
+    refused, and nothing is written. Carries ``error_code`` ``LANDING_REFUSED``."""
+
+    error_code = "LANDING_REFUSED"
+
+
+class ChangeSetRecordRefusedError(LandingRefusedError):
+    """A database-only record (a review verdict, a raw SQL write) asked of a
+    change set. The change set's index is discarded when it merges, so the
+    record would be lost: refused, before anything is written."""
+
+
 class FrontmatterError(ValidationError):
     """Raised when YAML frontmatter is malformed or not a mapping.
 
@@ -357,6 +370,7 @@ class StorageError(PyriteError):
         "log for the underlying error."
     )
     retryable: bool = False
+    suggestion: str | None = None
 
 
 class IndexSyncRecoveryHintError(StorageError):
@@ -378,6 +392,25 @@ class IndexSyncRecoveryHintError(StorageError):
     #: Overrides the base StorageError's fixed sentence -- this class's own
     #: message is always safe, so str(exc) should reach every transport.
     public_message = None
+
+
+class IndexSchemaRefusedError(StorageError):
+    """The index on disk cannot be brought to this build's schema, so it is
+    not opened (#1260).
+
+    Raised by the repair step that runs on every open
+    (`pyrite/storage/schema_repair.py`): a model column SQLite cannot add in
+    place (``NOT NULL`` with no default, a key), or a migration or repair the
+    file refused (read-only, out of space). Every command that opens the index
+    gets this one refusal instead of a raw ``OperationalError`` later.
+
+    The message names only schema versions and ``table.column`` names -- never
+    a path or the driver's own text, which is logged instead -- so it is safe
+    by construction and shown as is, like `IndexSyncRecoveryHintError`. The
+    base class's fixed sentence would hide the one thing the user needs.
+    """
+
+    public_message = None  # type: ignore[assignment]  # the base pins str; None shows str(exc)
 
 
 class StorageBusyError(StorageError):

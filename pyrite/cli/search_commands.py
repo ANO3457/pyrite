@@ -8,12 +8,11 @@ import logging
 import os
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
 from ..config import load_config
-from ..exceptions import QuerySyntaxError, QueryTooLongError, ValidationError
+from ..exceptions import QuerySyntaxError, QueryTooLongError, StorageError, ValidationError
 from ..services.read_shaping import (
     IDENTITY_FIELDS,
     SEARCH_FIELDS_ENV,
@@ -24,14 +23,14 @@ from ..services.read_shaping import (
 )
 from ..utils.errors import exit_unless_whole
 from .context import get_config_with_registered_kbs, require_kb
-from .output import validate_output_format
+from .output import cli_console, validate_output_format
 
 logger = logging.getLogger(__name__)
 
-console = Console()
+console = cli_console()
 # Status/progress chatter goes here so it never pollutes stdout in machine
 # formats (-f json etc.), where stdout must be valid parseable output only.
-err_console = Console(stderr=True)
+err_console = cli_console(stderr=True)
 
 
 def _warn_if_stale(config, db, kb_name: str | None) -> None:
@@ -354,6 +353,10 @@ def register_search_command(app: typer.Typer):
                 ),
                 retryable=False,
             )
+        except StorageError as e:
+            from ..utils.errors import cli_error_from
+
+            cli_error_from(e, output_format)
         except Exception as e:
             # Log the full exception (with traceback) so operators can tell a
             # corrupt index from a bad query from a locked DB — the one-line

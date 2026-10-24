@@ -3,6 +3,9 @@
 Each test drives the real Typer app against a temporary index and pins
 what the command prints or returns, so the move behind services is
 checked against behaviour rather than against the diff.
+
+
+Rule and contributor guidance: ../CONTRIBUTING.md#architecture
 """
 
 import contextlib
@@ -36,6 +39,7 @@ def _config(tmp_path, *, indexed=True):
         create_entry_text(
             kb_path / f"n{i}.md",
             new_entry_text(NoteEntry(id=f"n{i}", title=f"Note {i}", body=f"body {i}")),
+            root=(kb_path / f"n{i}.md").parent,
         )
     config = PyriteConfig(
         knowledge_bases=[KBConfig(name="notes", path=kb_path, kb_type=KBType.GENERIC)],

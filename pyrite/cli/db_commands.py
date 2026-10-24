@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
+
+from pyrite.cli.output import cli_console, path_line
 
 from ..config import load_config
 from ..utils.errors import cli_error
@@ -20,7 +21,7 @@ from ..utils.errors import cli_error
 logger = logging.getLogger(__name__)
 
 db_app = typer.Typer(help="Database backup and restore.")
-console = Console()
+console = cli_console()
 
 
 @db_app.command("backup")
@@ -31,6 +32,8 @@ def db_backup(
     ] = None,
 ):
     """Create a backup of the Pyrite index database."""
+    from ..services.index_backup import backup_index
+
     config = load_config()
     db_path = config.settings.index_path
 
@@ -53,19 +56,9 @@ def db_backup(
         output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use SQLite's backup API for safe, consistent backups
-    source_conn = sqlite3.connect(str(db_path))
-    dest_conn = sqlite3.connect(str(output_path))
-    try:
-        source_conn.backup(dest_conn)
-    finally:
-        dest_conn.close()
-        source_conn.close()
+    backup_index(db_path, output_path)
 
-    # soft_wrap: a long path must stay copy-pasteable. Rich's default wrapping
-    # breaks it across lines at the console width, so the one thing the
-    # operator needs from this output cannot be pasted back into a shell.
-    console.print(f"Backup created: {output_path}", soft_wrap=True)
+    console.print(path_line("Backup created: ", output_path))
 
 
 @db_app.command("restore")
@@ -111,4 +104,4 @@ def db_restore(
     # Copy the backup over the current database
     shutil.copy2(str(backup), str(db_path))
 
-    console.print(f"Restored database from {backup}")
+    console.print(path_line("Restored database from ", backup))

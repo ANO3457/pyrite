@@ -48,6 +48,9 @@ pre-commit install
 scripts/setup-checkout.sh
 pyrite kb list   # the `pyrite` KB path must be this checkout's kb/
 
+# Verify imports resolve to this checkout, including every extension
+.venv/bin/python scripts/check_checkout_imports.py
+
 # Verify installation
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/*/tests/ -n 4 -q
 ```
@@ -188,6 +191,16 @@ pyrite/
 
 ### Entry Points
 
+Imports flow `cli`/`server` → `services` → `storage`; storage never imports
+services. The allowed surface-to-storage exceptions are a ratchet whose count
+can only fall, in [test_layer_boundaries.py](tests/test_layer_boundaries.py).
+The inner-layer rule is enforced by
+[test_storage_never_imports_services.py](tests/test_storage_never_imports_services.py);
+the migrated CLI surfaces are covered by
+[test_cli_surfaces_through_services.py](tests/test_cli_surfaces_through_services.py).
+For public error text, follow the [API standard](kb/standards/api-design.md#error-handling),
+enforced by [test_public_message_logged_once.py](tests/test_public_message_logged_once.py).
+
 | Command | Module | Purpose |
 |---------|--------|---------|
 | `pyrite` | `pyrite.cli:main` | Full CLI (Typer) — primary interface for humans and agents |
@@ -223,8 +236,14 @@ Tests carry no size marker yet.
 
 **Everything**
 
+Measured gate snapshots are recorded in [#1045](https://github.com/pyrite-wiki/pyrite/issues/1045)
+and the CI `shard-report` job. The #1045 groom records about 19,800 collected
+ids at `3e350972`; its earlier 16,583-id gate recorded 1,240 seconds of
+4-vCPU shard time. Use the shard report to refresh counts and timings as the
+suite changes.
+
 ```bash
-scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4   # backend, ~6,000 tests, ~10 min on a busy laptop
+scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4   # backend
 cd web && npm ci && npm run check && npm run test:unit && npm run build   # frontend
 HF_HUB_OFFLINE=1 .venv/bin/pytest tests/e2e -m e2e -n 4 --dist loadfile   # large: real server and MCP processes
 PATH="$PWD/.venv/bin:$PATH" bash scripts/run_tutorial.sh                  # large: docs/getting-started.md as a test
@@ -379,8 +398,8 @@ come from GitHub Actions, and conclude `success` (`skipped` does not count)
 in every workflow run that tested the SHA.
 
 What that is evidence of: CI accepted the commit. Every job `gate` needs
-succeeded or was skipped by CI's change classifier: the full matrix in the
-merge queue, one interpreter (with `test` skipped on a docs-only change) on
+succeeded or was skipped by CI's change classifier: Python 3.13 in the
+merge queue and 3.11 and 3.12 on the push to `dev` that follows, one interpreter (with `test` skipped on a docs-only change) on
 a pull request. It does not say a particular selection of tests ran. So
 `PYRITE_PUSH_FULL=1` still runs the full suite, `PYRITE_PUSH_EXPERIMENTAL=1`
 still runs (`gate` does not need the experimental job), and `--force` or
@@ -437,6 +456,15 @@ uv pip install --python .venv/bin/python -e ".[all,dev]"
 
 ### Writing Tests
 
+- Follow the [deadline rule](kb/standards/testing-standards.md#deadlines-and-waits);
+  [test_test_rules.py](tests/test_test_rules.py) enforces it.
+- Drive real services behind entry points; the
+  [mocking standard](kb/standards/testing-standards.md) and
+  [test_tests_drive_the_surface_not_the_mock.py](tests/test_tests_drive_the_surface_not_the_mock.py)
+  define the permitted edges.
+- Use the [pinned CLI rendering environment](kb/standards/testing-standards.md#cli-rendering),
+  covered by [test_cli_color_environment.py](tests/test_cli_color_environment.py).
+
 - Tests live in `tests/`; extension tests in `extensions/<name>/tests/`
 - Name test files `test_*.py`
 - A `fix:` commit must include a test that fails without the fix (a hook checks
@@ -466,6 +494,17 @@ you before CI does. A source-only change selects none of them. See why with
 Adding a guard: mark each scanning function `@pytest.mark.guard`, add its row
 here, and keep it cheap (these run on every push that touches a test).
 
+### Regenerating goldens
+
+Characterization goldens (`tests/characterization/goldens/`) pin the response contracts for REST, MCP, and error bodies across all principals. Gating tests compare against these files; they are never regenerated in CI.
+
+A migration PR may not change a golden (ADR-0037). When an intentional behavior change updates responses:
+
+```bash
+PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/
+```
+
+Run the regenerate serially without `-n`. `golden_io.py` refuses regeneration under pytest-xdist because each worker records only the goldens its own tests observed (#712, fixed by #1225). The per-principal file lock does not make parallel regeneration supported. Review `git diff tests/characterization/goldens/` carefully before committing.
 
 ## Branches, hooks and pull requests
 
@@ -579,6 +618,41 @@ sub-agent's.
 
 Commit messages use conventional commits (`feat:`, `fix:`, `docs:`, `test:`,
 `refactor:`, `ci:`, `kb:`).
+
+### Maintainer-only landing with a merge commit
+
+Ordinary contributor PRs use the configured merge method. A maintainer who
+needs a merge commit for a landing branch must coordinate **three independent
+settings** (#1036); green checks and `MERGEABLE` alone do not prove the queue
+can use that method:
+
+1. Repository **Settings → General → Pull Requests → Allow merge commits**.
+2. The `dev` ruleset's **Require merge queue → Merge method**.
+3. The same ruleset's **Require a pull request → Allowed merge methods**.
+
+Before changing anything, record all three original values and the queue's
+full parameters, particularly `max_entries_to_merge`, `min_entries_to_merge`
+and its wait timeout. Use the repository's ruleset settings or a read-only
+snapshot (replace the ID with the `dev` ruleset's ID):
+
+```bash
+gh api repos/pyrite-wiki/pyrite/rulesets
+gh api repos/pyrite-wiki/pyrite/rulesets/<dev-ruleset-id> > dev-ruleset-before.json
+```
+
+The repository-level permission is separate from that ruleset snapshot;
+record it too. If the maintainer approves a temporary merge-commit landing,
+enable it at all three gates, then use the normal PR and CI queue. This is
+not permission to bypass checks or push directly to `dev`.
+
+After the landing, restore the **recorded pre-change values**, including
+every queue parameter, and read the settings back. Do not take a new snapshot
+of the temporary state as the restoration source. In the #1036 incident,
+restoring `max_entries_to_merge: 0` and `min_entries_to_merge: 2` held a green
+PR for 30 minutes; the cited normal values were max **5**, min **1**. Prefer
+the actual pre-change snapshot over assuming those values forever. If a
+green PR stalls, inspect all three merge-method gates and these group-size
+parameters before rerunning CI or changing the PR.
 
 ## Where work is tracked
 
@@ -698,3 +772,18 @@ change, and in the README.
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same license as the project.
+
+### Refresh the fallback type baseline before a release
+
+Before preparing the release commit, run the same pinned mypy environment as
+CI, then lower its no-base fallback (issue#1103):
+
+```bash
+mypy pyrite/ --ignore-missing-imports > mypy-release.out || true
+python scripts/mypy_ratchet.py mypy-release.out --update
+```
+
+Review and include the resulting `.mypy-baseline.json` in the release PR.
+A crash or any per-file rise refuses the update: fix those errors instead of
+using `--allow-increase`. Normal PR/push runs still compare with their actual
+base commit, so refreshing this fallback never hides a regression in a PR.

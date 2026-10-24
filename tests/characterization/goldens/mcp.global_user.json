@@ -164,7 +164,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "investigation_evidence_chain | global_user | no-default-role-kb": {
-    "error": "Claim 'characterization-placeholder-id-investigation_evidence_chain-global_user-no-default-role-kb' not found"
+    "error": "Entry claim 'characterization-placeholder-id-investigation_evidence_chain-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "investigation_evidence_chain | global_user | private-kb": {
     "did_you_mean": [],
@@ -175,7 +178,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "investigation_evidence_chain | global_user | readable-kb": {
-    "error": "Claim 'characterization-placeholder-id-investigation_evidence_chain-global_user-readable-kb' not found"
+    "error": "Entry claim 'characterization-placeholder-id-investigation_evidence_chain-global_user-readable-kb' not found in KB 'readable-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "investigation_export_pack | global_user | missing-kb": {
     "did_you_mean": [],
@@ -1358,6 +1364,8 @@
         "produced_by": "Entry was produced by a task",
         "produces": "Task produces an entry as evidence",
         "received_transaction_from": "Entity received a transaction from another entity",
+        "referenced_by": "Referenced by an object field",
+        "references": "Object-reference field target",
         "refined_by": "Refined by",
         "refines": "Refines or narrows",
         "session_for": "Work log records a session for a backlog item",
@@ -1373,6 +1381,8 @@
         "tracked_by": "ADR/design doc tracked by a backlog item",
         "tracks": "Backlog item tracks an ADR or design doc",
         "transacted_with": "Entity transacted with another entity",
+        "transcluded_by": "Embedded by another entry",
+        "transclusion": "Embeds the target entry",
         "wikilink": "Inline wikilink reference",
         "wikilinked_by": "Referenced by inline wikilink"
       },
@@ -1695,6 +1705,8 @@
         "produced_by": "Entry was produced by a task",
         "produces": "Task produces an entry as evidence",
         "received_transaction_from": "Entity received a transaction from another entity",
+        "referenced_by": "Referenced by an object field",
+        "references": "Object-reference field target",
         "refined_by": "Refined by",
         "refines": "Refines or narrows",
         "session_for": "Work log records a session for a backlog item",
@@ -1710,6 +1722,8 @@
         "tracked_by": "ADR/design doc tracked by a backlog item",
         "tracks": "Backlog item tracks an ADR or design doc",
         "transacted_with": "Entity transacted with another entity",
+        "transcluded_by": "Embedded by another entry",
+        "transclusion": "Embeds the target entry",
         "wikilink": "Inline wikilink reference",
         "wikilinked_by": "Referenced by inline wikilink"
       },
@@ -2185,6 +2199,8 @@
       "produced_by": "Entry was produced by a task",
       "produces": "Task produces an entry as evidence",
       "received_transaction_from": "Entity received a transaction from another entity",
+      "referenced_by": "Referenced by an object field",
+      "references": "Object-reference field target",
       "refined_by": "Refined by",
       "refines": "Refines or narrows",
       "session_for": "Work log records a session for a backlog item",
@@ -2200,6 +2216,8 @@
       "tracked_by": "ADR/design doc tracked by a backlog item",
       "tracks": "Backlog item tracks an ADR or design doc",
       "transacted_with": "Entity transacted with another entity",
+      "transcluded_by": "Embedded by another entry",
+      "transclusion": "Embeds the target entry",
       "wikilink": "Inline wikilink reference",
       "wikilinked_by": "Referenced by inline wikilink"
     },
@@ -2499,6 +2517,8 @@
       "produced_by": "Entry was produced by a task",
       "produces": "Task produces an entry as evidence",
       "received_transaction_from": "Entity received a transaction from another entity",
+      "referenced_by": "Referenced by an object field",
+      "references": "Object-reference field target",
       "refined_by": "Refined by",
       "refines": "Refines or narrows",
       "session_for": "Work log records a session for a backlog item",
@@ -2514,6 +2534,8 @@
       "tracked_by": "ADR/design doc tracked by a backlog item",
       "tracks": "Backlog item tracks an ADR or design doc",
       "transacted_with": "Entity transacted with another entity",
+      "transcluded_by": "Embedded by another entry",
+      "transclusion": "Embeds the target entry",
       "wikilink": "Inline wikilink reference",
       "wikilinked_by": "Referenced by inline wikilink"
     },
@@ -3148,7 +3170,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "sw_check_ready | global_user | no-default-role-kb": {
-    "error": "Backlog item 'characterization-placeholder-id-sw_check_ready-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'"
+    "error": "Entry backlog item 'characterization-placeholder-id-sw_check_ready-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "sw_check_ready | global_user | private-kb": {
     "did_you_mean": [],
@@ -3159,7 +3184,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "sw_check_ready | global_user | readable-kb": {
-    "error": "Backlog item 'characterization-placeholder-id-sw_check_ready-global_user-readable-kb' not found in KB 'readable-kb'"
+    "error": "Entry backlog item 'characterization-placeholder-id-sw_check_ready-global_user-readable-kb' not found in KB 'readable-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "sw_claim | global_user | missing-kb": {
     "did_you_mean": [],
@@ -3228,7 +3256,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "sw_context_for_item | global_user | no-default-role-kb": {
-    "error": "Entry 'characterization-placeholder-id-sw_context_for_item-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'"
+    "error": "Entry backlog item 'characterization-placeholder-id-sw_context_for_item-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "sw_context_for_item | global_user | private-kb": {
     "did_you_mean": [],
@@ -3239,7 +3270,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "sw_context_for_item | global_user | readable-kb": {
-    "error": "Entry 'characterization-placeholder-id-sw_context_for_item-global_user-readable-kb' not found in KB 'readable-kb'"
+    "error": "Entry backlog item 'characterization-placeholder-id-sw_context_for_item-global_user-readable-kb' not found in KB 'readable-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "sw_conventions | global_user | missing-kb": {
     "did_you_mean": [],
@@ -3326,7 +3360,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "sw_epic_detail | global_user | no-default-role-kb": {
-    "error": "Epic 'characterization-placeholder-id-sw_epic_detail-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'"
+    "error": "Entry backlog item 'characterization-placeholder-id-sw_epic_detail-global_user-no-default-role-kb' not found in KB 'no-default-role-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "sw_epic_detail | global_user | private-kb": {
     "did_you_mean": [],
@@ -3337,7 +3374,10 @@
     "suggestion": "To list the KBs you can read, call kb_orient (MCP) or `pyrite orient` (CLI) with no KB name."
   },
   "sw_epic_detail | global_user | readable-kb": {
-    "error": "Epic 'characterization-placeholder-id-sw_epic_detail-global_user-readable-kb' not found in KB 'readable-kb'"
+    "error": "Entry backlog item 'characterization-placeholder-id-sw_epic_detail-global_user-readable-kb' not found in KB 'readable-kb'",
+    "error_code": "ENTRY_NOT_FOUND",
+    "legacy_error_code": "NOT_FOUND",
+    "retryable": false
   },
   "sw_epics | global_user | missing-kb": {
     "did_you_mean": [],

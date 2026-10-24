@@ -214,12 +214,25 @@ def test_rest_post_entries_writes_the_types_values(tmp_path: Path):
     app.dependency_overrides[get_index_mgr] = lambda: IndexManager(db, config)
     client = TestClient(app)
     try:
-        res = client.post("/api/entries", json={"kb": KB, **SPEC, "allow_undeclared": True})
+        # The REST body model has no free top-level keys (#1090): an undeclared
+        # field travels in the `metadata` envelope, the one spelling REST has
+        # for it, and `allow_undeclared` lets the service take it.
+        body = {k: v for k, v in SPEC.items() if k != "custom_key"}
+        res = client.post(
+            "/api/entries",
+            json={
+                "kb": KB,
+                **body,
+                "metadata": {"custom_key": SPEC["custom_key"]},
+                "allow_undeclared": True,
+            },
+        )
     finally:
         client.close()
         db.close()
     assert res.status_code in (200, 201), res.text
     entry = KBRepository(config.knowledge_bases[0]).load(res.json()["id"])
+    assert entry.metadata.get("custom_key") == SPEC["custom_key"], entry.metadata
     assert_file_holds_the_types_values(config, entry)
 
 
@@ -488,7 +501,7 @@ def test_concurrent_creates_outside_git_give_one_file_and_the_rest_refusals(tmp_
         def run(n: int, barrier=barrier, outcomes=outcomes) -> None:
             barrier.wait()
             try:
-                create_entry_text(target, f"writer {n}\n")
+                create_entry_text(target, f"writer {n}\n", root=(target).parent)
                 outcomes[n] = "wrote"
             except FileExistsError:
                 outcomes[n] = "refused"
@@ -530,7 +543,7 @@ def test_concurrent_creates_in_git_give_one_file_and_the_rest_refusals(tmp_path:
         def run(n: int, barrier=barrier, outcomes=outcomes) -> None:
             barrier.wait()
             try:
-                create_entry_text(target, f"writer {n}\n")
+                create_entry_text(target, f"writer {n}\n", root=(target).parent)
                 outcomes[n] = "wrote"
             except FileExistsError:
                 outcomes[n] = "refused"

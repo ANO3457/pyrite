@@ -5,10 +5,13 @@ refusal into an ``HTTPException`` with its own ``error_code``, and the raw
 request body into the ADR-0034 check the pydantic models cannot see.
 """
 
+from collections.abc import Awaitable, Callable
+
 from fastapi import HTTPException, Request
+from pydantic import BaseModel
 
 from ...exceptions import ValidationError
-from ...services.body_bounds import ensure_not_truncated
+from ...services.body_bounds import MARKER_KEYS, ensure_not_truncated
 
 
 def refusal_http(exc: ValidationError) -> HTTPException:
@@ -71,7 +74,12 @@ async def refuses_truncated_body(request: Request) -> None:
         return
     try:
         payload = await request.json()
-    except Exception:
+    except ValueError:
+        # Not JSON (JSONDecodeError, UnicodeDecodeError): nothing to inspect,
+        # and FastAPI's own parse refuses it. Only a parse error is let
+        # through: a read that failed -- the body limit stopping it
+        # (server/body_limit.py), a client that went away -- propagates, so
+        # the handler never runs on a body this guard did not see.
         return
 
     # PATCH writes one named field, so it is a body write only when that field
@@ -87,3 +95,39 @@ async def refuses_truncated_body(request: Request) -> None:
         ensure_not_truncated(payload)
     except ValidationError as e:
         raise refusal_http(e) from e
+
+
+def refuses_undeclared_keys(
+    model: type[BaseModel], verb: str
+) -> Callable[[Request], Awaitable[None]]:
+    """Refuse unknown entry-write keys before validating declared values.
+
+    ADR-0034 markers are accepted transport on all three verbs. After the
+    truncation dependency has checked them, remove them from the parsed JSON
+    before the model's extra-forbid guard; they are never entry content.
+    """
+    allowed = set(model.model_fields) | set(MARKER_KEYS)
+
+    async def check(request: Request) -> None:
+        media_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if not (media_type == "application/json" or media_type.endswith("+json")):
+            return
+        try:
+            payload = await request.json()
+        except ValueError:
+            return  # FastAPI owns malformed JSON; other read failures propagate.
+        if not isinstance(payload, dict):
+            return
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise refusal_http(
+                ValidationError(
+                    f"Unknown field(s) on a {verb}: {', '.join(unknown)}. "
+                    f"A {verb} accepts: {', '.join(sorted(allowed))}."
+                )
+            )
+        # FastAPI validates this same parsed object after solving dependencies.
+        for key in MARKER_KEYS:
+            payload.pop(key, None)
+
+    return check

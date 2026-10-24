@@ -16,7 +16,7 @@ Your AI agents have no memory. Your knowledge is trapped in platform silos. Ever
 **Why Pyrite instead of vectors-in-Postgres or Notion+AI?**
 
 - **Typed entries with schema validation** — not flat vector blobs. Define `person`, `decision`, `event`, `component` types with validated fields. Query structurally, not just by vibes.
-- **Git-native** — every change is a file you commit to git (`git commit` or `pyrite kb commit`), not a database mutation. Branch, diff, review, rollback. Your knowledge has a full audit trail.
+- **Git-native** — every change is a file you commit to git (`git commit` or `pyrite kb commit`), not a database mutation. Branch, diff, review, rollback. Your knowledge has a full audit trail. In 0.26, **Your files, exactly** means an edit changes only what you asked; hand-maintained comments, order and quoting survive. See [how Pyrite edits your files](docs/how-pyrite-edits-your-files.md).
 - **MCP server with three-tier access control** — read/write/admin tiers. Give untrusted agents read-only access. Give your own agents write access. Keep admin for yourself.
 - **Semantic + structured search** — find by meaning (vector embeddings) AND by type, tag, date range, or relationship. Both at once in hybrid mode.
 - **Plugin system with 19 extension points** — custom entry types, MCP tools, CLI commands, validators, lifecycle hooks, relationship semantics, schema migrations.
@@ -121,30 +121,26 @@ Use `pyrite mcp --tier read` for a read-only server.
 
 ## CLI
 
+These commands continue from Quick Start's `my-kb` and its two entries.
+
 ```bash
-# Search (keyword, semantic, or hybrid)
-pyrite search "immigration policy"
-pyrite search "immigration" --kb=timeline --type=event --mode=hybrid
+# Search and read the entries created above
+pyrite search "consulting" -k my-kb
+pyrite get sarah-chen -k my-kb
+pyrite backlinks sarah-chen -k my-kb
+pyrite collections list -k my-kb
 
-# Read
-pyrite get stephen-miller
-pyrite backlinks stephen-miller --kb=research
-pyrite timeline --from=2025-01-01 --to=2025-06-30
-pyrite collections list --kb=research
+# Create one more note
+pyrite create -k my-kb --type note --title "Release checklist" \
+  --body "Review the upgrade guide before updating." --tags "process"
 
-# Write
-pyrite create --kb=research --type=person --title="Jane Doe" \
-  --body="Senior policy advisor." --tags="policy,doj"
-
-# Admin
-pyrite index sync          # Incremental re-index after file edits
-pyrite index health        # Check for stale/missing entries
-pyrite kb discover         # Auto-find KBs by kb.yaml presence
-
-# Schema versioning
-pyrite schema diff --kb=research      # Show type versions and field annotations
-pyrite schema migrate --kb=research   # Migrate entries to current schema version
+# Reconcile hand edits and inspect the schema
+pyrite index sync
+pyrite index health
+pyrite schema diff -k my-kb
+pyrite schema migrate -k my-kb
 ```
+
 
 Most commands print JSON by default; `--format` (or `PYRITE_FORMAT`) picks json, yaml or rich where a command offers it. See [docs/json-contracts.md](docs/json-contracts.md), "--format defaults", for the commands that do not.
 
@@ -358,7 +354,7 @@ cd web && npm ci && npm run build && cd ..   # the web UI (optional)
 Or straight from a release tag, no clone:
 
 ```bash
-pip install "pyrite[server,cli] @ git+https://github.com/pyrite-wiki/pyrite@v0.25.8"
+pip install "pyrite[server,cli] @ git+https://github.com/pyrite-wiki/pyrite@v0.26.0"
 ```
 
 That gives you the CLI, the REST API and the MCP server, but **not the web
@@ -423,6 +419,8 @@ pyrite sw standards      # Coding conventions
 
 - [Getting Started](docs/getting-started.md) — install, create a KB, connect an AI
 - [Pyrite in 20 minutes](docs/tutorials/pyrite-in-20-minutes.md) — a hands-on first tutorial
+- [Upgrading](docs/upgrading.md) — changes to check before updating an existing install
+- [How Pyrite edits your files](docs/how-pyrite-edits-your-files.md) — the file-editing contract
 - [Configuration](docs/configuration.md) — `config.yaml` and every `PYRITE_*` environment variable
 - [JSON contracts](docs/json-contracts.md) — result and error shapes for agent integrators
 - [Plugins Directory](docs/plugins.md) — official and community plugins

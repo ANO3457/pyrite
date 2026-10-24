@@ -1,6 +1,39 @@
 """CLI output formatting utilities."""
 
 import typer
+from rich.console import Console
+from rich.text import Text
+
+
+def cli_console(*, stderr: bool = False, highlight: bool = True) -> Console:
+    """Keep CLI text, including paths, whole when output is captured or copied.
+
+    Rich renderables (tables, panels, etc.) still use the terminal width.
+    Strings retain their literal line breaks instead of being folded or cropped.
+    """
+    return Console(soft_wrap=True, stderr=stderr, highlight=highlight)
+
+
+def path_line(
+    prefix: str,
+    path: object,
+    suffix: str = "",
+    *,
+    style: str = "",
+    path_style: str = "",
+) -> Text:
+    """Style the labels while keeping every path character literal.
+
+    Use this for any path printed next to Rich markup.
+    A Text value also preserves trailing backslashes, which markup escaping
+    can duplicate or consume when combined with surrounding style tags.
+    """
+    return Text.assemble(
+        Text.from_markup(prefix),
+        Text(str(path), style=path_style),
+        Text.from_markup(suffix),
+        style=style,
+    )
 
 
 def validate_output_format(value: str) -> str:
@@ -88,8 +121,12 @@ def _record_format(ctx: typer.Context, param: typer.CallbackParam, value: str) -
     # leaf command (only this callback has it) and wraps its body; the watch
     # starts when click calls that (ADR-0046, decision 7).
     guard = ctx.meta.get(BODY_GUARD_META_KEY)
-    if guard is not None:
-        guard.watch_body_of(ctx)
+    if guard is None:
+        raise typer.BadParameter(
+            "the shared --format option requires a PyriteCLIGroup root; "
+            "invoke the main CLI instead of a standalone sub-app"
+        )
+    guard.watch_body_of(ctx)
     return value
 
 
@@ -100,7 +137,7 @@ def _record_short_format(ctx: typer.Context, value: str | None) -> str | None:
         raise _two_answers()
     value = validate_shared_format(value)
     typer.echo(
-        f"Warning: -f is deprecated and will stop meaning --format in the next release; "
+        f"Warning: -f is deprecated and will stop meaning --format in 0.27; "
         f"use --format {value} (or set PYRITE_FORMAT).",
         err=True,
     )
@@ -122,8 +159,8 @@ OUTPUT_FORMAT = typer.Option(
     help="Output format: json (default), yaml, or rich for text. PYRITE_FORMAT sets the default.",
 )
 
-#: ``-f`` meant ``--format`` on the task commands. #303: it keeps working for one
-#: release, with a warning on stderr, then goes. Declared beside OUTPUT_FORMAT on
+#: ``-f`` meant ``--format`` on the task commands. #303: it keeps working until
+#: 0.27, with a warning on stderr, then goes. Declared beside OUTPUT_FORMAT on
 #: a command that had ``-f``; hidden from help.
 LEGACY_FORMAT_SHORT = typer.Option(None, "-f", hidden=True, callback=_record_short_format)
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from ..config import (
@@ -24,10 +23,10 @@ from .context import (
     open_index_for_validation,
     require_kb,
 )
-from .output import validate_output_format
+from .output import cli_console, path_line, validate_output_format
 
 kb_app = typer.Typer(help="Knowledge base management")
-console = Console()
+console = cli_console()
 
 
 def _format_output(data: dict, fmt: str) -> str | None:
@@ -135,7 +134,10 @@ def kb_add(
                 name=kb_name, path=str(resolved), kb_type=kb_type, description=description
             )
             console.print(
-                f"[green]Added KB:[/green] {result['name']} ({result['type']}) at {result['path']}"
+                path_line(
+                    f"[green]Added KB:[/green] {result['name']} ({result['type']}) at ",
+                    result["path"],
+                )
             )
         except (PyriteError, ValueError) as e:
             _kb_error(e)
@@ -168,7 +170,9 @@ def kb_remove(
         try:
             registry.remove_kb(name)
             console.print(f"[green]Removed:[/green] {name}")
-            console.print(f"[dim]Note: Files at {kb['path']} were not deleted.[/dim]")
+            console.print(
+                path_line("Note: Files at ", kb["path"], " were not deleted.", style="dim")
+            )
         except KBProtectedError as e:
             _kb_error(e)
 
@@ -270,7 +274,8 @@ def kb_validate(
     mismatches). Results are filtered per-KB when a specific KB name is
     given.
 
-    Exit code: 0 clean, 1 if any KB has structural errors, 2 if only
+    Exit code: 0 clean, 1 if any KB has structural errors or the index is
+    corrupt (STORAGE_ERROR: the check cannot be made), 2 if only
     content-drift warnings. Suitable for CI gating — `pyrite kb validate
     && deploy` blocks on structural errors; scripts that want to gate on
     drift too can check for exit code 2.
@@ -391,9 +396,12 @@ def kb_validate(
             )
             for row in kb_res["subdirectory_mismatches"][:10]:
                 console.print(
-                    f"    • {row['id']} (type={row['type']}):"
-                    f" expected '{row['declared_subdirectory']}/',"
-                    f" found '{row['actual_path']}/'"
+                    path_line(
+                        f"    • {row['id']} (type={row['type']}): expected '",
+                        row["declared_subdirectory"],
+                        "/', found '",
+                    )
+                    + path_line("", row["actual_path"], "/'")
                 )
 
     if any_structural_errors:
@@ -432,7 +440,9 @@ def kb_create(
                 from ..utils.errors import cli_error
 
                 cli_error(str(e), error_code="VALIDATION_FAILED")
-            console.print(f"[green]Created ephemeral KB:[/green] {name} (TTL: {ttl}s) at {kb.path}")
+            console.print(
+                path_line(f"[green]Created ephemeral KB:[/green] {name} (TTL: {ttl}s) at ", kb.path)
+            )
             return
 
         if not path:
@@ -454,7 +464,7 @@ def kb_create(
                 kb_type=kb_type,
                 description=description,
             )
-            console.print(f"[green]Created KB:[/green] {name} at {resolved_path}")
+            console.print(path_line(f"[green]Created KB:[/green] {name} at ", resolved_path))
         except (PyriteError, ValueError) as e:
             _kb_error(e)
 
@@ -545,7 +555,9 @@ def kb_health(
         status = "[green]Healthy[/green]" if result["healthy"] else "[red]Unhealthy[/red]"
         console.print(f"\n[bold]{kb_name}[/bold]: {status}")
         console.print(
-            f"  Path: {result['path']} ({'exists' if result['path_exists'] else 'MISSING'})"
+            path_line(
+                "  Path: ", result["path"], f" ({'exists' if result['path_exists'] else 'MISSING'})"
+            )
         )
         console.print(f"  Files: {result['file_count']}, Indexed entries: {result['entry_count']}")
         console.print(f"  Last indexed: {result['last_indexed'] or 'never'}")
@@ -583,7 +595,7 @@ def kb_commit(
                 console.print(f"  {result['files_changed']} file(s) changed")
                 if result.get("files"):
                     for f in result["files"]:
-                        console.print(f"  [dim]{f}[/dim]")
+                        console.print(path_line("  ", f, style="dim"))
             elif result.get("error") == "No changes to commit":
                 # Nothing to do is the asked-for end state, not a failure.
                 console.print("[yellow]No commit:[/yellow] No changes to commit")
