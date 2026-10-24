@@ -9,6 +9,8 @@ block everyone's commits. So: nothing slow at the commit stage, the full
 suite at pre-push, CI as the authority.
 """
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -530,6 +532,105 @@ class TestSessionSetupScript:
         text = (REPO / "scripts" / "new-worktree.sh").read_text()
         assert "scripts/setup-checkout.sh" in text
         assert "pip install" not in text, "installs belong in setup-checkout.sh"
+
+
+class TestNewWorktreeRemoteCases:
+    """Exercise real Bash/Git; only package/hook installation is a cheap seam."""
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout.strip()
+
+    @pytest.fixture
+    def checkout(self, tmp_path, monkeypatch):
+        if shutil.which("bash") is None:
+            pytest.skip("real Bash is needed to exercise new-worktree.sh")
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-config"))
+        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+        monkeypatch.setenv("LC_ALL", "C")
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "dev")
+        self._git(repo, "config", "user.name", "Test Contributor")
+        self._git(repo, "config", "user.email", "test@example.invalid")
+        scripts = repo / "scripts"
+        scripts.mkdir()
+        shutil.copy2(REPO / "scripts" / "new-worktree.sh", scripts / "new-worktree.sh")
+        setup = scripts / "setup-checkout.sh"
+        setup.write_text(
+            '#!/usr/bin/env bash\nset -eu\nprintf "%s\\n" "$1" > "$1/setup-called"\n',
+            encoding="utf-8",
+        )
+        setup.chmod(0o755)
+        hook = repo / ".venv" / "bin" / "pre-commit"
+        hook.parent.mkdir(parents=True)
+        hook.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$1" > hooks-called\n', encoding="utf-8"
+        )
+        hook.chmod(0o755)
+        (repo / "README.md").write_text("tagged base\n", encoding="utf-8")
+        self._git(repo, "add", "scripts", "README.md")
+        self._git(repo, "commit", "-qm", "base")
+        self._git(repo, "tag", "v-test")
+        (repo / "README.md").write_text("newer branch head\n", encoding="utf-8")
+        self._git(repo, "add", "README.md")
+        self._git(repo, "commit", "-qm", "newer head")
+        return repo
+
+    def _run(self, repo, *args):
+        return subprocess.run(
+            ["bash", str(repo / "scripts" / "new-worktree.sh"), "fix/check", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_missing_default_origin_is_actionable(self, checkout):
+        out = self._run(checkout)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert "remote 'origin' is missing" in out.stderr
+        assert not (checkout.parent / "pyrite-wt").exists()
+
+    def test_unreachable_origin_preserves_the_git_error(self, checkout):
+        self._git(checkout, "remote", "add", "origin", str(checkout.parent / "missing-remote"))
+        out = self._run(checkout)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert "cannot fetch 'dev' from remote 'origin'" in out.stderr
+        assert "does not appear to be a git repository" in out.stderr
+        assert not (checkout.parent / "pyrite-wt").exists()
+
+    def test_origin_without_dev_names_the_project_remote(self, checkout):
+        remote = checkout.parent / "fork.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-q", "-b", "main", str(remote)], check=True, timeout=30
+        )
+        self._git(checkout, "remote", "add", "origin", str(remote))
+        out = self._run(checkout)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert "couldn't find remote ref dev" in out.stderr
+        assert "git remote add upstream https://github.com/pyrite-wiki/pyrite.git" in out.stderr
+        assert "upstream/dev" in out.stderr
+
+    @pytest.mark.parametrize("start", ["dev", "v-test", "sha"])
+    def test_explicit_local_start_needs_no_origin(self, checkout, start):
+        if start == "sha":
+            start = self._git(checkout, "rev-parse", "v-test")
+        expected = self._git(checkout, "rev-parse", start)
+        out = self._run(checkout, start)
+        assert out.returncode == 0, out.stdout + out.stderr
+        worktree = checkout.parent / "pyrite-wt" / "fix-check"
+        assert self._git(worktree, "rev-parse", "HEAD") == expected
+        assert self._git(worktree, "branch", "--show-current") == "fix/check"
+        assert (worktree / "setup-called").read_text().strip() == str(worktree)
+        assert (checkout / "hooks-called").read_text().strip() == "install"
+        assert str(worktree) in self._git(checkout, "worktree", "list", "--porcelain")
 
 
 class TestCloudSessionSetup:
