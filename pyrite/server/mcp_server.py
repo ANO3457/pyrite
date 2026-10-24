@@ -904,11 +904,15 @@ class PyriteMCPServer:
         """
         limit = args.get("limit", 50)
         named = args.get("kb_names")
-        if named is not None and not named:
+        if "kb_names" in args and (
+            not isinstance(named, list)
+            or not named
+            or any(not isinstance(value, str) or not value.strip() for value in named)
+        ):
             return _refusal(
                 ValidationError(
-                    "kb_names: [] names no KB. Omit kb_names to read every KB "
-                    'you can read; an empty list is not "all".'
+                    "kb_names must be a non-empty list of non-blank strings. "
+                    "Omit kb_names to read every KB you can read."
                 )
             )
         exclude = args.get("exclude_status")

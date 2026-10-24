@@ -1140,14 +1140,14 @@
             "type": "string"
           },
           "exclude_status": {
-            "description": "Drop entries whose status matches any of these, the effective status; an entry with no status is kept.",
+            "description": "Drop entries whose status matches any of these, the effective status; an entry with no status is kept. An empty list is refused; omit this argument to keep every status.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "kb_names": {
-            "description": "Limit the timeline to these KBs. Omit for every KB the caller can read; an empty list is refused.",
+            "description": "Limit the timeline to these KBs. Omit for every KB the caller can read; an empty list or a blank name is refused.",
             "items": {
               "type": "string"
             },
@@ -2340,14 +2340,14 @@
             "type": "string"
           },
           "exclude_status": {
-            "description": "Drop entries whose status matches any of these, the effective status; an entry with no status is kept.",
+            "description": "Drop entries whose status matches any of these, the effective status; an entry with no status is kept. An empty list is refused; omit this argument to keep every status.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "kb_names": {
-            "description": "Limit the timeline to these KBs. Omit for every KB the caller can read; an empty list is refused.",
+            "description": "Limit the timeline to these KBs. Omit for every KB the caller can read; an empty list or a blank name is refused.",
             "items": {
               "type": "string"
             },
@@ -3468,14 +3468,14 @@
             "type": "string"
           },
           "exclude_status": {
-            "description": "Drop entries whose status matches any of these, the effective status; an entry with no status is kept.",
+            "description": "Drop entries whose status matches any of these, the effective status; an entry with no status is kept. An empty list is refused; omit this argument to keep every status.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "kb_names": {
-            "description": "Limit the timeline to these KBs. Omit for every KB the caller can read; an empty list is refused.",
+            "description": "Limit the timeline to these KBs. Omit for every KB the caller can read; an empty list or a blank name is refused.",
             "items": {
               "type": "string"
             },

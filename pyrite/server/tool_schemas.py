@@ -171,7 +171,7 @@ READ_TOOLS = {
                     "items": {"type": "string"},
                     "description": (
                         "Limit the timeline to these KBs. Omit for every KB the caller "
-                        "can read; an empty list is refused."
+                        "can read; an empty list or a blank name is refused."
                     ),
                 },
                 "status": {
@@ -187,7 +187,8 @@ READ_TOOLS = {
                     "items": {"type": "string"},
                     "description": (
                         "Drop entries whose status matches any of these, the effective "
-                        "status; an entry with no status is kept."
+                        "status; an entry with no status is kept. An empty list is "
+                        "refused; omit this argument to keep every status."
                     ),
                 },
                 "limit": {

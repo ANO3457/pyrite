@@ -161,6 +161,12 @@ def test_an_empty_kb_names_is_a_validation_error(server):
     assert out["error_code"] == "VALIDATION_FAILED", out
 
 
+@pytest.mark.parametrize("names", [CANON, {"name": CANON}, [7], [""], ["   "], None, [CANON, 7]])
+def test_kb_names_requires_a_list_of_nonblank_strings(server, names):
+    out = _dispatch(server, {"kb_names": names})
+    assert out["error_code"] == "VALIDATION_FAILED", out
+
+
 def test_a_kb_the_caller_cannot_read_is_refused_before_the_handler(server):
     """The dispatcher refuses a named unreadable KB like an unknown one,
     so a private KB's existence is not revealed (P-R4, #952)."""
@@ -236,8 +242,8 @@ def test_mixed_readable_and_unreadable_kbs_are_refused(server):
     assert out["error_code"] == "KB_NOT_FOUND", out
 
 
-def _sdk_call(server, arguments):
-    sdk = server.build_sdk_server()
+def _sdk_call(server, arguments, *, readable_kbs=None):
+    sdk = server.build_sdk_server(readable_kbs=readable_kbs)
     request = CallToolRequest(
         method="tools/call",
         params=CallToolRequestParams(name="kb_timeline", arguments={**BASE_ARGS, **arguments}),
@@ -271,3 +277,30 @@ def test_sdk_empty_filter_lists_are_refused_consistently(server, argument):
     result = _sdk_call(server, {argument: []})
     out = json.loads(result.content[0].text)
     assert out["error_code"] == "VALIDATION_FAILED", out
+
+
+@pytest.mark.control(reason="control: an empty scalar status intentionally means no status filter")
+def test_empty_scalar_status_preserves_unfiltered_rows(server):
+    default = _timeline(server)
+    empty = _timeline(server, status="")
+    assert default["count"] == empty["count"] == 21
+    assert [row["id"] for row in empty["events"]] == [row["id"] for row in default["events"]]
+
+
+@pytest.mark.control(
+    reason="control: the real SDK call handler already limits rows to readable KBs"
+)
+@pytest.mark.parametrize(("readable", "count"), [({CANON}, 11), (set(), 0)])
+def test_scoped_sdk_without_kb_names_reads_only_its_scope(server, readable, count):
+    result = _sdk_call(server, {}, readable_kbs=readable)
+    assert not result.isError
+    out = json.loads(result.content[0].text)
+    assert out["count"] == count
+    assert {row["kb_name"] for row in out["events"]} <= readable
+
+
+@pytest.mark.control(reason="control: the scoped SDK already refuses an explicitly unreadable KB")
+def test_scoped_sdk_refuses_mixed_readable_and_unreadable_names(server):
+    result = _sdk_call(server, {"kb_names": [CANON, STAGING]}, readable_kbs={CANON})
+    out = json.loads(result.content[0].text)
+    assert out["error_code"] == "KB_NOT_FOUND", out
