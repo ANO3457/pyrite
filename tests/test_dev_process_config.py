@@ -1206,6 +1206,25 @@ class TestRunningTheTestsDoc:
         assert (REPO / "scripts" / "run_tutorial.sh").exists()
         assert "--dist loadfile" in section and (REPO / "tests" / "e2e").is_dir()
 
+    def test_the_golden_regeneration_is_documented(self, section):
+        assert (
+            "PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/"
+            in section
+        )
+        assert section.count("### Regenerating goldens") == 1
+        regeneration = section.split("### Regenerating goldens", 1)[1].split("\n##", 1)[0]
+        assert "serially without `-n`" in regeneration
+        assert "refuses" in regeneration and "xdist" in regeneration
+        # The subset commands, their explanation and the CLI-rendering contract
+        # must stay together, outside this separate subsection (#1242 review).
+        for paragraph in (
+            "`test-affected` diffs your working tree",
+            "**CLI output is rendered the same everywhere.**",
+        ):
+            assert paragraph in section
+            assert paragraph not in regeneration
+        assert (REPO / "tests" / "characterization").is_dir()
+
 
 class TestDevPushReusesTheMergeQueuesPass:
     """Each commit is tested once (maintainer, 2026-09-25).
