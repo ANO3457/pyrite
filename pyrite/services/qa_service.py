@@ -9,8 +9,10 @@ Orchestrates QA operations by delegating to focused services:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,19 @@ logger = logging.getLogger(__name__)
 #: stands behind (#795). `qa_assessment`'s schema mentions a tier 3 that
 #: nothing implements.
 QA_TIERS = (1, 2)
+
+
+def require_qa_tier(tier: int, *, llm_available: Callable[[], bool]) -> None:
+    """Validate before opening an index; only tier2 consults model availability."""
+    if isinstance(tier, bool) or tier not in QA_TIERS:
+        raise InvalidQATierError(
+            f"QA tier {tier!r} does not exist; choose one of {', '.join(str(t) for t in QA_TIERS)}"
+        )
+    if tier >= 2 and not llm_available():
+        raise AINotConfiguredError(
+            "QA tier 2 runs the model-judged rubric and no model is configured; "
+            "nothing was assessed"
+        )
 
 
 class QAService:
@@ -176,6 +191,7 @@ class QAService:
         self._check_invalid_dates(issues, kb_name)
         self._check_importance_range(issues, kb_name)
         self._check_broken_links(issues, kb_name, readable_kbs=readable_kbs)
+        self._check_task_references(issues, kb_name, readable_kbs=readable_kbs)
         self._check_orphans(issues, kb_name, readable_kbs=readable_kbs)
 
         # Rubric evaluation pass (index only)
@@ -196,6 +212,7 @@ class QAService:
 
             # Per-entry schema pass (only if kb.yaml exists): the kb.yaml itself,
             # then each entry, its typed attributes read from its file
+            self._check_rubric_action_config(issues, kb_name)
             self._check_schema_retypes_core_fields(issues, kb_name)
             self._check_schema_all(issues, kb_name, sources)
 
@@ -408,16 +425,7 @@ class QAService:
         Called before anything is checked or written, so a refused tier
         leaves no record (#795, maintainer decision 2026-10-15).
         """
-        if isinstance(tier, bool) or tier not in QA_TIERS:
-            raise InvalidQATierError(
-                f"QA tier {tier!r} does not exist; choose one of "
-                f"{', '.join(str(t) for t in QA_TIERS)}"
-            )
-        if tier >= 2 and not self.llm_available:
-            raise AINotConfiguredError(
-                "QA tier 2 runs the model-judged rubric and no model is configured; "
-                "nothing was assessed"
-            )
+        require_qa_tier(tier, llm_available=lambda: self.llm_available)
 
     # =========================================================================
     # Assessment API
@@ -928,6 +936,122 @@ class QAService:
                     ),
                 }
             )
+
+    def _check_task_references(
+        self,
+        issues: list[dict[str, Any]],
+        kb_name: str,
+        *,
+        readable_kbs: set[str] | None,
+    ) -> None:
+        """Check a task's ``dependencies`` and deliverable references (#935).
+
+        The deliverable is ``produces`` or ``deliverable`` in the task's
+        fields, a string or a list. A reference is a bare id in the task's KB
+        or ``kb:id``, resolved like a wikilink: the readable KB with that full
+        name, then the readable KB with that shortname (P-R5). A reference
+        that does not resolve is an ``error``. A deliverable that resolves to
+        an entry which is not itself a task, while the task is still open, is
+        a ``warning``: the work may be done. A task that names itself as its
+        deliverable is ignored.
+        """
+        rows = self.db.execute_sql(
+            "SELECT id, status, metadata FROM entry "
+            "WHERE kb_name = :kb_name AND entry_type = 'task'",
+            {"kb_name": kb_name},
+        )
+
+        # (task id, field, raw reference, target KB, target id, resolvable)
+        refs: list[tuple[str, str, str, str, str, bool]] = []
+        for row in rows:
+            metadata = row["metadata"] or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (TypeError, ValueError):
+                    metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            status = row["status"] or metadata.get("status") or "open"
+            if status != "open":
+                continue
+            for field in ("dependencies", "produces", "deliverable"):
+                value = metadata.get(field)
+                values = value if isinstance(value, list) else [value]
+                for raw in values:
+                    if not isinstance(raw, str) or not raw.strip():
+                        continue
+                    raw = raw.strip()
+                    prefix, sep, rest = raw.partition(":")
+                    if sep:
+                        target = self.config.readable_kb_named(prefix, readable_kbs=readable_kbs)
+                        if target is None:
+                            target_kb, target_id, resolvable = prefix, rest, False
+                        else:
+                            target_kb, target_id, resolvable = target.name, rest, True
+                    else:
+                        target_kb, target_id, resolvable = kb_name, raw, True
+                    if (
+                        field in ("produces", "deliverable")
+                        and target_kb == kb_name
+                        and target_id == row["id"]
+                    ):
+                        continue
+                    refs.append((row["id"], field, raw, target_kb, target_id, resolvable))
+
+        if not refs:
+            return
+
+        # One lookup per target KB, not one per reference.
+        wanted: dict[str, set[str]] = {}
+        for _, _, _, target_kb, target_id, resolvable in refs:
+            if resolvable:
+                wanted.setdefault(target_kb, set()).add(target_id)
+        existing: dict[tuple[str, str], str] = {}
+        for target_kb, ids in wanted.items():
+            params: dict[str, Any] = {"kb": target_kb}
+            placeholders = []
+            for index, target_id in enumerate(sorted(ids)):
+                key = f"id_{index}"
+                params[key] = target_id
+                placeholders.append(f":{key}")
+            for row in self.db.execute_sql(
+                "SELECT id, entry_type FROM entry "
+                f"WHERE kb_name = :kb AND id IN ({', '.join(placeholders)})",
+                params,
+            ):
+                existing[(target_kb, row["id"])] = row["entry_type"]
+
+        for task_id, field, raw, target_kb, target_id, resolvable in refs:
+            entry_type = existing.get((target_kb, target_id)) if resolvable else None
+            if entry_type is None:
+                issues.append(
+                    {
+                        "entry_id": task_id,
+                        "kb_name": kb_name,
+                        "rule": "task_references",
+                        "severity": "error",
+                        "field": field,
+                        "message": (
+                            f"Task '{task_id}' is open, but its {field} '{raw}' "
+                            "resolves to no entry"
+                        ),
+                    }
+                )
+            elif field in ("produces", "deliverable") and entry_type != "task":
+                issues.append(
+                    {
+                        "entry_id": task_id,
+                        "kb_name": kb_name,
+                        "rule": "task_references",
+                        "severity": "warning",
+                        "field": field,
+                        "message": (
+                            f"Task '{task_id}' is open, but its {field} '{raw}' "
+                            f"already exists ({entry_type}); the work may be done"
+                        ),
+                    }
+                )
 
     def _check_orphans(
         self,
@@ -1612,9 +1736,54 @@ class QAService:
             self._check_rubric_evaluation(row, findings)
             existing = by_entry.setdefault((row["id"], row["kb_name"]), [])
             for finding in findings:
-                if finding not in existing:
+                comparable = {k: v for k, v in finding.items() if k != "rubric_action"}
+                if not any(
+                    comparable == {k: v for k, v in old.items() if k != "rubric_action"}
+                    for old in existing
+                ):
                     issues.append(finding)
                     existing.append(finding)
+
+    def _check_rubric_action_config(self, issues: list[dict[str, Any]], kb_name: str) -> None:
+        config = self.config.get_kb(kb_name)
+        schema = config.kb_schema if config else None
+        if schema is None:
+            return
+        settings = [("rubric_action", schema.rubric_action)]
+        rubrics = [("evaluation_rubric", schema.evaluation_rubric)]
+        rubrics.extend(
+            (f"types.{name}.evaluation_rubric", kind.evaluation_rubric)
+            for name, kind in schema.types.items()
+        )
+        for path, items in rubrics:
+            for index, item in enumerate(items):
+                if isinstance(item, dict) and "action" in item:
+                    settings.append((f"{path}[{index}].action", item["action"]))
+        for key, value in settings:
+            if not isinstance(value, str) or value not in ("warn", "fail"):
+                issues.append(
+                    {
+                        "entry_id": "",
+                        "kb_name": kb_name,
+                        "rule": "config_error",
+                        "severity": "error",
+                        "field": key,
+                        "message": f"kb.yaml {key} must be warn or fail; got {value!r}",
+                    }
+                )
+
+    def _get_rubric_action(self, kb_name: str, item: dict[str, Any] | None = None) -> str:
+        """Only a named item action overrides the KB's rubric_action (#1166)."""
+        if item is not None and "action" in item:
+            action = item["action"]
+            return action if isinstance(action, str) and action in ("warn", "fail") else "fail"
+        kb_config = self.config.get_kb(kb_name)
+        try:
+            schema = kb_config.kb_schema if kb_config else None
+        except OSError:
+            return "fail"  # The file checks report unreadability.
+        action = schema.rubric_action if schema else "fail"
+        return action if isinstance(action, str) and action in ("warn", "fail") else "fail"
 
     def _check_rubric_evaluation(self, entry: dict[str, Any], issues: list[dict[str, Any]]) -> None:
         """Run rubric checks on a single entry."""
@@ -1680,6 +1849,7 @@ class QAService:
             try:
                 issue = fn(enriched, kb_schema, params)
                 if issue is not None:
+                    issue["rubric_action"] = self._get_rubric_action(kb_name, item)
                     issues.append(issue)
             except Exception as exc:
                 # The item was not checked: report it, like an unknown checker

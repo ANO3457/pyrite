@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..exceptions import StorageError
-from .search_service import storage_error_from
+from ..storage.errors import storage_error_from
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,18 @@ class URLChecker:
         try:
             req = urllib.request.Request(url, method="HEAD")
             req.add_header("User-Agent", "Pyrite-QA/1.0 (URL liveness check)")
-            with self._urlopen(req) as resp:
+            try:
+                response = self._urlopen(req)
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                if exc.code not in (405, 501):
+                    raise
+                # A server may serve a live page without implementing HEAD.
+                # GET the headers instead, then close without reading its body.
+                req = urllib.request.Request(url, method="GET")
+                req.add_header("User-Agent", "Pyrite-QA/1.0 (URL liveness check)")
+                response = self._urlopen(req)
+            with response as resp:
                 return URLCheckResult(
                     url=url,
                     status_code=resp.status,
@@ -217,7 +228,26 @@ class URLChecker:
         if not self.cache_path or not self.cache_path.exists():
             return {}
         try:
-            data = json.loads(self.cache_path.read_text())
-            return {url: URLCheckResult.from_dict(d) for url, d in data.items()}
-        except (json.JSONDecodeError, KeyError):
+            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeError, OSError) as exc:
+            logger.warning("Ignoring unreadable URL cache: %s", exc)
             return {}
+        if not isinstance(data, dict):
+            logger.warning("Ignoring URL cache: expected an object")
+            return {}
+        cached = {}
+        for url, record in data.items():
+            if (
+                not isinstance(record, dict)
+                or record.get("url") != url
+                or type(record.get("status_code", 0)) is not int
+                or type(record.get("ok", False)) is not bool
+                or any(
+                    not isinstance(record.get(field, ""), str)
+                    for field in ("error", "checked_at", "redirect_url")
+                )
+            ):
+                logger.warning("Ignoring malformed URL cache record")
+                continue
+            cached[url] = URLCheckResult.from_dict(record)
+        return cached

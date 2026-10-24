@@ -30,9 +30,11 @@ def declared_over_bag(entry: Mapping[str, Any], keys: Iterable[str]) -> dict[str
     declare (#1025, ADR-0051 proposed amendment 2026-10-20); an index row
     carries such a field in its bag and, lifted, at its own name. A reader
     that wants a collection's ``query`` or a task's ``evidence`` from either
-    shape takes the dict's own key first and the bag second.
+    shape takes the dict's own key first and the bag second. The returned
+    top-level dictionary is a projection: adding declared keys must not
+    write them into the entry's undeclared metadata bag.
     """
-    out = parse_metadata(entry.get("metadata"))
+    out = dict(parse_metadata(entry.get("metadata")))
     for key in keys:
         value = entry.get(key)
         if value is not None and value != "":

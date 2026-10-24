@@ -314,6 +314,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_context_for_item,
             }
             tools["sw_pull_next"] = {
@@ -418,6 +419,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["epic_id", "kb_name"],
                 },
+                "locates_entry": {"id_args": ["epic_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_epic_detail,
             }
             tools["sw_check_ready"] = {
@@ -430,6 +432,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_check_ready,
             }
             tools["sw_refine"] = {
@@ -476,6 +479,10 @@ class SoftwareKBPlugin:
                     },
                     "required": ["kb_name"],
                 },
+                "locates_entry": {
+                    "id_args": ["item_ids", "item_id", "after", "before"],
+                    "entry_type": "backlog_item",
+                },
                 "handler": self._mcp_prioritize,
             }
             tools["sw_create_adr"] = {
@@ -514,6 +521,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name", "assignee"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_claim,
             }
             tools["sw_review"] = {
@@ -533,6 +541,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name", "outcome", "reviewer"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_review,
             }
             tools["sw_submit"] = {
@@ -545,6 +554,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_submit,
             }
             tools["sw_create_backlog_item"] = {
@@ -595,6 +605,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name", "to_status"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_transition,
             }
             tools["sw_log"] = {
@@ -626,6 +637,7 @@ class SoftwareKBPlugin:
                     },
                     "required": ["item_id", "kb_name", "summary"],
                 },
+                "locates_entry": {"id_args": ["item_id"], "entry_type": "backlog_item"},
                 "handler": self._mcp_log,
             }
 
@@ -1740,60 +1752,44 @@ class SoftwareKBPlugin:
     def _mcp_create_adr(
         self, args: dict[str, Any], *, readable_kbs: set[str] | None = None
     ) -> dict[str, Any]:
-        """Create a new ADR with auto-numbering."""
-        import json
+        """Create a new ADR with auto-numbering from files (#1082, #1175)."""
+        from .adr_listing import next_adr_number, resolve_adr_kb
 
-        db, should_close = self._get_db()
+        config = self._get_config()
         kb_name = args.get("kb_name")
-
-        try:
-            # Find next ADR number
-            query = "SELECT * FROM entry WHERE entry_type = 'adr'"
-            clause, scope_params = kb_scope_clause("kb_name", kb_name, readable_kbs)
-            query += clause
-            params = list(scope_params)
-            rows = db._raw_conn.execute(query, params).fetchall()
-
-            max_num = 0
-            for row in rows:
-                meta = {}
-                if row["metadata"]:
-                    try:
-                        meta = json.loads(row["metadata"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                num = meta.get("adr_number", 0)
-                if isinstance(num, int) and num > max_num:
-                    max_num = num
-
-            next_num = max_num + 1
-            title = args["title"]
-            slug = generate_entry_id(title)
-            status = args.get("status", "proposed")
-
-            # Build structured body
-            context = args.get("context", "")
-            decision = args.get("decision", "")
-            consequences = args.get("consequences", "")
-            body_parts = []
-            body_parts.append(f"## Context\n\n{context or 'TODO'}")
-            body_parts.append(f"## Decision\n\n{decision or 'TODO'}")
-            body_parts.append(f"## Consequences\n\n{consequences or 'TODO'}")
-            body = "\n\n".join(body_parts)
-
+        kb_conf = resolve_adr_kb(config, kb_name, readable_kbs=readable_kbs)
+        if kb_conf is None:
             return {
-                "created": True,
-                "adr_number": next_num,
-                "title": title,
-                "status": status,
-                "filename": f"adrs/{next_num:04d}-{slug}.md",
-                "body": body,
-                "deciders": args.get("deciders", []),
-                "note": "Create the markdown file with this frontmatter and body to complete.",
+                "created": False,
+                "error": "No KB resolved for the ADR (pass kb_name).",
+                "error_code": "KB_NOT_FOUND" if kb_name else "VALIDATION_FAILED",
             }
-        finally:
-            if should_close:
-                db.close()
+
+        next_num = next_adr_number(kb_conf)
+        title = args["title"]
+        slug = generate_entry_id(title)
+        status = args.get("status", "proposed")
+
+        # Build structured body
+        context = args.get("context", "")
+        decision = args.get("decision", "")
+        consequences = args.get("consequences", "")
+        body_parts = []
+        body_parts.append(f"## Context\n\n{context or 'TODO'}")
+        body_parts.append(f"## Decision\n\n{decision or 'TODO'}")
+        body_parts.append(f"## Consequences\n\n{consequences or 'TODO'}")
+        body = "\n\n".join(body_parts)
+
+        return {
+            "created": True,
+            "adr_number": next_num,
+            "title": title,
+            "status": status,
+            "filename": f"adrs/{next_num:04d}-{slug}.md",
+            "body": body,
+            "deciders": args.get("deciders", []),
+            "note": "Create the markdown file with this frontmatter and body to complete.",
+        }
 
     def _mcp_review_queue(
         self, args: dict[str, Any], *, readable_kbs: set[str] | None = None
@@ -2336,6 +2332,63 @@ class SoftwareKBPlugin:
             if should_close:
                 db.close()
 
+    @staticmethod
+    def _context_buckets(
+        db,
+        item_id: str,
+        kb_name: str,
+        dep_status: dict[str, Any],
+        *,
+        readable_kbs: set[str] | None,
+    ) -> dict[str, list]:
+        """Group context for both the full bundle and pull-next's preview.
+
+        Keep both link directions and duplicate links, excluding the ids
+        already classified as dependencies by the existing dependency rules.
+        """
+        outlinks = db.get_outlinks(item_id, kb_name, readable_kbs=readable_kbs)
+        backlinks = db.get_backlinks(item_id, kb_name, readable_kbs=readable_kbs)
+        dep_link_ids = {d["id"] for d in dep_status["blocked_by"]} | {
+            d["id"] for d in dep_status["blocks"]
+        }
+
+        # Categorize by entry_type
+        buckets: dict[str, list] = {
+            "adrs": [],
+            "components": [],
+            "validations": [],
+            "conventions": [],
+            "milestones": [],
+            "work_logs": [],
+            "related": [],
+        }
+        type_to_bucket = {
+            "adr": "adrs",
+            "component": "components",
+            "programmatic_validation": "validations",
+            "development_convention": "conventions",
+            "milestone": "milestones",
+            "work_log": "work_logs",
+        }
+
+        for link in outlinks + backlinks:
+            # Skip dependency links — they go in the dependencies bucket
+            if link.get("id", "") in dep_link_ids:
+                continue
+            entry_type = link.get("entry_type", "")
+            bucket = type_to_bucket.get(entry_type, "related")
+            body = link.get("body", "") or ""
+            buckets[bucket].append(
+                {
+                    "id": link.get("id", ""),
+                    "title": link.get("title", ""),
+                    "entry_type": entry_type,
+                    "relation": link.get("relation", ""),
+                    "body_preview": body[:200] if body else "",
+                }
+            )
+        return buckets
+
     def _mcp_context_for_item(
         self, args: dict[str, Any], *, readable_kbs: set[str] | None = None
     ) -> dict[str, Any]:
@@ -2376,53 +2429,12 @@ class SoftwareKBPlugin:
                 "body": entry.get("body", ""),
             }
 
-            # Get linked entries (both directions)
-            outlinks = db.get_outlinks(item_id, kb_name, readable_kbs=readable_kbs)
-            backlinks = db.get_backlinks(item_id, kb_name, readable_kbs=readable_kbs)
-
-            # Build dependency info from blocks/blocked_by links
             dep_status = self._get_dependency_status(
                 db, item_id, kb_name, readable_kbs=readable_kbs
             )
-            dep_link_ids = {d["id"] for d in dep_status["blocked_by"]} | {
-                d["id"] for d in dep_status["blocks"]
-            }
-
-            # Categorize by entry_type
-            buckets: dict[str, list] = {
-                "adrs": [],
-                "components": [],
-                "validations": [],
-                "conventions": [],
-                "milestones": [],
-                "work_logs": [],
-                "related": [],
-            }
-            type_to_bucket = {
-                "adr": "adrs",
-                "component": "components",
-                "programmatic_validation": "validations",
-                "development_convention": "conventions",
-                "milestone": "milestones",
-                "work_log": "work_logs",
-            }
-
-            for link in outlinks + backlinks:
-                # Skip dependency links — they go in the dependencies bucket
-                if link.get("id", "") in dep_link_ids:
-                    continue
-                entry_type = link.get("entry_type", "")
-                bucket = type_to_bucket.get(entry_type, "related")
-                body = link.get("body", "") or ""
-                buckets[bucket].append(
-                    {
-                        "id": link.get("id", ""),
-                        "title": link.get("title", ""),
-                        "entry_type": entry_type,
-                        "relation": link.get("relation", ""),
-                        "body_preview": body[:200] if body else "",
-                    }
-                )
+            buckets = self._context_buckets(
+                db, item_id, kb_name, dep_status, readable_kbs=readable_kbs
+            )
 
             dependencies = {
                 "blocked_by": dep_status["blocked_by"],
@@ -2576,6 +2588,7 @@ class SoftwareKBPlugin:
                     )
                 elif top is None:
                     top = candidate
+                    top_dependencies = dep
 
             if top is None:
                 return {
@@ -2585,12 +2598,8 @@ class SoftwareKBPlugin:
                     "wip_status": wip_status,
                 }
 
-            # Get context preview counts
-            outlinks = db.get_outlinks(top["id"], kb_name or "", readable_kbs=readable_kbs)
-            adr_count = sum(1 for l in outlinks if l.get("entry_type") == "adr")
-            component_count = sum(1 for l in outlinks if l.get("entry_type") == "component")
-            validation_count = sum(
-                1 for l in outlinks if l.get("entry_type") == "programmatic_validation"
+            buckets = self._context_buckets(
+                db, top["id"], kb_name or "", top_dependencies, readable_kbs=readable_kbs
             )
 
             result = {
@@ -2602,9 +2611,9 @@ class SoftwareKBPlugin:
                     "effort": top["effort"],
                 },
                 "context_preview": {
-                    "adr_count": adr_count,
-                    "component_count": component_count,
-                    "validation_count": validation_count,
+                    "adr_count": len(buckets["adrs"]),
+                    "component_count": len(buckets["components"]),
+                    "validation_count": len(buckets["validations"]),
                 },
                 "wip_status": wip_status,
             }

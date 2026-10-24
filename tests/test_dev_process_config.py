@@ -9,6 +9,8 @@ block everyone's commits. So: nothing slow at the commit stage, the full
 suite at pre-push, CI as the authority.
 """
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -532,6 +534,105 @@ class TestSessionSetupScript:
         assert "pip install" not in text, "installs belong in setup-checkout.sh"
 
 
+class TestNewWorktreeRemoteCases:
+    """Exercise real Bash/Git; only package/hook installation is a cheap seam."""
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        ).stdout.strip()
+
+    @pytest.fixture
+    def checkout(self, tmp_path, monkeypatch):
+        if shutil.which("bash") is None:
+            pytest.skip("real Bash is needed to exercise new-worktree.sh")
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-config"))
+        monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+        monkeypatch.setenv("LC_ALL", "C")
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+        self._git(repo, "init", "-q", "-b", "dev")
+        self._git(repo, "config", "user.name", "Test Contributor")
+        self._git(repo, "config", "user.email", "test@example.invalid")
+        scripts = repo / "scripts"
+        scripts.mkdir()
+        shutil.copy2(REPO / "scripts" / "new-worktree.sh", scripts / "new-worktree.sh")
+        setup = scripts / "setup-checkout.sh"
+        setup.write_text(
+            '#!/usr/bin/env bash\nset -eu\nprintf "%s\\n" "$1" > "$1/setup-called"\n',
+            encoding="utf-8",
+        )
+        setup.chmod(0o755)
+        hook = repo / ".venv" / "bin" / "pre-commit"
+        hook.parent.mkdir(parents=True)
+        hook.write_text(
+            '#!/usr/bin/env bash\nprintf "%s\\n" "$1" > hooks-called\n', encoding="utf-8"
+        )
+        hook.chmod(0o755)
+        (repo / "README.md").write_text("tagged base\n", encoding="utf-8")
+        self._git(repo, "add", "scripts", "README.md")
+        self._git(repo, "commit", "-qm", "base")
+        self._git(repo, "tag", "v-test")
+        (repo / "README.md").write_text("newer branch head\n", encoding="utf-8")
+        self._git(repo, "add", "README.md")
+        self._git(repo, "commit", "-qm", "newer head")
+        return repo
+
+    def _run(self, repo, *args):
+        return subprocess.run(
+            ["bash", str(repo / "scripts" / "new-worktree.sh"), "fix/check", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_missing_default_origin_is_actionable(self, checkout):
+        out = self._run(checkout)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert "remote 'origin' is missing" in out.stderr
+        assert not (checkout.parent / "pyrite-wt").exists()
+
+    def test_unreachable_origin_preserves_the_git_error(self, checkout):
+        self._git(checkout, "remote", "add", "origin", str(checkout.parent / "missing-remote"))
+        out = self._run(checkout)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert "cannot fetch 'dev' from remote 'origin'" in out.stderr
+        assert "does not appear to be a git repository" in out.stderr
+        assert not (checkout.parent / "pyrite-wt").exists()
+
+    def test_origin_without_dev_names_the_project_remote(self, checkout):
+        remote = checkout.parent / "fork.git"
+        subprocess.run(
+            ["git", "init", "--bare", "-q", "-b", "main", str(remote)], check=True, timeout=30
+        )
+        self._git(checkout, "remote", "add", "origin", str(remote))
+        out = self._run(checkout)
+        assert out.returncode == 1, out.stdout + out.stderr
+        assert "couldn't find remote ref dev" in out.stderr
+        assert "git remote add upstream https://github.com/pyrite-wiki/pyrite.git" in out.stderr
+        assert "upstream/dev" in out.stderr
+
+    @pytest.mark.parametrize("start", ["dev", "v-test", "sha"])
+    def test_explicit_local_start_needs_no_origin(self, checkout, start):
+        if start == "sha":
+            start = self._git(checkout, "rev-parse", "v-test")
+        expected = self._git(checkout, "rev-parse", start)
+        out = self._run(checkout, start)
+        assert out.returncode == 0, out.stdout + out.stderr
+        worktree = checkout.parent / "pyrite-wt" / "fix-check"
+        assert self._git(worktree, "rev-parse", "HEAD") == expected
+        assert self._git(worktree, "branch", "--show-current") == "fix/check"
+        assert (worktree / "setup-called").read_text().strip() == str(worktree)
+        assert (checkout / "hooks-called").read_text().strip() == "install"
+        assert str(worktree) in self._git(checkout, "worktree", "list", "--porcelain")
+
+
 class TestCloudSessionSetup:
     """Claude Code on the web: a cloud session sets itself up from the repo.
 
@@ -779,7 +880,13 @@ class TestCloudEnvironment:
 
         repo = tmp_path / "checkout"
         (repo / "scripts").mkdir(parents=True)
-        for name in ("cloud-env-setup.sh", "setup-checkout.sh", "cloud-postgres.sh"):
+        for name in (
+            "cloud-env-setup.sh",
+            "setup-checkout.sh",
+            "cloud-postgres.sh",
+            "known_cloud_failures.py",
+            "known-cloud-failures.json",
+        ):
             shutil.copy(REPO / "scripts" / name, repo / "scripts" / name)
         (repo / "pyproject.toml").write_text("[project]\nname='x'\n")
         (repo / "extensions" / "ext").mkdir(parents=True)
@@ -877,6 +984,35 @@ class TestCloudEnvironment:
         assert run_hook().returncode == 0
         assert len(uv_log.read_text().splitlines()) > before, "pyproject changed: reinstall"
 
+    @pytest.mark.parametrize("broken_registry", ["missing", "malformed"])
+    def test_a_broken_optional_brief_does_not_prevent_session_setup(
+        self, scratch_checkout, broken_registry
+    ):
+        import subprocess
+
+        repo, env, uv_log = scratch_checkout
+        registry = repo / "scripts" / "known-cloud-failures.json"
+        if broken_registry == "missing":
+            registry.unlink()
+        else:
+            registry.write_text("not json")
+        result = subprocess.run(
+            ["bash", str(REPO / "scripts" / "cloud-session-start.sh")],
+            env={
+                **env,
+                "CLAUDE_CODE_REMOTE": "true",
+                "CLAUDE_PROJECT_DIR": str(repo),
+                "PYRITE_SETUP_POSTGRES": "0",
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "known-failure brief unavailable" in result.stderr
+        assert uv_log.exists(), "setup-checkout must still run"
+        assert (repo / ".venv" / ".pyrite-install-stamp").exists()
+
     def test_session_hook_exports_the_url_through_the_env_file(
         self, scratch_checkout, fake_docker, listener, tmp_path
     ):
@@ -904,6 +1040,8 @@ class TestCloudEnvironment:
         lines = env_file.read_text().splitlines()
         assert any(l.startswith('export PATH="') and ".venv/bin" in l for l in lines)
         assert any("PYRITE_TEST_PG_URL=" in l and f":{listener}/pyrite_test" in l for l in lines)
+        assert "Known cloud-only failures (not a CI waiver):" in result.stdout
+        assert "issues/1110" in result.stdout
 
     def test_contributing_pastes_the_line_the_script_documents_and_names_the_opt_out(self):
         line = "curl -fsSL https://raw.githubusercontent.com/pyrite-wiki/pyrite/dev/scripts/cloud-env-setup.sh | bash"
@@ -1168,6 +1306,25 @@ class TestRunningTheTestsDoc:
         assert (REPO / "scripts" / "test-affected").exists()
         assert (REPO / "scripts" / "run_tutorial.sh").exists()
         assert "--dist loadfile" in section and (REPO / "tests" / "e2e").is_dir()
+
+    def test_the_golden_regeneration_is_documented(self, section):
+        assert (
+            "PYRITE_CHARACTERIZATION_REGENERATE=1 .venv/bin/pytest tests/characterization/"
+            in section
+        )
+        assert section.count("### Regenerating goldens") == 1
+        regeneration = section.split("### Regenerating goldens", 1)[1].split("\n##", 1)[0]
+        assert "serially without `-n`" in regeneration
+        assert "refuses" in regeneration and "xdist" in regeneration
+        # The subset commands, their explanation and the CLI-rendering contract
+        # must stay together, outside this separate subsection (#1242 review).
+        for paragraph in (
+            "`test-affected` diffs your working tree",
+            "**CLI output is rendered the same everywhere.**",
+        ):
+            assert paragraph in section
+            assert paragraph not in regeneration
+        assert (REPO / "tests" / "characterization").is_dir()
 
 
 class TestDevPushReusesTheMergeQueuesPass:
@@ -1579,7 +1736,8 @@ class TestTheRedLineIsFirstAndEveryGatingRunLeavesATimingRecord:
         job = ci["jobs"]["mypy"]
         run = "\n".join(str(s.get("run", "")) for s in job["steps"])
         assert "mypy_ratchet.py mypy.out --base mypy-base.out" in run
-        assert "HEAD^1" in run and "PUSH_BEFORE" in run
+        assert "bash scripts/mypy_base.sh" in run
+        assert "PUSH_BEFORE" in job["steps"][-1]["env"]
         checkout = next(s for s in job["steps"] if "checkout" in str(s.get("uses", "")))
         assert checkout["with"]["fetch-depth"] >= 2, "HEAD^1 of the merge ref must exist"
 

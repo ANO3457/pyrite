@@ -549,10 +549,12 @@ class BaseBackend(ABC):
 
         query = query.limit(limit).offset(offset)
         rows = query.all()
+        entry_keys = [(entry.id, entry.kb_name) for entry in rows]
+        tags_by_entry = self._get_tags_for_entries(entry_keys)
         entries = []
         for entry in rows:
             e = self._entry_to_dict(entry)
-            e["tags"] = self._get_entry_tags(entry.id, entry.kb_name)
+            e["tags"] = tags_by_entry.get((entry.id, entry.kb_name), [])
             entries.append(e)
         return entries
 

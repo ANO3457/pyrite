@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from ...exceptions import PyriteError
+from ...exceptions import PyriteError, StorageError
 from ...services.access_policy import AccessPolicy
 from ..api import get_access_policy, get_worktree_resolver, limiter, requires_tier
 from ..authz import resolve_named_kb
@@ -153,6 +153,9 @@ def worktree_submit(
     wt_svc = resolver.worktree_service
     try:
         wt = wt_svc.submit(req.kb, auth_user["id"])
+    except StorageError:
+        # Keep the central STORAGE_ERROR shape and safe public text.
+        raise
     except PyriteError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
