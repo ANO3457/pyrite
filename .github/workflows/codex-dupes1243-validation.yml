@@ -27,7 +27,7 @@ jobs:
           done
       - name: Restore exact product and check source
         run: |
-          git checkout 7d3e5714558f219e211d2a2d78ca01303d1a5135
+          git checkout 4bbbf7c300c0cfae63ba31233837ee1e5ac7e6ca
           python scripts/check_checkout_imports.py
           ruff check pyrite/ tests/ extensions/
           ruff format --check pyrite/ tests/ extensions/
