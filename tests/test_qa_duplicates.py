@@ -208,10 +208,13 @@ class TestCommonTokens:
 @pytest.mark.parametrize(
     ("option", "value"), [("--type", " "), ("--status", " "), ("--status", ",, ")]
 )
-def test_an_empty_required_filter_is_a_usage_error(cli_world, option, value):
+def test_an_empty_filter_is_a_structured_refusal(cli_world, option, value):
     world = cli_world()
     result = world.cli("qa", "duplicates", "-t", "task", option, value)
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error_code"] == "VALIDATION_FAILED"
+    assert "NO_OUTCOME" not in result.stdout
 
 
 def test_rich_output_discloses_the_common_token_cutoff(cli_world):
