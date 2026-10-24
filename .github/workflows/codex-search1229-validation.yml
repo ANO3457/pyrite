@@ -1,0 +1,73 @@
+name: Validate repeated search filters with real Postgres
+on:
+  push:
+    branches: ['validation/codex24-search1229']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pyrite_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    env:
+      PYRITE_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/pyrite_test
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install full test and database dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[all,postgres]' setuptools wheel uv
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Prepare local CPU model cache
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+      - name: Exact product and source gates
+        run: |
+          git checkout fea62ab54e552975f3b9f21050c98c5ef755d143
+          python scripts/check_checkout_imports.py
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          python scripts/check_fix_commit_has_tests.py --range HEAD^1 HEAD
+      - name: Real SQL and vector type-filter matrix
+        run: |
+          pytest tests/backends/test_backend_conformance.py::TestRepeatedTypeFilterConformance tests/test_search_type_filtering.py tests/test_search_filters_across_modes.py -q -n 4 --junitxml=focused.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('focused.xml').getroot()
+          cases = [c for c in root.iter('testcase') if 'TestRepeatedTypeFilterConformance' in c.attrib['classname']]
+          assert len(cases) == 12, len(cases)
+          assert all(not list(c) for c in cases), 'Type-filter backend case skipped or failed'
+          assert sum('postgres' in c.attrib['name'] for c in cases) == 6
+          print('All 12 SQLite/Postgres keyword/vector filter cases passed; no skips.')
+          PY
+      - name: Required affected selection
+        run: python scripts/test-affected --run --base 0541490c7d2a20de1e9a0ead31248759b87f7e22 -n 4 -- --junitxml=affected.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: search1229-results
+          path: |
+            focused.xml
+            affected.xml
