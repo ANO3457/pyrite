@@ -1369,6 +1369,18 @@ migrates; until then `kb validate` drift exits `2` and `ids missing` `3`.
   is recorded on #526. `tests/test_requested_effect_exit_code.py` classifies
   every command that can do part of its job.
 
+### Usage errors raised after parsing
+
+A shared-format command whose body raises a Click/Typer usage error violates
+the Outcome contract: the root reports `NO_OUTCOME`, exit 1. A parse-time usage
+error is `USAGE_ERROR`, exit 2. This preserves the existing contract rather than
+turning a command implementation bug into a caller's parse error. Text or bytes
+printed by a contract command before raising are moved to stderr and the result
+is still one `NO_OUTCOME` document. Non-contract commands that already wrote
+through `sys.stdout` or `sys.stdout.buffer` keep that text on stdout; a subsequent
+Click error is a plain stderr diagnostic, with no appended document. Writes
+through an independently retained stream or descriptor 1 remain outside this
+non-contract counting guard.
 
 ### CLI root boundaries (ADR-0046, slice 1)
 
