@@ -1564,7 +1564,9 @@ stop the rest. With `--dry-run`, `fixed` lists what would be attempted and
 `pyrite qa duplicates -t <type>` reports live entries that may describe the
 same thing, scanning every KB the caller may read. It is a **report**, not a
 merge: finding candidates is not a failure, so the exit code is `0` when the scan ran; an unknown
-`--format` or an out-of-range `--threshold` is a usage error (`2`).
+`--format` or an out-of-range `--threshold` is a usage error (`2`). Empty
+`--type` or empty/comma-only `--status` values are structured
+`VALIDATION_FAILED` refusals (`1`).
 
 Scores are word-overlap (Jaccard) over the id slug, after removing the first
 matching `--strip-prefix`, and over the title. A pair is a candidate when either
