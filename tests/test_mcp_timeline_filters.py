@@ -44,7 +44,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import asyncio
+import json
+
 import pytest
+from mcp.types import CallToolRequest, CallToolRequestParams
 
 from pyrite.config import KBConfig
 from pyrite.server.mcp_server import PyriteMCPServer
@@ -213,3 +217,57 @@ def test_offset_paging_stays_stable_under_the_filters(server):
             break
     assert len(seen) == 11
     assert len(seen) == len(set(seen))  # no row twice
+
+
+@pytest.mark.parametrize("exclude", ["unprocessed", 7, {}, ["done", 7], None])
+def test_exclude_status_requires_a_list_of_strings(server, exclude):
+    out = _dispatch(server, {"exclude_status": exclude})
+    assert out["error_code"] == "VALIDATION_FAILED", out
+
+
+def test_an_empty_exclude_status_is_a_validation_error(server):
+    out = _dispatch(server, {"exclude_status": []})
+    assert out["error_code"] == "VALIDATION_FAILED", out
+
+
+@pytest.mark.control(reason="control: the dispatcher already refuses mixed readable/private KBs")
+def test_mixed_readable_and_unreadable_kbs_are_refused(server):
+    out = _dispatch(server, {"kb_names": [CANON, STAGING]}, readable_kbs={CANON})
+    assert out["error_code"] == "KB_NOT_FOUND", out
+
+
+def _sdk_call(server, arguments):
+    sdk = server.build_sdk_server()
+    request = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name="kb_timeline", arguments={**BASE_ARGS, **arguments}),
+    )
+    return asyncio.run(sdk.request_handlers[CallToolRequest](request)).root
+
+
+@pytest.mark.control(
+    reason="control: the SDK already validates the published array-of-strings schema"
+)
+@pytest.mark.parametrize("exclude", ["unprocessed", [7]])
+def test_sdk_refuses_exclude_status_outside_the_published_shape(server, exclude):
+    result = _sdk_call(server, {"exclude_status": exclude})
+    assert result.isError
+    assert "Input validation error" in result.content[0].text
+
+
+@pytest.mark.control(
+    reason="control: a valid array already filters actual timeline rows over the SDK"
+)
+def test_sdk_array_filter_returns_real_matching_rows(server):
+    result = _sdk_call(server, {"exclude_status": ["unprocessed"]})
+    assert not result.isError
+    out = json.loads(result.content[0].text)
+    assert out["count"] == 11
+    assert {row["kb_name"] for row in out["events"]} == {CANON}
+
+
+@pytest.mark.parametrize("argument", ["kb_names", "exclude_status"])
+def test_sdk_empty_filter_lists_are_refused_consistently(server, argument):
+    result = _sdk_call(server, {argument: []})
+    out = json.loads(result.content[0].text)
+    assert out["error_code"] == "VALIDATION_FAILED", out
