@@ -266,3 +266,24 @@ Run either set locally:
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4 -m "not slow and not e2e and not experimental"
 scripts/heavy_lock.py -- .venv/bin/pytest tests/ extensions/ -n 4 -m "experimental and not slow and not e2e"
 ```
+
+## Automatic shard timing refresh
+
+`refresh-test-durations.yml` checks the latest successful `dev` merge-group
+CI run weekly and on manual dispatch. It downloads that run's merged
+`test-durations` and all three junit shard reports. Above the same 25% spread
+threshold used by the shard report, it uploads a proposed `.test_durations.gz`
+and its evidence as the `proposed-test-durations` artifact. Balanced,
+unchanged or missing evidence never silently rewrites the baseline.
+
+A separate job opens or updates one issue, **ci: Test duration refresh evidence**,
+with the source run, old/new greedy least-duration estimates and the artifact
+link. A contributor can download and review the proposed baseline before
+opening a normal PR and running CI. No branch is pushed and Actions does not
+need permission to create pull requests. Artifact retention follows the
+repository setting; the issue links the latest proposal.
+
+These are estimates, not a collection replay or a wall-clock promise. The
+refresh never changes test selection. The parsing job has read-only contents
+and Actions permissions; only the notification job has `issues: write`.
+Only trusted `dev` code runs; downloaded timing/report artifacts are data.

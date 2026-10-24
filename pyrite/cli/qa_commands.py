@@ -5,15 +5,14 @@ Commands: validate, status, assess
 """
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from ..services.access_policy import UNSCOPED
 from .context import cli_context
-from .output import output_format_choice, validate_output_format
+from .output import cli_console, output_format_choice, validate_output_format
 
 qa_app = typer.Typer(help="Quality assurance validation and assessment")
-console = Console()
+console = cli_console()
 
 
 def _format_output(data: dict, fmt: str) -> str | None:
@@ -38,8 +37,10 @@ def qa_validate(
 ):
     """Validate KB structural integrity.
 
-    Checks for missing titles, empty bodies, broken links, orphan entries,
-    invalid dates, importance out of range, and schema violations.
+    Checks for missing titles, empty bodies, broken links, orphan entries (an
+    orphan has neither incoming nor outgoing links, while 'has no outgoing links'
+    is a separate rubric warning), invalid dates, importance out of range,
+    and schema violations.
     """
     from ..services.qa_service import QAService
 
@@ -67,8 +68,14 @@ def qa_validate(
             ]
 
         formatted = _format_output({"issues": issues, "count": len(issues)}, output_format)
+        # ADR-0046: a check command exits 1 when it found an error, in every
+        # format. The formatted branch used to return before the verdict, so
+        # `--format json` (the default) hid a failing check behind exit 0.
+        error_count = sum(1 for i in issues if i.get("severity") == "error")
         if formatted is not None:
             typer.echo(formatted)
+            if error_count > 0:
+                raise typer.Exit(1)
             return
 
         # Rich output
@@ -490,8 +497,9 @@ def qa_gaps(
     """Report structural coverage gaps in a KB.
 
     Identifies missing entry types, sparse types, unused tags from kb.yaml,
-    entries with no outbound/inbound links, and distribution stats.
-    No LLM dependency — pure structural analysis.
+    entries with no outbound links (which is why this count can be larger than
+    'qa validate's orphan count, which requires neither incoming nor outgoing links),
+    and distribution stats. No LLM dependency — pure structural analysis.
     """
     import json as json_mod
 

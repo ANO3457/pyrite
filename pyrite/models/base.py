@@ -389,7 +389,7 @@ class Entry(ABC):
     # DEPRECATED (#697, ADR-0045 decision 8): a bare set of alias names has no
     # target. Declare `field_aliases: {alias: target}` in the type's schema
     # (core metadata, a plugin's get_type_metadata(), or kb.yaml) instead; see
-    # pyrite/schema/field_aliases.py. Still honoured for one release, with a
+    # pyrite/schema/field_aliases.py. Still honoured until 0.27, with a
     # warning per class, so a third-party plugin keeps loading.
     FRONTMATTER_ALIASES: ClassVar[frozenset[str]] = frozenset()
 

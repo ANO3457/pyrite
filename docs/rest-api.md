@@ -54,15 +54,7 @@ with `curl`.
 
 ## Call it
 
-```bash
-curl -H "X-API-Key: my-key" "http://127.0.0.1:8088/api/entries/hello?kb=notes"
-
-curl -X POST -H "X-API-Key: my-key" -H "Content-Type: application/json" \
-  -d '{"kb": "notes", "entry_type": "note", "title": "Hello", "body": "Hi"}' \
-  "http://127.0.0.1:8088/api/entries"
-```
-
-The KB goes in the `kb` query parameter or body field, by its full name.
+The complete worked search, get and create calls are below.
 
 ## Shapes
 
@@ -72,3 +64,21 @@ The KB goes in the `kb` query parameter or body field, by its full name.
 - Successes: [Write success shapes](json-contracts.md#write-success-shapes)
   (the REST rows) and the [entry envelope](json-contracts.md#entry-envelope).
 - A write that loses a race is `409 CONFLICT`; re-read and repeat it.
+
+## Search, read and create in a scratch KB
+
+These calls assume the full registered KB name `test-kb` and an existing note
+`hello`. Replace the sample key with your configured credential; see
+[Configuration](configuration.md) for authentication. Search is explicitly
+keyword mode, so this example does not require an embedding provider.
+
+```bash
+curl -H "X-API-Key: my-key" "http://127.0.0.1:8088/api/search?q=Hello&kb=test-kb&mode=keyword"
+curl -H "X-API-Key: my-key" "http://127.0.0.1:8088/api/entries/hello?kb=test-kb"
+curl -X POST -H "X-API-Key: my-key" -H "Content-Type: application/json" -d '{"kb":"test-kb","entry_type":"note","title":"REST example","body":"Example body"}' "http://127.0.0.1:8088/api/entries"
+```
+
+The entry route needs a full KB name when an ID is ambiguous. Use only the documented body keys and put optional custom entry data in its
+documented field; the running OpenAPI schema describes accepted fields. The API reference at `/docs` and `/redoc` owns the route
+list. Format negotiation is route-specific: inspect the operation in OpenAPI
+instead of assuming every route accepts the CLI's `--format` choices.
