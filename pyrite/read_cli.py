@@ -9,11 +9,10 @@ For admin operations: pyrite-admin
 """
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from .cli.context import open_index_db, require_kb
-from .cli.output import validate_output_format
+from .cli.output import cli_console, path_line, validate_output_format
 from .cli.search_commands import register_search_command
 from .config import current_config_file, load_config
 from .exceptions import PyriteError, refusal_fields
@@ -31,9 +30,9 @@ app = typer.Typer(
     no_args_is_help=True,
     epilog=logging_epilog("pyrite-read"),
 )
-console = Console()
+console = cli_console()
 # Errors/status print here so machine formats keep stdout clean and parseable.
-err_console = Console(stderr=True)
+err_console = cli_console(stderr=True)
 
 
 def _emit_error(
@@ -379,7 +378,7 @@ def backlinks_cmd(
 def show_config():
     """Show current configuration (read-only)."""
     config_file = current_config_file()
-    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(path_line("[bold]Config file:[/bold] ", config_file))
     console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
     if config_file.exists():

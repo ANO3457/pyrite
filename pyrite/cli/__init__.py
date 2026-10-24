@@ -17,7 +17,6 @@ import sys
 from pathlib import Path
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
@@ -53,7 +52,7 @@ from .init_command import init_kb
 from .kb_commands import kb_app
 from .link_commands import links_app
 from .mcp_setup_command import MCP_CHECK_OK, mcp_setup, mcp_tool_counts
-from .output import output_format_choice, validate_output_format
+from .output import cli_console, output_format_choice, path_line, validate_output_format
 from .protocol_commands import protocol_app
 from .qa_commands import qa_app
 from .repo_commands import repo_collab_app
@@ -133,7 +132,7 @@ app = _LazyPluginTyper(
     epilog="New to a KB? Run `pyrite orient -k <kb-name>` first -- it summarizes "
     "types, tags, recent changes, and schema in one call.",
 )
-console = Console()
+console = cli_console()
 
 
 def _version_callback(value: bool) -> None:
@@ -505,7 +504,7 @@ def list_kbs(
 def show_config():
     """Show current configuration."""
     config_file = current_config_file()
-    console.print(f"[bold]Config file:[/bold] {config_file}")
+    console.print(path_line("[bold]Config file:[/bold] ", config_file))
     console.print(f"[bold]Exists:[/bold] {config_file.exists()}")
 
     if config_file.exists():
@@ -857,7 +856,7 @@ def mcp_server(
         return
 
     # stderr, not stdout -- stdout carries the MCP protocol stream itself.
-    Console(stderr=True).print(f"[dim]Starting MCP server ({tier} tier) on stdio...[/dim]")
+    cli_console(stderr=True).print(f"[dim]Starting MCP server ({tier} tier) on stdio...[/dim]")
     server = PyriteMCPServer(tier=tier)
     try:
         server.run_stdio()
@@ -1058,10 +1057,10 @@ def generate_readme_cmd(
                 cli_error_from(e)
             except OSError as e:  # a hard-linked README.md (`HardLinked`)
                 cli_error(str(e), error_code="STORAGE_ERROR")
-            console.print(f"[green]Written:[/green] {readme_path}")
+            console.print(path_line("[green]Written:[/green] ", readme_path))
         elif output:
             output.write_text(readme, encoding="utf-8")
-            console.print(f"[green]Written:[/green] {output}")
+            console.print(path_line("[green]Written:[/green] ", output))
         else:
             typer.echo(readme)
 

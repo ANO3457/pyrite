@@ -8,7 +8,6 @@ import logging
 import os
 
 import typer
-from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
@@ -24,14 +23,14 @@ from ..services.read_shaping import (
 )
 from ..utils.errors import exit_unless_whole
 from .context import get_config_with_registered_kbs, require_kb
-from .output import validate_output_format
+from .output import cli_console, validate_output_format
 
 logger = logging.getLogger(__name__)
 
-console = Console()
+console = cli_console()
 # Status/progress chatter goes here so it never pollutes stdout in machine
 # formats (-f json etc.), where stdout must be valid parseable output only.
-err_console = Console(stderr=True)
+err_console = cli_console(stderr=True)
 
 
 def _warn_if_stale(config, db, kb_name: str | None) -> None:

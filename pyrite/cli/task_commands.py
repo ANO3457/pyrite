@@ -14,7 +14,6 @@ import json
 from typing import Any
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from ..exceptions import EntryNotFoundError, ValidationError
@@ -22,7 +21,7 @@ from ..services.access_policy import UNSCOPED
 from ..services.task_service import TaskService
 from ..storage.database import PyriteDB
 from .outcome import Outcome
-from .output import LEGACY_FORMAT_SHORT, OUTPUT_FORMAT
+from .output import LEGACY_FORMAT_SHORT, OUTPUT_FORMAT, cli_console
 
 task_app = typer.Typer(help="Task management commands")
 
@@ -307,7 +306,7 @@ def task_status(
 ) -> Outcome:
     """[Deprecated] Alias for `task get`. Use `task get` instead."""
     # Deprecation notice goes to stderr so it never corrupts JSON on stdout.
-    Console(stderr=True).print(
+    cli_console(stderr=True).print(
         "[yellow]Warning:[/yellow] `task status` is deprecated and will be "
         "removed in 0.27; use `task get` instead.",
         style="dim",
