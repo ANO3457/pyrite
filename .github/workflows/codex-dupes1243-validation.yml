@@ -7,7 +7,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     env:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
@@ -25,9 +25,17 @@ jobs:
           for ext in extensions/*/; do
             if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
           done
+      - name: Cache the local embedding model
+        env:
+          HF_HUB_OFFLINE: "0"
+          TRANSFORMERS_OFFLINE: "0"
+          HF_HUB_DISABLE_TELEMETRY: "1"
+        run: python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
       - name: Restore exact product and check source
         run: |
-          git checkout 4bbbf7c300c0cfae63ba31233837ee1e5ac7e6ca
+          git show "$GITHUB_SHA:.github/validation/dupes1243-rerun.json" > "$RUNNER_TEMP/rerun.json"
+          git checkout 13bf5d22020e29471bd60e1c61402b0523f8caa0
+          git diff --exit-code 4bbbf7c300c0cfae63ba31233837ee1e5ac7e6ca HEAD -- pyrite/services/qa_service.py tests/test_effective_status_everywhere.py
           python scripts/check_checkout_imports.py
           ruff check pyrite/ tests/ extensions/
           ruff format --check pyrite/ tests/ extensions/
@@ -35,12 +43,20 @@ jobs:
           python scripts/check_fix_commit_has_tests.py --range 9b78049d1b3541729e9e49d542f4e025766663b5 HEAD
       - name: Duplicate clusters, performance bound and effective status
         run: pytest tests/test_qa_duplicates.py tests/test_effective_status_everywhere.py tests/test_changelog_fragments.py -q -n 4 --durations=10 --junitxml=focused.xml
-      - name: Required affected selection
-        run: python scripts/test-affected --run --base 2ebd38b83a392fbf11f61bfb3642ac10232ba4d9 -n 4 -- --junitxml=affected.xml
+      - name: Root outcome contract and prior failures or skips
+        run: |
+          pytest tests/test_requested_effect_exit_code.py tests/test_cli_outcome.py -q -n 4 --junitxml=contract.xml
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          nodes = json.loads((Path(os.environ['RUNNER_TEMP']) / 'rerun.json').read_text())
+          raise SystemExit(subprocess.run(['pytest', *nodes, '-q', '-n', '4', '--junitxml=recovery.xml']).returncode)
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: dupes1243-results
+          name: dupes1243-recovery
           path: |
             focused.xml
-            affected.xml
+            contract.xml
+            recovery.xml
