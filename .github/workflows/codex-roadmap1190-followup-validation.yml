@@ -1,0 +1,82 @@
+name: Update roadmap through the project CLI
+on:
+  push:
+    branches: ['validation/codex24-roadmap1190-followup']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install KB CLI
+        run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel uv
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Orient and update the original KB through the real CLI
+        run: |
+          cp .github/validation/roadmap1190-body.md "$RUNNER_TEMP/roadmap-body.md"
+          git checkout 95e851286ade44c3cc87907b1ae5413130883610
+          export PYRITE_CONFIG_DIR="$RUNNER_TEMP/roadmap-config"
+          export PYRITE_DATA_DIR="$RUNNER_TEMP/roadmap-config"
+          export PYRITE_AUTO_EMBED=0
+          pyrite kb add "$PWD/kb" --name pyrite --type software
+          pyrite index sync -k pyrite --no-embed
+          pyrite orient -k pyrite --format json > orient.json
+          cp kb/roadmap.md "$RUNNER_TEMP/roadmap-before.md"
+          pyrite index health > health-before.log
+          pyrite schema validate kb/ > schema-before.log
+          pyrite update roadmap -k pyrite --body-file "$RUNNER_TEMP/roadmap-body.md"
+          pyrite index sync -k pyrite --no-embed
+          pyrite index health > health.log
+          pyrite schema validate kb/ > schema.log
+          python - <<'PY'
+          import os, subprocess, hashlib, json
+          from pathlib import Path
+          tmp = Path(os.environ['RUNNER_TEMP'])
+          before = (tmp / 'roadmap-before.md').read_bytes()
+          after = Path('kb/roadmap.md').read_bytes()
+          header = before.split(b'\n---\n', 1)[0]
+          assert after.split(b'\n---\n',1)[0] == header, 'Frontmatter changed'
+          text = after.decode('utf-8')
+          body = text.split('---',2)[2].strip()
+          assert body == (tmp / 'roadmap-body.md').read_text().strip()
+          assert body.split('## History: earlier releases',1)[1].rstrip() == before.decode().split('## History: earlier releases',1)[1].rstrip()
+          assert subprocess.check_output(['git','diff','--name-only'],text=True).splitlines() == ['kb/roadmap.md']
+          Path('roadmap-result.md').write_bytes(after)
+          Path('roadmap.patch').write_bytes(subprocess.check_output(['git','diff','--binary','--','kb/roadmap.md']))
+          Path('manifest.json').write_text(json.dumps({'sha256':hashlib.sha256(after).hexdigest(),'source_head':'95e851286ade44c3cc87907b1ae5413130883610'},indent=2))
+          def health_summary(name):
+              t = Path(name).read_text(encoding='utf-8')
+              return [line.strip() for line in t.splitlines() if any(k in line.lower() for k in ['status:', 'broken', 'missing', 'unindexed', 'stale', 'content_changed'])]
+          assert health_summary('health-before.log') == health_summary('health.log'), 'Health summary changed'
+          def schema_summary(name):
+              return [line.strip() for line in Path(name).read_text(encoding='utf-8').splitlines() if any(k in line.lower() for k in ['files checked', 'errors:', 'warnings:', 'clean:'])]
+          assert schema_summary('schema-before.log') == schema_summary('schema.log'), 'Schema summary changed'
+          release_line = body.split('## History: earlier releases', 1)[0]
+          assert 'whole-entry passage embedding' not in release_line
+          assert 'Remaining passage-embedding' not in release_line
+          assert "SQLite's KNN query (#194)" in release_line
+          print('Real CLI update verified: frontmatter/history preserved; only roadmap changed; health/schema baseline unchanged.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: roadmap1190-result
+          path: |
+            roadmap-result.md
+            roadmap.patch
+            manifest.json
+            orient.json
+            health-before.log
+            schema-before.log
+            health.log
+            schema.log
