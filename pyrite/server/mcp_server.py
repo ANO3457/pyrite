@@ -912,8 +912,17 @@ class PyriteMCPServer:
                 )
             )
         exclude = args.get("exclude_status")
-        if isinstance(exclude, str):  # one spelling the schema's array allows
-            exclude = [exclude]
+        if "exclude_status" in args and (
+            not isinstance(exclude, list)
+            or not exclude
+            or any(not isinstance(value, str) for value in exclude)
+        ):
+            return _refusal(
+                ValidationError(
+                    "exclude_status must be a non-empty list of strings. "
+                    "Omit exclude_status to keep every status."
+                )
+            )
         status = args.get("status")
         if status and exclude and status in exclude:
             return _refusal(
