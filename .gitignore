@@ -22,6 +22,7 @@ node_modules/
 web/build/
 
 # IDE
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -52,7 +53,6 @@ web/.e2e-auth-data-*/
 # Playwright MCP (browser automation logs/screenshots)
 .playwright-mcp/
 
-temp_auto_push.bat
 # OS
 .DS_Store
 Thumbs.db
@@ -108,5 +108,3 @@ tests/characterization/goldens/*.lock
 
 # Conductor tick logs (default PYRITE_CONDUCTOR_LOG_DIR; local to the machine running the loop)
 .pyrite-conductor/
-.gitignore
-branch_structure.json
