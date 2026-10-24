@@ -1,0 +1,43 @@
+name: Validate backlog kind review follow-up
+on:
+  push:
+    branches: ['validation/codex24-kinds1246']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test environment
+        run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Test exact product tree
+        run: |
+          git checkout 8c0bd3197691274fedfdf8f35c030e92fab3ec10
+          python scripts/check_checkout_imports.py
+          pytest extensions/software-kb/tests/test_software_kb.py tests/test_enum_enforcement.py tests/test_software_template_fields.py tests/test_changelog_fragments.py -q -n 4 --junitxml=focused.xml
+          python scripts/test-affected --run --base c1c641eb6daccc4814e4863f77cf63373c4f021f -n 4 -- --junitxml=affected.xml
+      - name: Source checks
+        if: always()
+        run: |
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          python scripts/check_fix_commit_has_tests.py --range 90694ff06ada3b81756755353a5c360a1315c75c HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kinds1246-results
+          path: |
+            focused.xml
+            affected.xml
