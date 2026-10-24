@@ -44,8 +44,8 @@ community needs and feedback.
 
 | Release | Promise | Leaves |
 |---|---|---|
-| 0.25.7 | The first hour works; the alpha announcement | 2026-10-08 |
-| 0.25.8 | The CLI contract for agents | 2026-10-15 |
+| 0.25.7 | The first hour works; the alpha announcement | 2026-10-13 |
+| 0.25.8 | The CLI contract for agents | 2026-10-16 |
 | 0.26.0 | Your files, exactly | 2026-10-22 |
 | 0.26.1 | Remaining passage-embedding, link and cross-KB work | undated |
 | 0.27 | One operator, many users | undated |
@@ -66,16 +66,18 @@ milestones carry the issues; this table carries the promise and the gate.
 - **0.26.0: your files, exactly (shipped).** First the index tells the truth:
   the ADR-0038 reconcile (#6, #7, #484 to #487, #495, #51, #22), identity
   (#639, #494, #488 to #490), and health (#593). Writes change only what was
-  asked (ADR-0042: #637, #638, #640, #178, #628, explicit format and migrate
-  commands), alongside whole-entry passage embedding
+  asked (ADR-0042: #638, #640, #178, explicit format and migrate commands),
+  with one landing rule for signed-in users' writes. The release also includes
+  whole-entry passage embedding
   ([[embed-the-whole-entry-in-passages-by-default]], #594, #194) and cross-KB
   link and read support (#124, #622, #623).
 - **0.26.1.** What is left from the 0.25.9 / 0.26 line: #627, #64, #468 (on
-  the 0.26.1 milestone), #62 and #621.
+  the 0.26.1 milestone), #62 and #1262 (the remaining symlink identity/rename
+  case from #637 after the fix in #1249).
 - **0.27: one operator, many users.** Design first: the authorization model
-  and its executable matrix (#587), the security review (#586), the registry
-  in config under the operator (#539, #521, #565, #602, #382), one landing rule
-  for writes, ~~the `published` flag~~ (`/site` was removed in 0.26.0). Two planes: users read and write entries
+  and its executable matrix (#587), the security review (#586), and one
+  operator-owned KB registry ([[adr-0039]]; #539, #602, #382).
+  ~~The `published` flag~~ (`/site` was removed in 0.26.0). Two planes: users read and write entries
   per KB by grant; everything else belongs to the operator. Capabilities
   granted by the operator and configured in a user-owned file are the
   direction, not this release.
