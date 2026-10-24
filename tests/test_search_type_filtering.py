@@ -143,3 +143,30 @@ def test_an_unknown_excluded_type_without_a_kb_changes_nothing(cli_world):
     result = world.cli("search", "widget", "--exclude-type", "nosuchtype", "--format", "json")
     assert result.exit_code == 0, result.output
     assert {r["entry_type"] for r in json.loads(result.stdout)["results"]} == {"note", "event"}
+
+
+@pytest.mark.parametrize("use_files", [False, True], ids=["indexed", "files"])
+@pytest.mark.parametrize("flag", ["--type", "--exclude-type"])
+@pytest.mark.parametrize("value", ["", "   "])
+def test_blank_type_filters_are_usage_errors_in_every_cli_path(cli_world, use_files, flag, value):
+    world = cli_world()
+    _seed(world)
+    args = ["search", "widget", flag, value, "--format", "json"]
+    if use_files:
+        args.append("--files")
+    result = world.cli(*args)
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error_code"] == "USAGE_ERROR", payload
+    assert flag in payload["error"], payload
+
+
+@pytest.mark.control(
+    reason="control: a single include type without -k already narrows keyword search"
+)
+def test_keyword_include_filter_without_a_kb_keeps_only_the_named_type(cli_world):
+    world = cli_world()
+    _seed(world)
+    result = world.cli("search", "widget", "--type", "note", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert {r["entry_type"] for r in json.loads(result.stdout)["results"]} == {"note"}
