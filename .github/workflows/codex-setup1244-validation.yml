@@ -1,0 +1,63 @@
+name: Validate worktree remote handling review
+on:
+  push:
+    branches: ['validation/codex24-setup1244-verified']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install selected-test environment
+        run: |
+          pip install -e '.[cli,server,dev]' sqlite-vec setuptools wheel uv
+          for ext in extensions/*/; do
+            if [ -f "$ext/pyproject.toml" ]; then pip install -e "$ext"; fi
+          done
+      - name: Exact product and real Bash regression before the fix
+        run: |
+          git checkout 1aa67ff2478046f86719650a49ca86f8f93dbdc8
+          command -v bash
+          git show 1b5751ba0e45bd3f7fa71b1d3ad7e5a143598123:scripts/new-worktree.sh > scripts/new-worktree.sh
+          set +e
+          pytest tests/test_dev_process_config.py::TestNewWorktreeRemoteCases -q --junitxml=red.xml
+          red_status=$?
+          set -e
+          git restore --source=HEAD -- scripts/new-worktree.sh
+          test "$red_status" = 1
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('red.xml').getroot()
+          suites = list(root.iter('testsuite'))
+          assert sum(int(s.attrib['tests']) for s in suites) == 6
+          assert sum(int(s.attrib['failures']) for s in suites) == 5
+          assert sum(int(s.attrib['errors']) for s in suites) == 0
+          assert sum(int(s.attrib['skipped']) for s in suites) == 0
+          print('Old script: five genuine failures, one existing-path pass, no collection/skip errors.')
+          PY
+      - name: Source gates and fixed public script behavior
+        run: |
+          python scripts/check_checkout_imports.py
+          bash -n scripts/new-worktree.sh
+          ruff check pyrite/ tests/ extensions/
+          ruff format --check pyrite/ tests/ extensions/
+          python scripts/check_import_cycles.py
+          python scripts/check_fix_commit_has_tests.py --range HEAD^1 HEAD
+          pytest tests/test_dev_process_config.py::TestNewWorktreeRemoteCases tests/test_test_affected.py::TestBaseFallback::test_missing_base_diff_hint_suggests_base_option tests/test_changelog_fragments.py -q --junitxml=focused.xml
+      - name: Required affected selection
+        run: python scripts/test-affected --run --base c30b1c120fb8db798f2331472ff79bb28af44684 -n 4 -- --junitxml=affected.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: setup1244-results
+          path: |
+            red.xml
+            focused.xml
+            affected.xml
