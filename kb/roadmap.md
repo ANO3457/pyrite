@@ -47,7 +47,7 @@ community needs and feedback.
 | 0.25.7 | The first hour works; the alpha announcement | 2026-10-13 |
 | 0.25.8 | The CLI contract for agents | 2026-10-16 |
 | 0.26.0 | Your files, exactly | 2026-10-22 |
-| 0.26.1 | Remaining passage-embedding, link and cross-KB work | undated |
+| 0.26.1 | Search flags, link resolution, cross-KB tools and symlink identity | undated |
 | 0.27 | One operator, many users | undated |
 | 0.28 | Alpha plugin and API contracts | undated |
 
@@ -61,16 +61,17 @@ milestones carry the issues; this table carries the promise and the gate.
   files. *Slips first:* #232, #43.
 - **0.25.8.** Formats (#547, #553, #303), exit codes (#526), ambiguity (#528),
   error spelling (#610), create (#86), the echo rule against the file (#569),
-  tiers in tool descriptions (#68), `.claude/` by audience (#244). Left open
-  for contributors: #54, #52, #59, #572, #200.
+  tiers in tool descriptions (#68), `.claude/` by audience (#244), and
+  semantic filters applied inside SQLite's KNN query (#194). Left open for
+  contributors: #54, #52, #59, #572, #200.
 - **0.26.0: your files, exactly (shipped).** First the index tells the truth:
   the ADR-0038 reconcile (#6, #7, #484 to #487, #495, #51, #22), identity
   (#639, #494, #488 to #490), and health (#593). Writes change only what was
   asked (ADR-0042: #638, #640, #178, explicit format and migrate commands),
-  with one landing rule for signed-in users' writes. The release also includes
-  whole-entry passage embedding
-  ([[embed-the-whole-entry-in-passages-by-default]], #594, #194) and cross-KB
-  link and read support (#124, #622, #623).
+  with one landing rule for signed-in users' writes. Embedding retries keep
+  queued entries pending without consuming attempts when the model cannot
+  load (#594). The release also includes cross-KB link and read support
+  (#124, #622, #623).
 - **0.26.1.** What is left from the 0.25.9 / 0.26 line: #627, #64, #468 (on
   the 0.26.1 milestone), #62 and #1262 (the remaining symlink identity/rename
   case from #637 after the fix in #1249).
