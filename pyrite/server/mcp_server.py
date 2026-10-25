@@ -395,6 +395,20 @@ NON_KB_CONTENT_TOOLS = frozenset(
 )
 
 
+def _has_blank_or_invalid_id(spec: dict[str, Any], arguments: dict[str, Any]) -> bool:
+    """True when any value inside any `id_args` is blank or not a string."""
+    for arg in spec.get("id_args", []):
+        if arg not in arguments or arguments[arg] is None:
+            continue
+        val = arguments[arg]
+        if isinstance(val, (list, tuple)):
+            if any(not isinstance(v, str) or not v.strip() for v in val):
+                return True
+        elif not isinstance(val, str) or not val.strip():
+            return True
+    return False
+
+
 def _located_ids(spec: dict[str, Any], arguments: dict[str, Any]) -> list[str]:
     """The entry ids a `locates_entry` call names: each `id_args` value, a
     string or a list of strings, with blanks and non-strings dropped."""
@@ -2654,7 +2668,7 @@ class PyriteMCPServer:
         Raises ``PyriteError``; the caller renders the refusal.
         """
         ids = _located_ids(spec, arguments)
-        if not ids:
+        if not ids or _has_blank_or_invalid_id(spec, arguments):
             # `_dispatch_tool` refuses this before any check; kept here so no
             # caller of this method hands a handler an id it did not resolve.
             raise ValidationError(_no_id_message(spec))
@@ -2742,10 +2756,13 @@ class PyriteMCPServer:
         #
         # No handler is called with an id the dispatcher has not resolved: a
         # call whose id arguments are all blank (missing, empty, whitespace)
+        # or that holds a blank or non-string element beside real ids (#1321)
         # is refused here, before any check, whatever KB it names -- else the
         # handler would choose a KB itself (a default KB, or '').
         spec = self.tools[name].get("locates_entry")
-        if spec and not _located_ids(spec, arguments):
+        if spec and (
+            not _located_ids(spec, arguments) or _has_blank_or_invalid_id(spec, arguments)
+        ):
             return _refusal(ValidationError(_no_id_message(spec)))
         kb_name_named = named_kb(arguments.get("kb_name")) is not None
         if spec and not kb_name_named:

@@ -572,11 +572,12 @@ def test_the_handler_acts_only_in_a_kb_the_checks_ran_on(server, monkeypatch, to
 
 
 #: Every way an id argument names nothing: missing, empty, whitespace; for a
-#: list argument, empty or holding only blanks.
+#: list argument, empty or holding only blanks, or a mixed list holding a blank (#1321).
 _BLANK_IDS = {
     "missing": lambda arg, is_list: None,
     "empty": lambda arg, is_list: [] if is_list else "",
     "spaces": lambda arg, is_list: ["", "  "] if is_list else "  ",
+    "mixed": lambda arg, is_list: ["item-1", "", "item-2"] if is_list else "  ",
 }
 
 
